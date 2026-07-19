@@ -101,7 +101,11 @@ fn grid_to_polygons(
             }
         }
         let mut changed = false;
-        for cells in comp_cells.values() {
+        // dissolve in label order: img is mutated as we go, so iteration order affects
+        // multi-class outcomes and HashMap order would make them nondeterministic
+        let mut comp_cells: Vec<_> = comp_cells.into_iter().collect();
+        comp_cells.sort_unstable_by_key(|(label, _)| *label);
+        for (_, cells) in &comp_cells {
             let class = img.get_pixel(cells[0].0, cells[0].1)[0];
             let min_cells = (min_area_m2(code_of(class)) / (cell * cell)).ceil() as usize;
             if cells.len() >= min_cells {
@@ -125,9 +129,10 @@ fn grid_to_polygons(
                 visit(x as i64, y as i64 - 1);
                 visit(x as i64, y as i64 + 1);
             }
+            // tie-break by class code so equal-count neighbours resolve deterministically
             let new = counts
                 .into_iter()
-                .max_by_key(|&(_, n)| n)
+                .max_by_key(|&(c, n)| (n, c))
                 .map(|(c, _)| c)
                 .unwrap_or(0);
             for &(x, y) in cells {
@@ -217,6 +222,10 @@ fn grid_to_polygons(
     let to_world = |v: V| Point2::new(origin.0 + v.0 as f64 * cell, origin.1 + v.1 as f64 * cell);
 
     let mut polygons = Vec::new();
+    // deterministic component order: which side of a shared chain simplifies first
+    // decides the vertex selection, so HashMap order would make output nondeterministic
+    let mut comp_edges: Vec<_> = comp_edges.into_iter().collect();
+    comp_edges.sort_unstable_by_key(|(label, _)| *label);
     for (label, (class, edges)) in comp_edges {
         let code = code_of(class);
         let mut exteriors: Vec<Vec<Point2>> = Vec::new();
@@ -323,7 +332,8 @@ fn grid_to_polygons(
 /// it closes on its start.
 fn chain_rings(mut edges: EdgeMap) -> Vec<(Vec<V>, Vec<u32>)> {
     let mut rings = Vec::new();
-    while let Some((&start, _)) = edges.iter().next() {
+    // start each walk at the minimum remaining vertex so ring rotation is deterministic
+    while let Some(start) = edges.keys().min().copied() {
         let mut ring = vec![start];
         let mut others = Vec::new();
         let mut cur = start;
