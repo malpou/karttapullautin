@@ -546,6 +546,16 @@ pub fn process_tile(
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
         knolls::dotknolls(fs, config, tmpfolder).unwrap();
+
+        if config.vectorvege {
+            crate::geojson::bindxf_to_geojson(
+                fs,
+                &tmpfolder.join("out2.dxf.bin"),
+                &tmpfolder.join("contours.geojson"),
+                config.epsg,
+            )
+            .unwrap();
+        }
     }
 
     if !cliffsonly && !contoursonly {
@@ -1054,6 +1064,23 @@ pub fn batch_process(
                 maxy,
             )
             .unwrap();
+        }
+
+        // crop vector GeoJSON outputs (present when vectorvege=1 / an OSM vectorconf is set)
+        for name in crate::geojson::GEOJSON_NAMES {
+            let geojson_file = PathBuf::from(format!("temp{thread}/{name}.geojson"));
+            if fs.exists(&geojson_file) {
+                crate::geojson::crop_geojson(
+                    fs,
+                    &geojson_file,
+                    Path::new(&format!("{batchoutfolder}/{laz}_{name}.geojson")),
+                    minx,
+                    miny,
+                    maxx,
+                    maxy,
+                )
+                .unwrap();
+            }
         }
         if savetempfolders {
             fs.create_dir_all(format!("temp_{laz}_dir"))

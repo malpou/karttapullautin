@@ -1318,6 +1318,7 @@ dependencies = [
  "rust-ini",
  "rustc-hash",
  "serde",
+ "serde_json",
  "shapefile",
  "tiny-skia",
  "zip",

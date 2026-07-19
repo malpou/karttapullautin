@@ -264,7 +264,15 @@ impl BinaryDxf {
                         polylines.polylines.iter().zip(&polylines.classification)
                     {
                         let layer = class.to_layer();
-                        write!(writer, "POLYLINE\r\n 66\r\n1\r\n  8\r\n{layer}\r\n  0\r\n")?;
+                        if class.is_area() {
+                            // closed polyline (flag 70=1) so importers treat it as an area ring
+                            write!(
+                                writer,
+                                "POLYLINE\r\n 66\r\n1\r\n  8\r\n{layer}\r\n 70\r\n1\r\n  0\r\n"
+                            )?;
+                        } else {
+                            write!(writer, "POLYLINE\r\n 66\r\n1\r\n  8\r\n{layer}\r\n  0\r\n")?;
+                        }
 
                         for p in polyline {
                             write!(
@@ -346,6 +354,14 @@ pub enum Classification {
     /// and maps to 101 downstream. Generated in merge, alongside the ring it belongs to.
     SlopeLine,
     SmallDepression,
+
+    /// ISOM vegetation area symbols (closed polygon rings).
+    /// Keep at the end so bincode variant indices of older variants stay stable.
+    Veg403,
+    Veg406,
+    Veg407,
+    Veg408,
+    Veg410,
 }
 
 impl Classification {
@@ -380,7 +396,20 @@ impl Classification {
 
             Self::SlopeLine => "slope_line",
             Self::SmallDepression => "small_depression",
+            Self::Veg403 => "403",
+            Self::Veg406 => "406",
+            Self::Veg407 => "407",
+            Self::Veg408 => "408",
+            Self::Veg410 => "410",
         }
+    }
+
+    /// Whether this classification is an area symbol whose polylines are closed rings.
+    pub fn is_area(&self) -> bool {
+        matches!(
+            self,
+            Self::Veg403 | Self::Veg406 | Self::Veg407 | Self::Veg408 | Self::Veg410
+        )
     }
 
     pub fn is_contour(&self) -> bool {
