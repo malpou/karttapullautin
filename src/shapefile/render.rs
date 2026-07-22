@@ -467,6 +467,27 @@ pub fn render(
                         imgblack.set_line_width(26.0);
                     }
 
+                    // wide road, drawn like 503 in raster; distinct code kept for vector export
+                    if isom == "502" {
+                        imgbrown.set_line_width(20.0);
+                        imgbrowntop.set_line_width(20.0);
+                        color = Some((brown, Image::Brown));
+                        roadedge = 26.0;
+                        thickness = 20.0;
+                        imgblack.set_line_width(26.0);
+                    }
+
+                    // wide road, bridges
+                    if isom == "502T" {
+                        edgeimage = EdgeImage::BlackTop;
+                        imgbrown.set_line_width(14.0);
+                        imgbrowntop.set_line_width(14.0);
+                        color = Some((brown, Image::Brown));
+                        roadedge = 26.0;
+                        thickness = 14.0;
+                        imgblack.set_line_width(26.0);
+                    }
+
                     // railroads
                     if isom == "515" {
                         color = Some((white, Image::Black));
