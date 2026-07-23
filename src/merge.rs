@@ -101,6 +101,10 @@ fn merge_png(
         }
     }
 
+    // Merge outputs belong in batchoutfolder, next to the tiles they merge —
+    // not in whatever the process cwd happens to be.
+    let outfilename = format!("{batchoutfolder}/{outfilename}");
+
     let im_rgb8: RgbImage = im.convert();
     im_rgb8
         .write_to(
