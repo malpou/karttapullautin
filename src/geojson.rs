@@ -757,11 +757,25 @@ pub fn export_combined(
     .into_iter()
     .find(|p| fs.exists(p));
     let have_merged_bin = merged_bin.is_some();
+    // ...except that only holds in BATCH mode, where bindxfmerge folds formlines.dxf.bin
+    // into merged.dxf.bin. A single run writes it to the temp folder and nothing moves
+    // it, so the renderer's form lines — the ones that survived formlinesteepness, the
+    // dilation pair and the closed-ring minimum — never reached the vector output at all.
+    // What did reach it was every half-interval contour, published as symbol 103, which
+    // ISOM forbids ("form lines shall not be used as intermediate contours"). With that
+    // mapping removed the map had no form lines whatsoever, which is how this surfaced.
+    let formlines_bin = [
+        format!("{batchoutfolder}/formlines.dxf.bin"),
+        "formlines.dxf.bin".into(),
+        "temp/formlines.dxf.bin".into(),
+    ]
+    .into_iter()
+    .find(|p| fs.exists(p));
     let mut cliff_mids_202: Vec<[f64; 2]> = Vec::new();
     let mut cliff_mids_201: Vec<[f64; 2]> = Vec::new();
     let mut brown_points: Vec<([f64; 2], Classification)> = Vec::new();
-    if let Some(merged_bin) = &merged_bin {
-        let dxf = BinaryDxf::from_reader(&mut fs.open(merged_bin)?)?;
+    for source_bin in [merged_bin.clone(), formlines_bin].into_iter().flatten() {
+        let dxf = BinaryDxf::from_reader(&mut fs.open(&source_bin)?)?;
         for geom in dxf.take_geometry() {
             match geom {
                 Geometry::Polylines2(pl) => {
