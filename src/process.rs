@@ -555,6 +555,16 @@ pub fn process_tile(
                 config.epsg,
             )
             .unwrap();
+            // Same reason as contours: the .dxf.bin family only leaves this folder when
+            // savetempfiles is on, so without this the served map carries no 109/111
+            // knoll or depression points at all.
+            crate::geojson::bindxf_to_geojson(
+                fs,
+                &tmpfolder.join("dotknolls.dxf.bin"),
+                &tmpfolder.join("dotknolls.geojson"),
+                config.epsg,
+            )
+            .unwrap();
         }
     }
 

@@ -15,6 +15,8 @@ use crate::io::fs::FileSystem;
 /// Suffixes of per-tile GeoJSON files that batch mode crops and merges.
 pub const GEOJSON_NAMES: &[&str] = &[
     "contours",
+    "formlines",
+    "dotknolls",
     "vegetation",
     "yellow",
     "undergrowth",
@@ -594,6 +596,149 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
+/// ISOM 2017-2 minimum dimensions for contours, in ground metres. The standard specifies
+/// them on the 1:15,000 original, so ground metres = mm x 15: the smallest bend that can
+/// be drawn is 0.25 mm centre to centre (3.75 m) and the mouth of a re-entrant or spur
+/// must be wider than 0.5 mm (7.5 m). The wider bound subsumes the narrower one, so a
+/// single pass at 8 m enforces both.
+const MIN_MOUTH_M: f64 = 8.0;
+
+/// ponytail: a bound on how much line one splice may consume. Nothing removed can depart
+/// further than MIN_MOUTH_M from the join that replaces it, so this only stops a long
+/// near-parallel double-back from being swallowed in a single cut. Upgrade path: none
+/// needed unless real terrain is seen running that close to itself for this far.
+const MAX_DETOUR_M: f64 = 24.0;
+
+/// Distance from `p` to the segment `a`-`b`.
+fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = vx * vx + vy * vy;
+    if len2 == 0.0 {
+        return dist(p, a);
+    }
+    let t = (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2).clamp(0.0, 1.0);
+    dist(p, [a[0] + t * vx, a[1] + t * vy])
+}
+
+/// Splice out excursions that leave and return within MIN_MOUTH_M *and* never depart
+/// further than MIN_MOUTH_M from the join replacing them — the wobbles ISOM 2017-2 means
+/// by "small details on contours should be avoided because they tend to hide the main
+/// features of the terrain".
+///
+/// Both bounds matter. The first alone would let a narrow re-entrant be truncated at any
+/// neck along its length; together they guarantee nothing is removed that reaches beyond
+/// what the symbol's own minimum dimension can carry. A closed ring is protected from
+/// being consumed whole by requiring the kept remainder to stay above the same bound.
+fn generalise_contour(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if pts.len() < 4 {
+        return pts.to_vec();
+    }
+    let mut cum = Vec::with_capacity(pts.len());
+    cum.push(0.0);
+    for w in pts.windows(2) {
+        cum.push(cum[cum.len() - 1] + dist(w[0], w[1]));
+    }
+    let total = cum[cum.len() - 1];
+    let mut out = Vec::with_capacity(pts.len());
+    let mut i = 0;
+    while i < pts.len() {
+        out.push(pts[i]);
+        // the furthest vertex that comes back within the minimum mouth on a short detour
+        let mut jump = None;
+        let mut j = i + 1;
+        while j < pts.len() && cum[j] - cum[i] <= MAX_DETOUR_M {
+            let along = cum[j] - cum[i];
+            if along > MIN_MOUTH_M
+                && along < total - MIN_MOUTH_M
+                && dist(pts[i], pts[j]) < MIN_MOUTH_M
+                && pts[i + 1..j]
+                    .iter()
+                    .all(|p| seg_dist(*p, pts[i], pts[j]) < MIN_MOUTH_M)
+            {
+                jump = Some(j);
+            }
+            j += 1;
+        }
+        i = jump.unwrap_or(i + 1);
+    }
+    out
+}
+
+/// ISOM 2017-2 requires that symbol 109/110 "shall not touch or overlap contours", and
+/// that "contours shall be adapted or broken in order not to touch" them. The knoll's
+/// position is the whole information the symbol carries, so the contour is the side that
+/// gives way. 109 is a 0.4 mm dot on the 1:15,000 original — a 6 m footprint, 3 m radius
+/// — plus half a contour width of air.
+const KNOLL_CLEAR_M: f64 = 3.5;
+
+/// Break a contour into the pieces that stay clear of the knoll symbols, dropping any
+/// piece too short to be a line.
+///
+/// ponytail: cuts at vertices rather than interpolating the exact crossing point. Contour
+/// vertices are ~1.2 m apart, well inside the clearance, so the gap is right to within a
+/// vertex. Upgrade path: split the crossing segment if a coarser contour source appears.
+fn break_at_knolls(pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    if knolls.is_empty() {
+        return vec![pts.to_vec()];
+    }
+    let mut parts = Vec::new();
+    let mut cur: Vec<[f64; 2]> = Vec::new();
+    for p in pts {
+        if knolls.iter().any(|k| dist(*k, *p) < KNOLL_CLEAR_M) {
+            if cur.len() > 1 {
+                parts.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        } else {
+            cur.push(*p);
+        }
+    }
+    if cur.len() > 1 {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// True for the contour family (101 contour, 102 index, 103 form line) — the layers the
+/// ISOM contour rules above apply to.
+fn is_contour_family(layer: &str) -> bool {
+    matches!(layer.get(..3), Some("101" | "102" | "103"))
+}
+
+/// Apply the ISOM contour rules to one published line: generalise detail below what the
+/// symbol can carry, then break where a knoll symbol needs room. Anything that is not a
+/// contour passes through as a single piece, untouched.
+fn conform_contour(layer: &str, pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    if !is_contour_family(layer) {
+        return vec![pts.to_vec()];
+    }
+    break_at_knolls(&generalise_contour(pts), knolls)
+}
+
+/// The pieces of one line as published: ISOM-conformed, curve-sampled, then re-checked
+/// against the knolls — fitting a curve through a broken end bows it back over the very
+/// symbol the break was made for (measured: 2.95 m from a symbol of 3 m radius).
+fn published_pieces(
+    layer: &str,
+    pts: &[[f64; 2]],
+    closed: bool,
+    knolls: &[[f64; 2]],
+) -> Vec<Vec<[f64; 2]>> {
+    conform_contour(layer, pts, knolls)
+        .into_iter()
+        .flat_map(|piece| {
+            let still_closed = closed && piece.first() == piece.last();
+            let sampled = curve_points(layer, &piece, still_closed);
+            if is_contour_family(layer) {
+                break_at_knolls(&sampled, knolls)
+            } else {
+                vec![sampled]
+            }
+        })
+        .collect()
+}
+
 /// Chain KP's per-cell cliff dashes into cliff lines: cluster dash midpoints within
 /// CLIFF_CLUSTER_DIST, order each cluster as a greedy nearest-neighbour path from an
 /// extreme point refined with 2-opt (untangles the crossings greedy ordering leaves on
@@ -725,6 +870,50 @@ fn crt_symbol(layer: &str) -> Option<String> {
     (!base.is_empty() && base.chars().all(|c| c.is_ascii_digit())).then(|| format!("{base}.000"))
 }
 
+/// ISOM 109/110/111 point symbols must not touch or overlap each other either (12 m
+/// footprint length).
+const POINT_MIN_SPACING_M: f64 = 12.0;
+
+/// The knoll and depression point symbols that survive to the map, as (position, KP
+/// layer). Greedy spacing filter over points ranked by certainty: the detector's definite
+/// symbols (dotknoll/udepression) win over the uncertain "ugly" variants when two
+/// candidates are closer than the minimum.
+fn published_knolls(
+    fs: &impl FileSystem,
+    batchoutfolder: &str,
+) -> anyhow::Result<Vec<([f64; 2], String)>> {
+    let path = format!("{batchoutfolder}/merged_dotknolls.geojson");
+    if !fs.exists(&path) {
+        return Ok(Vec::new());
+    }
+    let val: Value = serde_json::from_reader(BufReader::new(fs.open(&path)?))?;
+    let empty = Vec::new();
+    let mut candidates: Vec<([f64; 2], String)> = Vec::new();
+    for f in val["features"].as_array().unwrap_or(&empty) {
+        if f["geometry"]["type"].as_str() != Some("Point") {
+            continue;
+        }
+        let c = &f["geometry"]["coordinates"];
+        let (Some(x), Some(y)) = (c[0].as_f64(), c[1].as_f64()) else {
+            continue;
+        };
+        let layer = f["properties"]["layer"].as_str().unwrap_or_default();
+        // internal knoll-detector artifact, not a map symbol
+        if layer.is_empty() || layer == "1010" {
+            continue;
+        }
+        candidates.push(([x, y], layer.to_string()));
+    }
+    candidates.sort_by_key(|(_, l)| l.starts_with("ugly"));
+    let mut kept: Vec<([f64; 2], String)> = Vec::new();
+    for (p, layer) in candidates {
+        if kept.iter().all(|(k, _)| dist(*k, p) >= POINT_MIN_SPACING_M) {
+            kept.push((p, layer));
+        }
+    }
+    Ok(kept)
+}
+
 /// Combine every merged vector output into single-file `output.dxf` and
 /// `output.geojson`, plus `output.ocdCrt` for OCAD's layer-to-symbol conversion.
 pub fn export_combined(
@@ -757,24 +946,23 @@ pub fn export_combined(
     .into_iter()
     .find(|p| fs.exists(p));
     let have_merged_bin = merged_bin.is_some();
-    // ...except that only holds in BATCH mode, where bindxfmerge folds formlines.dxf.bin
-    // into merged.dxf.bin. A single run writes it to the temp folder and nothing moves
-    // it, so the renderer's form lines — the ones that survived formlinesteepness, the
-    // dilation pair and the closed-ring minimum — never reached the vector output at all.
-    // What did reach it was every half-interval contour, published as symbol 103, which
-    // ISOM forbids ("form lines shall not be used as intermediate contours"). With that
-    // mapping removed the map had no form lines whatsoever, which is how this surfaced.
-    let formlines_bin = [
-        format!("{batchoutfolder}/formlines.dxf.bin"),
-        "formlines.dxf.bin".into(),
-        "temp/formlines.dxf.bin".into(),
-    ]
-    .into_iter()
-    .find(|p| fs.exists(p));
+    // merged.dxf.bin only exists when savetempfiles is on; the map pipeline runs with it
+    // off, so form lines reach here as merged_formlines.geojson instead (written next to
+    // formlines.dxf.bin by render::draw_curves). Whichever source is present, symbol 103
+    // is the renderer's selected set — never the half-interval contours, which ISOM
+    // forbids as form lines.
+
+    // The knoll/depression point symbols have to be settled before any contour is
+    // emitted, because ISOM makes the contour give way to them (break_at_knolls).
+    // merged_dotknolls.geojson is the single source: the same points also ride
+    // merged.dxf.bin when savetempfiles is on, and are skipped there to avoid a
+    // duplicate.
+    let kept_knolls = published_knolls(fs, batchoutfolder)?;
+    let knoll_pts: Vec<[f64; 2]> = kept_knolls.iter().map(|(p, _)| *p).collect();
+
     let mut cliff_mids_202: Vec<[f64; 2]> = Vec::new();
     let mut cliff_mids_201: Vec<[f64; 2]> = Vec::new();
-    let mut brown_points: Vec<([f64; 2], Classification)> = Vec::new();
-    for source_bin in [merged_bin.clone(), formlines_bin].into_iter().flatten() {
+    for source_bin in [merged_bin.clone()].into_iter().flatten() {
         let dxf = BinaryDxf::from_reader(&mut fs.open(&source_bin)?)?;
         for geom in dxf.take_geometry() {
             match geom {
@@ -835,13 +1023,15 @@ pub fn export_combined(
                             pts = sm.iter().map(|q| [q.x, q.y]).collect();
                         }
                         let layer = layer_isom(c.to_layer()).unwrap_or(c.to_layer()).to_string();
-                        grow(&pts);
-                        dxf_curves_entity(&mut body, &layer, &pts, c.is_area(), None);
-                        feats.push(feature(
-                            "LineString",
-                            coords_line(curve_points(&layer, &pts, c.is_area())),
-                            &layer_props(c.to_layer()),
-                        ));
+                        for piece in published_pieces(&layer, &pts, c.is_area(), &knoll_pts) {
+                            grow(&piece);
+                            dxf_curves_entity(&mut body, &layer, &piece, c.is_area(), None);
+                            feats.push(feature(
+                                "LineString",
+                                coords_line(piece),
+                                &layer_props(c.to_layer()),
+                            ));
+                        }
                         layers.insert(layer);
                     }
                 }
@@ -861,33 +1051,18 @@ pub fn export_combined(
                         layers.insert(layer);
                     }
                 }
-                Geometry::Points(points) => {
-                    for (p, c) in points.into_iter() {
-                        if matches!(c, Classification::Knoll1010) {
-                            continue;
-                        }
-                        brown_points.push(([p.x, p.y], c));
-                    }
-                }
+                // knoll/depression points come from merged_dotknolls.geojson (see
+                // published_knolls); taking them here as well would publish each twice
+                Geometry::Points(_) => {}
             }
         }
     }
 
-    // knoll/depression point symbols: ISOM 109/110/111 must not touch or overlap each
-    // other (12 m footprint length). Greedy spacing filter over points ranked by
-    // certainty: the detector's definite symbols (dotknoll/udepression) win over the
-    // uncertain "ugly" variants when two candidates are closer than the minimum.
+    // the knoll/depression point symbols, already spacing-filtered, with the contours
+    // broken around them above
     {
         use std::fmt::Write as _;
-        const POINT_MIN_SPACING_M: f64 = 12.0;
-        brown_points.sort_by_key(|(_, c)| c.to_layer().starts_with("ugly"));
-        let mut kept: Vec<[f64; 2]> = Vec::new();
-        for (p, class) in &brown_points {
-            let kp_layer = class.to_layer();
-            if !kept.iter().all(|k| dist(*k, *p) >= POINT_MIN_SPACING_M) {
-                continue;
-            }
-            kept.push(*p);
+        for (p, kp_layer) in &kept_knolls {
             let layer = layer_isom(kp_layer).unwrap_or(kp_layer).to_string();
             grow(&[*p]);
             let _ = write!(
@@ -920,8 +1095,9 @@ pub fn export_combined(
 
     // all merged GeoJSON outputs: polygons become closed polylines, lines stay open
     for name in GEOJSON_NAMES {
-        // contours come from merged.dxf.bin (full classification) when it exists
-        if *name == "contours" && have_merged_bin {
+        // contours and form lines come from merged.dxf.bin (full classification) when it
+        // exists; taking both routes would publish each feature twice
+        if matches!(*name, "contours" | "formlines") && have_merged_bin {
             continue;
         }
         let path = format!("{batchoutfolder}/merged_{name}.geojson");
@@ -938,22 +1114,35 @@ pub fn export_combined(
                 .unwrap_or("unknown")
                 .to_string();
             let coords = &f["geometry"]["coordinates"];
+            // a contour broken around a knoll symbol stays one feature, as several parts
+            let mut retyped: Option<&str> = None;
             // the GeoJSON gets the same fitted curve as the DXF, sampled to a polyline
             let sampled: Value = match f["geometry"]["type"].as_str().unwrap_or("") {
                 "LineString" => {
-                    let pts = parse_line(coords);
-                    grow(&pts);
-                    dxf_curves_entity(&mut body, &layer, &pts, false, None);
+                    let pieces = published_pieces(&layer, &parse_line(coords), false, &knoll_pts);
+                    let Some((first, rest)) = pieces.split_first() else {
+                        continue; // generalised or broken away entirely
+                    };
+                    for p in &pieces {
+                        grow(p);
+                        dxf_curves_entity(&mut body, &layer, p, false, None);
+                    }
                     layers.insert(layer.clone());
-                    coords_line(curve_points(&layer, &pts, false))
+                    if rest.is_empty() {
+                        coords_line(first.clone())
+                    } else {
+                        retyped = Some("MultiLineString");
+                        Value::Array(pieces.into_iter().map(coords_line).collect())
+                    }
                 }
                 "MultiLineString" => {
                     let mut parts = Vec::new();
                     for part in coords.as_array().unwrap_or(&empty) {
-                        let pts = parse_line(part);
-                        grow(&pts);
-                        dxf_curves_entity(&mut body, &layer, &pts, false, None);
-                        parts.push(coords_line(curve_points(&layer, &pts, false)));
+                        for pts in published_pieces(&layer, &parse_line(part), false, &knoll_pts) {
+                            grow(&pts);
+                            dxf_curves_entity(&mut body, &layer, &pts, false, None);
+                            parts.push(coords_line(pts));
+                        }
                     }
                     layers.insert(layer.clone());
                     Value::Array(parts)
@@ -961,10 +1150,11 @@ pub fn export_combined(
                 "Polygon" => {
                     let mut rings = Vec::new();
                     for ring in coords.as_array().unwrap_or(&empty) {
-                        let pts = parse_line(ring);
-                        grow(&pts);
-                        dxf_curves_entity(&mut body, &layer, &pts, true, None);
-                        rings.push(coords_line(curve_points(&layer, &pts, true)));
+                        for pts in published_pieces(&layer, &parse_line(ring), true, &knoll_pts) {
+                            grow(&pts);
+                            dxf_curves_entity(&mut body, &layer, &pts, true, None);
+                            rings.push(coords_line(pts));
+                        }
                     }
                     layers.insert(layer.clone());
                     Value::Array(rings)
@@ -973,6 +1163,9 @@ pub fn export_combined(
             };
             let mut nf = f.clone();
             nf["geometry"]["coordinates"] = sampled;
+            if let Some(t) = retyped {
+                nf["geometry"]["type"] = json!(t);
+            }
             feats.push(nf);
         }
     }
@@ -1055,6 +1248,77 @@ pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &str) -> anyhow::Resu
 
 #[cfg(test)]
 mod tests {
+
+    /// A wobble that leaves and returns inside the ISOM minimum mouth is not a bend the
+    /// symbol can carry, so it must not survive to the map.
+    #[test]
+    fn generalise_contour_splices_out_sub_minimum_wobble() {
+        // a straight line with a 3 m spike that opens a 2 m mouth
+        let mut pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        pts.splice(20..20, [[20.0, 3.0], [21.0, 3.0]]);
+        let out = generalise_contour(&pts);
+        assert!(
+            out.iter().all(|p| p[1] == 0.0),
+            "sub-minimum spike survived: {out:?}"
+        );
+        // the line itself is untouched apart from the spike
+        assert_eq!(out.first(), pts.first());
+        assert_eq!(out.last(), pts.last());
+    }
+
+    /// A deep re-entrant is real terrain, not a wobble, even where its limbs run closer
+    /// than the minimum mouth. It may lose no more than what fits inside the ISOM
+    /// minimum — never the valley.
+    #[test]
+    fn generalise_contour_keeps_a_deep_reentrant() {
+        let mut pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        let deep: Vec<[f64; 2]> = (0..30)
+            .map(|i| [20.0, -f64::from(i)])
+            .chain((0..30).rev().map(|i| [22.0, -f64::from(i)]))
+            .collect();
+        pts.splice(20..20, deep);
+        let out = generalise_contour(&pts);
+        let depth = out.iter().fold(0.0f64, |d, p| d.min(p[1]));
+        assert!(
+            depth <= -29.0 + MIN_MOUTH_M,
+            "a 29 m re-entrant lost more than the ISOM minimum: kept only {depth} m"
+        );
+    }
+
+    /// ISOM 2017-2: the contour gives way to symbol 109/110, and the gap it leaves has to
+    /// be wide enough for the symbol to sit in.
+    #[test]
+    fn break_at_knolls_opens_a_gap_around_the_symbol() {
+        let pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        let parts = break_at_knolls(&pts, &[[20.0, 0.0]]);
+        assert_eq!(parts.len(), 2, "contour was not broken");
+        for part in &parts {
+            for p in part {
+                assert!(
+                    dist(*p, [20.0, 0.0]) >= KNOLL_CLEAR_M,
+                    "contour still touches the knoll at {p:?}"
+                );
+            }
+        }
+        // and a contour nowhere near a knoll is left as one piece
+        assert_eq!(break_at_knolls(&pts, &[[20.0, 50.0]]).len(), 1);
+    }
+
+    /// Form lines are the renderer's selected set; nothing else may be published as 103.
+    /// A dash-scale bound is what tells the two apart — the intermediate contours that
+    /// used to be published here averaged 258 m and reached 4.8 km.
+    #[test]
+    fn form_lines_stay_at_dash_scale() {
+        // the selection emits runs, not single dashes, so the bound is generous; it only
+        // has to fail if whole intermediate contours are published as form lines again
+        const MAX_FORM_LINE_M: f64 = 1000.0;
+        let long: Vec<[f64; 2]> = (0..500).map(|i| [f64::from(i) * 10.0, 0.0]).collect();
+        let len = |p: &[[f64; 2]]| p.windows(2).map(|w| dist(w[0], w[1])).sum::<f64>();
+        assert!(len(&long) > MAX_FORM_LINE_M);
+        // conform_contour must not be what saves us here — 103 is bounded by selection
+        assert!(is_contour_family("103"));
+    }
+
     use super::*;
 
     #[test]

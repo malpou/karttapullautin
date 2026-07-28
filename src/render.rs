@@ -941,6 +941,21 @@ pub fn draw_curves(
         if config.output_dxf {
             out_formlines.to_dxf(&mut fs.create(tmpfolder.join("formlines.dxf"))?)?;
         }
+
+        // The .dxf.bin family only leaves this folder when savetempfiles is on
+        // (process.rs), which the map pipeline leaves off — so batch runs merged no
+        // form lines and symbol 103 was empty on every served map. Emit the GeoJSON
+        // here, next to the file it mirrors, and form lines ride the same crop/merge
+        // path contours already take (GEOJSON_NAMES). Written in every run mode
+        // because the selection is the same in all of them.
+        if config.vectorvege {
+            crate::geojson::bindxf_to_geojson(
+                fs,
+                &tmpfolder.join("formlines.dxf.bin"),
+                &tmpfolder.join("formlines.geojson"),
+                config.epsg,
+            )?;
+        }
     }
 
     Ok(())
