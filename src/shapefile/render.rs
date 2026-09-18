@@ -810,6 +810,7 @@ pub fn render(
         .save_as(fs, &low_file)
         .expect("could not save low.png");
 
+    // Property schema: see `schema/geojson.schema.json` ($defs/OsmLineProperties, OsmAreaProperties).
     // vector export of the matched OSM features, in world coordinates
     if !vectorconf_mappings.is_empty() {
         let to_features = |feats: &[GeoFeature], gtype: &str| {

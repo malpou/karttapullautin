@@ -550,7 +550,7 @@ pub fn process_tile(
         if config.vectorvege {
             crate::geojson::bindxf_to_geojson(
                 fs,
-                &tmpfolder.join("out2.dxf.bin"),
+                &[tmpfolder.join("out2.dxf.bin")],
                 &tmpfolder.join("contours.geojson"),
                 config.epsg,
             )
@@ -560,7 +560,7 @@ pub fn process_tile(
             // knoll or depression points at all.
             crate::geojson::bindxf_to_geojson(
                 fs,
-                &tmpfolder.join("dotknolls.dxf.bin"),
+                &[tmpfolder.join("dotknolls.dxf.bin")],
                 &tmpfolder.join("dotknolls.geojson"),
                 config.epsg,
             )
@@ -582,7 +582,7 @@ pub fn process_tile(
     if !vegeonly && !contoursonly && config.vectorvege {
         // Cliffs only reach output.geojson via merged.dxf.bin when savetempfiles
         // is on; emit cliffs.geojson here so 201/202 appear in vector output regardless.
-        crate::geojson::bindxf_to_geojson_multi(
+        crate::geojson::bindxf_to_geojson(
             fs,
             &[
                 tmpfolder.join("c2g.dxf.bin"),
@@ -1091,7 +1091,8 @@ pub fn batch_process(
         }
 
         // crop vector GeoJSON outputs (present when vectorvege=1 / an OSM vectorconf is set)
-        for name in crate::geojson::GEOJSON_NAMES {
+        for out in crate::geojson::GEOJSON_OUTPUTS {
+            let name = out.name;
             let geojson_file = PathBuf::from(format!("temp{thread}/{name}.geojson"));
             if fs.exists(&geojson_file) {
                 crate::geojson::crop_geojson(

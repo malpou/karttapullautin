@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://karttapullautin.github.io/schema/geojson.schema.json",
+  "title": "GeoJSON Output",
+  "type": "object",
+  "required": ["type", "features"],
+  "properties": {
+    "type": { "const": "FeatureCollection" },
+    "crs": { "$ref": "#/$defs/Crs" },
+    "features": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Feature" }
+    }
+  },
+  "$defs": {
+    "Crs": {
+      "type": "object",
+      "required": ["type", "properties"],
+      "properties": {
+        "type": { "const": "name" },
+        "properties": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string" }
+          }
+        }
+      }
+    },
+    "ContourProperties": {
+      "type": "object",
+      "required": ["layer", "isom"],
+      "properties": {
+        "layer": { "enum": ["101", "102", "103", "105"] },
+        "isom": { "enum": ["101", "102", "103", "105"] },
+        "elevation": { "type": "number" },
+        "depression": { "type": "boolean" },
+        "layer_description": { "type": "string" }
+      }
+    },
+    "KnollProperties": {
+      "type": "object",
+      "required": ["layer", "isom"],
+      "properties": {
+        "layer": { "enum": ["109", "111"] },
+        "isom": { "enum": ["109", "111"] },
+        "layer_description": { "type": "string" },
+        "ugly": { "type": "boolean" }
+      }
+    },
+    "CliffProperties": {
+      "type": "object",
+      "required": ["layer", "isom"],
+      "properties": {
+        "layer": { "enum": ["201", "202"] },
+        "isom": { "enum": ["201", "202"] },
+        "layer_description": { "type": "string" }
+      }
+    },
+    "VegetationProperties": {
+      "type": "object",
+      "required": ["layer", "isom"],
+      "properties": {
+        "layer": { "enum": ["403", "406", "407", "408", "410"] },
+        "isom": { "enum": ["403", "406", "407", "408", "410"] },
+        "shade": { "type": "number" }
+      }
+    },
+    "OsmLineProperties": {
+      "type": "object",
+      "required": ["layer", "isom", "category"],
+      "properties": {
+        "layer": { "type": "string" },
+        "isom": { "type": "string" },
+        "category": { "type": "string" }
+      }
+    },
+    "OsmAreaProperties": {
+      "type": "object",
+      "required": ["layer", "isom", "category"],
+      "properties": {
+        "layer": { "type": "string" },
+        "isom": { "type": "string" },
+        "category": { "type": "string" }
+      }
+    },
+    "Feature": {
+      "type": "object",
+      "required": ["type", "geometry", "properties"],
+      "properties": {
+        "type": { "const": "Feature" },
+        "geometry": {
+          "type": "object",
+          "required": ["type", "coordinates"],
+          "properties": {
+            "type": { "enum": ["Point", "LineString", "Polygon"] },
+            "coordinates": { "type": "array" }
+          }
+        },
+        "properties": {
+          "oneOf": [
+            { "$ref": "#/$defs/ContourProperties" },
+            { "$ref": "#/$defs/KnollProperties" },
+            { "$ref": "#/$defs/CliffProperties" },
+            { "$ref": "#/$defs/VegetationProperties" },
+            { "$ref": "#/$defs/OsmLineProperties" },
+            { "$ref": "#/$defs/OsmAreaProperties" }
+          ]
+        }
+      }
+    }
+  }
+}

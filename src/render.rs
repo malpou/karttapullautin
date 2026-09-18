@@ -946,12 +946,12 @@ pub fn draw_curves(
         // (process.rs), which the map pipeline leaves off — so batch runs merged no
         // form lines and symbol 103 was empty on every served map. Emit the GeoJSON
         // here, next to the file it mirrors, and form lines ride the same crop/merge
-        // path contours already take (GEOJSON_NAMES). Written in every run mode
+        // path contours already take (GEOJSON_OUTPUTS). Written in every run mode
         // because the selection is the same in all of them.
         if config.vectorvege {
             crate::geojson::bindxf_to_geojson(
                 fs,
-                &tmpfolder.join("formlines.dxf.bin"),
+                &[tmpfolder.join("formlines.dxf.bin")],
                 &tmpfolder.join("formlines.geojson"),
                 config.epsg,
             )?;

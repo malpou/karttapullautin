@@ -12,17 +12,36 @@ use serde_json::{Value, json};
 use crate::geometry::{BinaryDxf, Classification, Geometry};
 use crate::io::fs::FileSystem;
 
-/// Suffixes of per-tile GeoJSON files that batch mode crops and merges.
-pub const GEOJSON_NAMES: &[&str] = &[
-    "contours",
-    "formlines",
-    "dotknolls",
-    "cliffs",
-    "vegetation",
-    "yellow",
-    "undergrowth",
-    "osm_lines",
-    "osm_areas",
+/// Rust types generated from `schema/geojson.schema.json` by `typify` in `build.rs`.
+///
+/// These types are the serialization contract for GeoJSON output properties.
+/// Add new property classes to the schema file; `cargo build` regenerates this
+/// module automatically.
+mod geojson_types {
+    include!(concat!(env!("OUT_DIR"), "/geojson_types.rs"));
+}
+
+/// One GeoJSON vector output: its file-name suffix and whether it is also
+/// carried by `merged.dxf.bin` (and thus skipped from the merged-GeoJSON route
+/// in `export_combined` when that file exists).
+///
+/// Add new outputs here. Set `skip_when_merged_bin: true` if the feature also
+/// rides `merged.dxf.bin`.
+pub struct GeoJsonOutput {
+    pub name: &'static str,
+    pub skip_when_merged_bin: bool,
+}
+
+pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
+    GeoJsonOutput { name: "contours", skip_when_merged_bin: true },
+    GeoJsonOutput { name: "formlines", skip_when_merged_bin: true },
+    GeoJsonOutput { name: "dotknolls", skip_when_merged_bin: false },
+    GeoJsonOutput { name: "cliffs", skip_when_merged_bin: true },
+    GeoJsonOutput { name: "vegetation", skip_when_merged_bin: false },
+    GeoJsonOutput { name: "yellow", skip_when_merged_bin: false },
+    GeoJsonOutput { name: "undergrowth", skip_when_merged_bin: false },
+    GeoJsonOutput { name: "osm_lines", skip_when_merged_bin: false },
+    GeoJsonOutput { name: "osm_areas", skip_when_merged_bin: false },
 ];
 
 /// Legacy GeoJSON `crs` member for a projected EPSG code. RFC 7946 dropped `crs`, but
@@ -124,58 +143,13 @@ fn layer_props(layer: &str) -> Vec<(&str, &str)> {
     props
 }
 
-/// Convert a binary DXF file (contours, cliffs, knolls...) to GeoJSON. Polylines become
-/// LineStrings with `layer` and (when known) `isom` properties, points become Points.
+/// Convert one or more binary DXF files (contours, cliffs, knolls...) into a single
+/// GeoJSON FeatureCollection. Polylines become LineStrings with `layer` and (when known)
+/// `isom` properties; points become Points.
+///
+/// Property schema: see `schema/geojson.schema.json` ($defs/ContourProperties,
+/// KnollProperties, CliffProperties).
 pub fn bindxf_to_geojson(
-    fs: &impl FileSystem,
-    input: &Path,
-    output: &Path,
-    epsg: Option<u32>,
-) -> anyhow::Result<()> {
-    let dxf = BinaryDxf::from_reader(&mut fs.open(input)?)?;
-    let mut feats = Vec::new();
-    for geom in dxf.take_geometry() {
-        match geom {
-            Geometry::Polylines2(pl) => {
-                for (p, c) in pl.into_iter() {
-                    feats.push(feature(
-                        "LineString",
-                        coords_line(p.iter().map(|pt| [pt.x, pt.y])),
-                        &layer_props(c.to_layer()),
-                    ));
-                }
-            }
-            Geometry::Polylines3(pl) => {
-                for (p, (c, h)) in pl.into_iter() {
-                    let mut f = feature(
-                        "LineString",
-                        coords_line(p.iter().map(|pt| [pt.x, pt.y])),
-                        &layer_props(c.to_layer()),
-                    );
-                    f["properties"]["elevation"] = json!(h);
-                    feats.push(f);
-                }
-            }
-            Geometry::Points(pts) => {
-                for (p, c) in pts.into_iter() {
-                    feats.push(feature(
-                        "Point",
-                        json!([r2(p.x), r2(p.y)]),
-                        &layer_props(c.to_layer()),
-                    ));
-                }
-            }
-        }
-    }
-    write_feature_collection(
-        &mut BufWriter::new(fs.create(output)?),
-        &feats,
-        crs(epsg).as_ref(),
-    )
-}
-
-/// Convert multiple binary DXF files into a single GeoJSON FeatureCollection.
-pub fn bindxf_to_geojson_multi(
     fs: &impl FileSystem,
     inputs: &[std::path::PathBuf],
     output: &std::path::Path,
@@ -1146,10 +1120,11 @@ pub fn export_combined(
     }
 
     // all merged GeoJSON outputs: polygons become closed polylines, lines stay open
-    for name in GEOJSON_NAMES {
+    for out in GEOJSON_OUTPUTS {
+        let name = out.name;
         // contours and form lines come from merged.dxf.bin (full classification) when it
         // exists; taking both routes would publish each feature twice
-        if matches!(*name, "contours" | "formlines" | "cliffs") && have_merged_bin {
+        if out.skip_when_merged_bin && have_merged_bin {
             continue;
         }
         let path = format!("{batchoutfolder}/merged_{name}.geojson");
@@ -1252,11 +1227,11 @@ pub fn export_combined(
     }
     Ok(())
 }
-
 /// Merge per-tile `<tile>_<name>.geojson` files in the batch output folder into
 /// `merged_<name>.geojson`, one tile parsed at a time.
 pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &str) -> anyhow::Result<()> {
-    for name in GEOJSON_NAMES {
+    for out in GEOJSON_OUTPUTS {
+        let name = out.name;
         let suffix = format!("_{name}.geojson");
         let mut files: Vec<_> = fs
             .list(batchoutfolder)?
@@ -1489,5 +1464,89 @@ mod tests {
         assert_eq!(out[0]["properties"]["layer"], "contour");
         assert_eq!(out[1]["properties"]["isom"], "406");
         assert_eq!(out[1]["geometry"]["type"], "Polygon");
+    }
+
+    #[test]
+    fn geojson_outputs_no_duplicate_names() {
+        let mut names: Vec<&str> = GEOJSON_OUTPUTS.iter().map(|o| o.name).collect();
+        names.sort();
+        assert!(
+            names.windows(2).all(|w| w[0] != w[1]),
+            "duplicate output names: {names:?}"
+        );
+    }
+
+    #[test]
+    fn bindxf_to_geojson_single_path_produces_valid_collection() {
+        use crate::geometry::{BinaryDxf, Bounds, Classification, Geometry, Point2, Polylines};
+        use crate::io::fs::FileSystem;
+        use std::path::PathBuf;
+
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+
+        // one 2-point polyline classified as a Contour (layer "contour", isom "101")
+        let mut pls = Polylines::new();
+        pls.push(
+            vec![Point2::new(0.0, 0.0), Point2::new(100.0, 100.0)],
+            Classification::Contour,
+        );
+        let dxf = BinaryDxf::new(
+            Bounds::new(0.0, 100.0, 0.0, 100.0),
+            vec![Geometry::Polylines2(pls)],
+        );
+
+        // serialize into the memory FS
+        dxf.to_writer(&mut fs.create("test.dxf.bin").unwrap())
+            .unwrap();
+
+        bindxf_to_geojson(
+            &fs,
+            &[PathBuf::from("test.dxf.bin")],
+            std::path::Path::new("out.geojson"),
+            None,
+        )
+        .unwrap();
+
+        let val: Value = serde_json::from_reader(fs.open("out.geojson").unwrap()).unwrap();
+        assert_eq!(val["type"], "FeatureCollection");
+        let feats = val["features"].as_array().unwrap();
+        assert_eq!(feats.len(), 1);
+        assert_eq!(feats[0]["geometry"]["type"], "LineString");
+        assert_eq!(feats[0]["properties"]["isom"], "101");
+    }
+
+    #[test]
+    fn generated_types_roundtrip_to_featurecollection_json() {
+        use geojson_types::{
+            ContourProperties, ContourPropertiesIsom, ContourPropertiesLayer, Feature,
+            FeatureGeometry, FeatureGeometryType, FeatureProperties, GeoJsonOutput,
+        };
+
+        let contour = ContourProperties {
+            depression: None,
+            elevation: None,
+            isom: ContourPropertiesIsom::X101,
+            layer: ContourPropertiesLayer::X101,
+            layer_description: None,
+        };
+        let feature = Feature {
+            geometry: FeatureGeometry {
+                coordinates: vec![serde_json::json!(0.0), serde_json::json!(0.0)],
+                type_: FeatureGeometryType::Point,
+            },
+            properties: FeatureProperties::ContourProperties(contour),
+            type_: serde_json::json!("Feature"),
+        };
+        let collection = GeoJsonOutput {
+            crs: None,
+            features: vec![feature],
+            type_: serde_json::json!("FeatureCollection"),
+        };
+
+        let json = serde_json::to_value(&collection).unwrap();
+        assert_eq!(json["type"], "FeatureCollection");
+        assert!(json["features"].is_array());
+        assert_eq!(json["features"][0]["type"], "Feature");
+        assert_eq!(json["features"][0]["properties"]["isom"], "101");
     }
 }

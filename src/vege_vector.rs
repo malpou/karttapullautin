@@ -478,6 +478,7 @@ pub(crate) fn chaikin_closed(ring: &[Point2]) -> Vec<Point2> {
     out
 }
 
+/// Property schema: see `schema/geojson.schema.json` ($defs/VegetationProperties).
 fn write_geojson_file(
     fs: &impl FileSystem,
     path: &Path,
