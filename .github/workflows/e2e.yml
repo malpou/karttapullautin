@@ -1,0 +1,27 @@
+name: "E2E Tests"
+
+on:
+  push:
+    branches: ["master", "pr/*"]
+  pull_request:
+    branches: ["master"]
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  real-data:
+    name: Real LAZ data (French LiDAR HD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.97
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download LAZ tile
+        run: |
+          curl -L "https://data.geopf.fr/telechargement/download/LiDARHD-NUALID/NUALHD_1-0__LAZ_LAMB93_EP_2025-09-24/LHD_FXX_0338_6285_PTS_LAMB93_IGN69.copc.laz" -o test_file.laz
+
+      - name: Run e2e test
+        run: cargo test --test e2e_test -- real_laz_produces_valid_geojson --ignored --nocapture
