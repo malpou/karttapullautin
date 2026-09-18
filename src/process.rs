@@ -584,10 +584,7 @@ pub fn process_tile(
         // is on; emit cliffs.geojson here so 201/202 appear in vector output regardless.
         crate::geojson::bindxf_to_geojson(
             fs,
-            &[
-                tmpfolder.join("c2g.dxf.bin"),
-                tmpfolder.join("c3g.dxf.bin"),
-            ],
+            &[tmpfolder.join("c2g.dxf.bin"), tmpfolder.join("c3g.dxf.bin")],
             &tmpfolder.join("cliffs.geojson"),
             config.epsg,
         )

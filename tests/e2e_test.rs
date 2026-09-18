@@ -29,7 +29,8 @@ fn assert_valid_feature_collection(path: &Path) {
     let val: serde_json::Value = serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("failed to parse JSON from {}: {e}", path.display()));
     assert_eq!(
-        val["type"], "FeatureCollection",
+        val["type"],
+        "FeatureCollection",
         "{}: type is not FeatureCollection",
         path.display()
     );
@@ -43,7 +44,8 @@ fn assert_valid_feature_collection(path: &Path) {
     );
     for (i, f) in features.iter().enumerate() {
         assert_eq!(
-            f["type"], "Feature",
+            f["type"],
+            "Feature",
             "{}: feature[{i}] type is not Feature",
             path.display()
         );
@@ -59,8 +61,7 @@ fn assert_valid_feature_collection(path: &Path) {
 struct TestEnv;
 impl TestEnv {
     fn setup() -> Self {
-        std::fs::copy("tests/e2e_config.ini", "pullauta.ini")
-            .expect("failed to copy e2e config");
+        std::fs::copy("tests/e2e_config.ini", "pullauta.ini").expect("failed to copy e2e config");
         TestEnv
     }
 }
@@ -108,9 +109,7 @@ fn real_laz_produces_valid_geojson() {
         let content = std::fs::read_to_string(contours).unwrap();
         let val: serde_json::Value = serde_json::from_str(&content).unwrap();
         let features = val["features"].as_array().unwrap();
-        let has_isom = features
-            .iter()
-            .any(|f| f["properties"]["isom"].is_string());
+        let has_isom = features.iter().any(|f| f["properties"]["isom"].is_string());
         assert!(has_isom, "contours.geojson: no feature has isom property");
     }
 

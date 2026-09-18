@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 
 use crate::geometry::{BinaryDxf, Classification, Geometry};
 use crate::io::fs::FileSystem;
-
 /// Rust types generated from `schema/geojson.schema.json` by `typify` in `build.rs`.
 ///
 /// These types are the serialization contract for GeoJSON output properties.
 /// Add new property classes to the schema file; `cargo build` regenerates this
 /// module automatically.
+#[allow(dead_code, clippy::all)]
 mod geojson_types {
     include!(concat!(env!("OUT_DIR"), "/geojson_types.rs"));
 }
@@ -33,15 +33,42 @@ pub struct GeoJsonOutput {
 }
 
 pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
-    GeoJsonOutput { name: "contours", skip_when_merged_bin: true },
-    GeoJsonOutput { name: "formlines", skip_when_merged_bin: true },
-    GeoJsonOutput { name: "dotknolls", skip_when_merged_bin: false },
-    GeoJsonOutput { name: "cliffs", skip_when_merged_bin: true },
-    GeoJsonOutput { name: "vegetation", skip_when_merged_bin: false },
-    GeoJsonOutput { name: "yellow", skip_when_merged_bin: false },
-    GeoJsonOutput { name: "undergrowth", skip_when_merged_bin: false },
-    GeoJsonOutput { name: "osm_lines", skip_when_merged_bin: false },
-    GeoJsonOutput { name: "osm_areas", skip_when_merged_bin: false },
+    GeoJsonOutput {
+        name: "contours",
+        skip_when_merged_bin: true,
+    },
+    GeoJsonOutput {
+        name: "formlines",
+        skip_when_merged_bin: true,
+    },
+    GeoJsonOutput {
+        name: "dotknolls",
+        skip_when_merged_bin: false,
+    },
+    GeoJsonOutput {
+        name: "cliffs",
+        skip_when_merged_bin: true,
+    },
+    GeoJsonOutput {
+        name: "vegetation",
+        skip_when_merged_bin: false,
+    },
+    GeoJsonOutput {
+        name: "yellow",
+        skip_when_merged_bin: false,
+    },
+    GeoJsonOutput {
+        name: "undergrowth",
+        skip_when_merged_bin: false,
+    },
+    GeoJsonOutput {
+        name: "osm_lines",
+        skip_when_merged_bin: false,
+    },
+    GeoJsonOutput {
+        name: "osm_areas",
+        skip_when_merged_bin: false,
+    },
 ];
 
 /// Legacy GeoJSON `crs` member for a projected EPSG code. RFC 7946 dropped `crs`, but
@@ -475,10 +502,11 @@ fn fit_bezier(pts: &[[f64; 2]], closed: bool) -> Option<Vec<[f64; 2]>> {
         crate::vege_vector::dp(&as_p2, 1.0)
     };
     let mut p: Vec<[f64; 2]> = thin.iter().map(|q| [q.x, q.y]).collect();
-    if closed && p.first() != p.last() {
-        if let Some(f) = p.first().copied() {
-            p.push(f);
-        }
+    if closed
+        && p.first() != p.last()
+        && let Some(f) = p.first().copied()
+    {
+        p.push(f);
     }
     let n = p.len();
     if n < 3 {

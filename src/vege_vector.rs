@@ -507,7 +507,11 @@ fn write_geojson_file(
                 .unwrap_or(410)
                 .to_string();
             let shade = code.to_string();
-            feats.push(geojson::feature("Polygon", coords, &[("isom", &isom), ("shade", &shade)]));
+            feats.push(geojson::feature(
+                "Polygon",
+                coords,
+                &[("isom", &isom), ("shade", &shade)],
+            ));
         } else {
             let code = code.to_string();
             feats.push(geojson::feature("Polygon", coords, &[("isom", &code)]));
@@ -569,7 +573,14 @@ pub fn export_all(
         Box::new(green_code)
     };
 
-    let green_polys = grid_to_polygons(green, (xmin, ymin), block, &green_code_traced, green_med, eps);
+    let green_polys = grid_to_polygons(
+        green,
+        (xmin, ymin),
+        block,
+        &green_code_traced,
+        green_med,
+        eps,
+    );
     let yellow_polys = grid_to_polygons(
         yellow,
         (xmin + 1.5, ymin + 1.5),
@@ -608,7 +619,8 @@ pub fn export_all(
     // combined DXF, light-to-dark layer order for map program draw order
     let isom_of = |code: u16| -> u16 {
         if config.vegeshade {
-            config.greenshadeisom
+            config
+                .greenshadeisom
                 .get((code as usize).saturating_sub(1))
                 .or(config.greenshadeisom.last())
                 .copied()
