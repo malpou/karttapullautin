@@ -483,10 +483,11 @@ fn write_geojson_file(
     path: &Path,
     polygons: &[VegPolygon],
     epsg: Option<u32>,
+    vegeshade: bool,
+    isom_map: &[u16],
 ) -> anyhow::Result<()> {
     let mut feats = Vec::with_capacity(polygons.len());
     for (code, rings) in polygons {
-        let code = code.to_string();
         let coords = Value::Array(
             rings
                 .iter()
@@ -497,7 +498,19 @@ fn write_geojson_file(
                 })
                 .collect(),
         );
-        feats.push(geojson::feature("Polygon", coords, &[("isom", &code)]));
+        if vegeshade {
+            let isom = isom_map
+                .get((*code as usize).saturating_sub(1))
+                .or(isom_map.last())
+                .copied()
+                .unwrap_or(410)
+                .to_string();
+            let shade = code.to_string();
+            feats.push(geojson::feature("Polygon", coords, &[("isom", &isom), ("shade", &shade)]));
+        } else {
+            let code = code.to_string();
+            feats.push(geojson::feature("Polygon", coords, &[("isom", &code)]));
+        }
     }
     geojson::write_feature_collection(
         &mut BufWriter::new(fs.create(path)?),
@@ -549,8 +562,13 @@ pub fn export_all(
             .copied()
             .unwrap_or(410)
     };
+    let green_code_traced: Box<dyn Fn(u8) -> u16> = if config.vegeshade {
+        Box::new(|c: u8| c as u16)
+    } else {
+        Box::new(green_code)
+    };
 
-    let green_polys = grid_to_polygons(green, (xmin, ymin), block, &green_code, green_med, eps);
+    let green_polys = grid_to_polygons(green, (xmin, ymin), block, &green_code_traced, green_med, eps);
     let yellow_polys = grid_to_polygons(
         yellow,
         (xmin + 1.5, ymin + 1.5),
@@ -566,25 +584,43 @@ pub fn export_all(
         &tmpfolder.join("vegetation.geojson"),
         &green_polys,
         config.epsg,
+        config.vegeshade,
+        &config.greenshadeisom,
     )?;
     write_geojson_file(
         fs,
         &tmpfolder.join("yellow.geojson"),
         &yellow_polys,
         config.epsg,
+        false,
+        &[],
     )?;
     write_geojson_file(
         fs,
         &tmpfolder.join("undergrowth.geojson"),
         &ug_polys,
         config.epsg,
+        false,
+        &[],
     )?;
 
     // combined DXF, light-to-dark layer order for map program draw order
+    let isom_of = |code: u16| -> u16 {
+        if config.vegeshade {
+            config.greenshadeisom
+                .get((code as usize).saturating_sub(1))
+                .or(config.greenshadeisom.last())
+                .copied()
+                .unwrap_or(410)
+        } else {
+            code
+        }
+    };
     let order = |code: u16| -> usize {
+        let mapped = isom_of(code);
         [403u16, 406, 408, 410, 407]
             .iter()
-            .position(|&c| c == code)
+            .position(|&c| c == mapped)
             .unwrap_or(5)
     };
     let mut all: Vec<&VegPolygon> = green_polys
@@ -596,7 +632,7 @@ pub fn export_all(
 
     let mut lines: Polylines<Point2, Classification> = Polylines::new();
     for (code, rings) in all {
-        let class = isom_to_class(*code);
+        let class = isom_to_class(isom_of(*code));
         for ring in rings {
             let mut closed = ring.clone();
             closed.push(ring[0].clone());

@@ -110,6 +110,10 @@ pub struct Config {
     /// Douglas-Peucker tolerance in meters for vegetation polygons; 0 disables simplification.
     pub vegesimplify: f64,
 
+    /// When true, vegetation polygons carry the raw greenshade index as a `shade`
+    /// property and are traced per shade rather than per ISOM class.
+    pub vegeshade: bool,
+
     // render
     pub buildingcolor: (u8, u8, u8),
     pub vectorconf: String,
@@ -384,6 +388,7 @@ impl Config {
             .filter_map(|s| s.trim().parse().ok())
             .collect();
         let vegesimplify: f64 = parse_typed(gs, "vegesimplify", 2.0);
+        let vegeshade: bool = gs.get("vegeshade").unwrap_or("0") == "1";
 
         let batch = gs.get("batch").unwrap() == "1";
         if batch && processes == 0 {
@@ -467,6 +472,7 @@ impl Config {
             vectorvege,
             greenshadeisom,
             vegesimplify,
+            vegeshade,
             buildingcolor,
             vectorconf,
             mtkskiplayers,
