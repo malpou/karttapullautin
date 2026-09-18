@@ -579,6 +579,20 @@ pub fn process_tile(
         timing.start_section("cliff generation");
         cliffs::makecliffs(fs, config, tmpfolder).unwrap();
     }
+    if !vegeonly && !contoursonly && config.vectorvege {
+        // Cliffs only reach output.geojson via merged.dxf.bin when savetempfiles
+        // is on; emit cliffs.geojson here so 201/202 appear in vector output regardless.
+        crate::geojson::bindxf_to_geojson_multi(
+            fs,
+            &[
+                tmpfolder.join("c2g.dxf.bin"),
+                tmpfolder.join("c3g.dxf.bin"),
+            ],
+            &tmpfolder.join("cliffs.geojson"),
+            config.epsg,
+        )
+        .unwrap();
+    }
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");
         timing.start_section("detecting buildings");

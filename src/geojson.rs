@@ -17,6 +17,7 @@ pub const GEOJSON_NAMES: &[&str] = &[
     "contours",
     "formlines",
     "dotknolls",
+    "cliffs",
     "vegetation",
     "yellow",
     "undergrowth",
@@ -162,6 +163,57 @@ pub fn bindxf_to_geojson(
                         json!([r2(p.x), r2(p.y)]),
                         &layer_props(c.to_layer()),
                     ));
+                }
+            }
+        }
+    }
+    write_feature_collection(
+        &mut BufWriter::new(fs.create(output)?),
+        &feats,
+        crs(epsg).as_ref(),
+    )
+}
+
+/// Convert multiple binary DXF files into a single GeoJSON FeatureCollection.
+pub fn bindxf_to_geojson_multi(
+    fs: &impl FileSystem,
+    inputs: &[std::path::PathBuf],
+    output: &std::path::Path,
+    epsg: Option<u32>,
+) -> anyhow::Result<()> {
+    let mut feats = Vec::new();
+    for input in inputs {
+        let dxf = BinaryDxf::from_reader(&mut fs.open(input)?)?;
+        for geom in dxf.take_geometry() {
+            match geom {
+                Geometry::Polylines2(pl) => {
+                    for (p, c) in pl.into_iter() {
+                        feats.push(feature(
+                            "LineString",
+                            coords_line(p.iter().map(|pt| [pt.x, pt.y])),
+                            &layer_props(c.to_layer()),
+                        ));
+                    }
+                }
+                Geometry::Polylines3(pl) => {
+                    for (p, (c, h)) in pl.into_iter() {
+                        let mut f = feature(
+                            "LineString",
+                            coords_line(p.iter().map(|pt| [pt.x, pt.y])),
+                            &layer_props(c.to_layer()),
+                        );
+                        f["properties"]["elevation"] = json!(h);
+                        feats.push(f);
+                    }
+                }
+                Geometry::Points(pts) => {
+                    for (p, c) in pts.into_iter() {
+                        feats.push(feature(
+                            "Point",
+                            json!([r2(p.x), r2(p.y)]),
+                            &layer_props(c.to_layer()),
+                        ));
+                    }
                 }
             }
         }
@@ -525,8 +577,8 @@ fn dxf_spline(out: &mut String, layer: &str, pts: &[[f64; 2]], closed: bool) {
         return;
     };
     let segs = (ctrl.len() - 1) / 3;
-
     // clamped knot vector for piecewise Bezier: 0 x4, 1 x3, ..., segs x4
+
     let nctrl = ctrl.len();
     let nknots = nctrl + 4;
     let _ = write!(
@@ -1097,7 +1149,7 @@ pub fn export_combined(
     for name in GEOJSON_NAMES {
         // contours and form lines come from merged.dxf.bin (full classification) when it
         // exists; taking both routes would publish each feature twice
-        if matches!(*name, "contours" | "formlines") && have_merged_bin {
+        if matches!(*name, "contours" | "formlines" | "cliffs") && have_merged_bin {
             continue;
         }
         let path = format!("{batchoutfolder}/merged_{name}.geojson");
