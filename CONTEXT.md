@@ -26,6 +26,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Knoll**: A closed high point large enough to be drawn as a contour.
 **Dot knoll**: A high point too small for a contour, drawn as a point symbol (ISOM 109). _Avoid_: dotknoll, 1010
 **Knoll lift**: Raising the ground model under a prominent small knoll so that it earns a contour.
+**Ring**: A closed contour line, first vertex repeated last, tested for what it encloses. _Avoid_: polygon, closed polyline
 **Cliff**: An abrupt drop mapped as a line; passable or impassable by height (ISOM 201/202). _Avoid_: c2g, c3g, cliff2, cliff3
 
 ### Vegetation
