@@ -11,6 +11,7 @@ pub mod crop;
 pub mod geometry;
 pub mod io;
 pub mod knolls;
+pub mod mapframe;
 pub mod merge;
 pub mod palette;
 mod plan;
