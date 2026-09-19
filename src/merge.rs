@@ -11,6 +11,7 @@ use crate::geometry::{
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
+use crate::mapframe::WorldFile;
 use crate::vec2d::Vec2D;
 use image::buffer::ConvertBuffer;
 
@@ -40,11 +41,10 @@ fn merge_png(
         let pgw = full_filename.replace(".png", ".pgw");
         let input = Path::new(&pgw);
         if fs.exists(input) {
-            let data = fs.read_to_string(input).expect("Can not read input file");
-            let d: Vec<&str> = data.split('\n').collect();
-            let res = d[0].trim().parse::<f64>().unwrap();
-            let tfw4 = d[4].trim().parse::<f64>().unwrap();
-            let tfw5 = d[5].trim().parse::<f64>().unwrap();
+            let w = WorldFile::read(fs, input).expect("Can not read input file");
+            let res = w.pixel_size_x;
+            let tfw4 = w.x_origin;
+            let tfw5 = w.y_origin;
 
             if res < min_res {
                 min_res = res
@@ -80,12 +80,10 @@ fn merge_png(
             let width = img.width() as f64;
             let height = img.height() as f64;
 
-            let data = fs.read_to_string(pgw).expect("Can not read input file");
-            let d: Vec<&str> = data.split('\n').collect();
-
-            let res = d[0].trim().parse::<f64>().unwrap();
-            let tfw4 = d[4].trim().parse::<f64>().unwrap();
-            let tfw5 = d[5].trim().parse::<f64>().unwrap();
+            let w = WorldFile::read(fs, pgw).expect("Can not read input file");
+            let res = w.pixel_size_x;
+            let tfw4 = w.x_origin;
+            let tfw5 = w.y_origin;
 
             let img2 = image::imageops::thumbnail(
                 &img,
@@ -123,14 +121,15 @@ fn merge_png(
     let mut tfw_file = fs
         .create(format!("{outfilename}.pgw"))
         .expect("Unable to create file");
-    write!(
-        &mut tfw_file,
-        "{}\r\n0\r\n0\r\n{}\r\n{}\r\n{}\r\n",
-        min_res * scale,
-        -min_res * scale,
-        xmin,
-        ymax
-    )
+    WorldFile {
+        pixel_size_x: min_res * scale,
+        rotation_y: 0.0,
+        rotation_x: 0.0,
+        pixel_size_y: -min_res * scale,
+        x_origin: xmin,
+        y_origin: ymax,
+    }
+    .write(&mut tfw_file)
     .expect("Could not write to file");
     drop(tfw_file);
     fs.copy(

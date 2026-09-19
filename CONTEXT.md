@@ -41,5 +41,5 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 ### Output
 
 **Symbol code**: The ISOM 2017-2 number a feature is drawn with. _Avoid_: layer (a DXF layer is a container, never the ISOM number), ISOM 2000 numbering
-**Map frame**: Scale, resolution, origin and north rotation of the rendered sheet.
+**Map frame**: Scale, resolution, origin and north rotation of the rendered sheet. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre before scalefactor.
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
