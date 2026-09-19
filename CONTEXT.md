@@ -31,7 +31,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 ### Vegetation
 
 **Canopy top**: Highest vegetation return above the ground model in a cell. _Avoid_: roof, top
-**Stratum**: A height band above ground within which returns are counted. _Avoid_: zone (the upstream config key "zones" is the one exception)
+**Stratum**: A height band above ground within which returns are counted. _Avoid_: zone, zones
 **Vegetation density**: Share of returns intercepted within the running-height strata.
 **Green shade**: One of the ordered runnability classes drawn in green (ISOM 406, 408, 410).
 **Open land**: Ground with almost no returns above knee height (ISOM 401/403). _Avoid_: yellow
