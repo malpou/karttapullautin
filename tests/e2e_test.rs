@@ -216,14 +216,15 @@ fn assert_terrain_outputs(tile: &Path) {
         "Point",
         &["109", "111"],
     );
-    assert!(symbols(&knolls).contains("109"));
+    assert_eq!(symbols(&knolls), ["109", "111"].map(String::from).into());
 
     let cliffs = assert_terrain_features(
         &tile.join(geojson::CLIFFS.file_name()),
         "LineString",
         &["201", "202"],
     );
-    assert!(!symbols(&cliffs).is_empty());
+    // the regression tile has both cliff kinds
+    assert_eq!(symbols(&cliffs), ["201", "202"].map(String::from).into());
 }
 
 /// Single job on the regression tile, as in the regression workflow's single run: the

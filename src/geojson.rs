@@ -630,7 +630,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let symbols: Vec<Value> = read_features(&fs, "cliffs.geojson")
+        let symbols: Vec<Value> = read_features(&fs, &CLIFFS.file_name())
             .iter()
             .map(|f| f["properties"]["symbol"].clone())
             .collect();
@@ -706,7 +706,8 @@ mod tests {
     #[test]
     fn published_knolls_prefers_definite_over_ugly() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let path = Path::new("dotknolls.geojson");
+        let name = DOTKNOLLS.file_name();
+        let path = Path::new(&name);
         assert!(published_knolls(&fs, path).unwrap().is_empty());
 
         // an ugly knoll listed first, a definite one 5 m away, a far ugly one, and a
@@ -847,7 +848,8 @@ mod tests {
     fn write_feature_collection_writes_osm_features() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let features = vec![osm_line("506", "path", false, &[[0.0, 0.0], [1.0, 1.0]])];
-        let out = std::path::Path::new("osm_lines.geojson");
+        let name = OSM_LINES.file_name();
+        let out = std::path::Path::new(&name);
         write_feature_collection(&fs, out, features, None).unwrap();
 
         let val: Value = serde_json::from_reader(fs.open(out).unwrap()).unwrap();
