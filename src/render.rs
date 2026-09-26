@@ -954,7 +954,7 @@ pub fn draw_curves(
                 fs,
                 &[tmpfolder.join("formlines.dxf.bin")],
                 &tmpfolder.join(crate::geojson::FORMLINES.file_name()),
-                None,
+                config.epsg,
             )?;
         }
     }

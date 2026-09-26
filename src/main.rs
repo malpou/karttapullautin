@@ -401,7 +401,24 @@ fn main() {
                 fs.save_to_disk(&path, &path).unwrap();
             }
         } else {
-            pullauta::process::launch_threads(fs, config, &zip_files).unwrap();
+            pullauta::process::launch_threads(fs.clone(), config.clone(), &zip_files).unwrap();
+        }
+
+        if config.batchmerge {
+            info!("Batch done, merging tiles");
+            let out = Path::new(&config.batchoutfolder);
+            pullauta::merge::pngmerge(&fs, &config, 4.0, false).unwrap();
+            pullauta::merge::pngmerge(&fs, &config, 4.0, true).unwrap();
+            pullauta::merge::pngmergevege(&fs, &config, 1.0, false).unwrap();
+            pullauta::merge::bindxfmerge(&fs, &config).unwrap();
+            pullauta::geojson::merge_geojson(&fs, out).unwrap();
+            pullauta::geojson::export_combined(
+                &fs,
+                out,
+                Path::new(pullauta::merge::MERGED_DXF_BIN),
+                config.epsg,
+            )
+            .unwrap();
         }
         return;
     }

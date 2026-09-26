@@ -775,13 +775,13 @@ pub fn render(
             fs,
             &tmpfolder.join(geojson::OSM_LINES.file_name()),
             osm_lines,
-            None,
+            config.epsg,
         )?;
         geojson::write_feature_collection(
             fs,
             &tmpfolder.join(geojson::OSM_AREAS.file_name()),
             osm_areas,
-            None,
+            config.epsg,
         )?;
     }
     Ok(())

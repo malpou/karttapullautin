@@ -151,7 +151,9 @@ jobs:
         mkdir output_pr
         mv out/ output_pr/
         mv temp*/ output_pr/
-        mv merged* output_pr/
+        # the PR branch writes the merged rasters into the batch output folder; the
+        # latest release still writes them to the working directory (below)
+        mv output_pr/out/merged* output_pr/
 
     - name: Download, extract and run latest release
       run: |
