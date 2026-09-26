@@ -33,6 +33,20 @@ fn main() {
         })
         .init();
 
+    // eval only reads its inputs: dispatch it before the config file and the
+    // temp folder are created
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+    if raw_args.first().is_some_and(|c| c == "eval") {
+        match pullauta::eval::run(&raw_args[1..]) {
+            Ok(true) => return,
+            Ok(false) => std::process::exit(pullauta::eval::EXIT_CHANGED),
+            Err(e) => {
+                eprintln!("{e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut thread: String = String::new();
 
     let mut config =
