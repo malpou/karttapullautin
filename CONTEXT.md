@@ -41,8 +41,9 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 
 ### Output
 
-**Symbol code**: The ISOM 2017-2 number a feature is drawn with. _Avoid_: layer (a DXF layer is a container, never the ISOM number), ISOM 2000 numbering
-**Symbol table**: The machine-readable list of ISOM 2017-2 symbols: code, name, geometry type, colour, dimensions. _Avoid_: symbol set (a mapping program's file), legend
+**Symbol code**: The ISOM 2017-2 number a feature is drawn with, written "NNN.NNN" (`101.000`; a variant takes a non-zero suffix, e.g. slope line `101.001`, large building `521.001`). GeoJSON carries it as `isom_code`; a DXF layer is named with it. _Avoid_: layer (a DXF layer is a container, never the ISOM number), symbol (as a property name), plain `101`, ISOM 2000 numbering
+**Symbol table**: The machine-readable list of ISOM 2017-2 symbols the vector output may emit: the vendored, pinned `isom.yaml` of MetsaApp/isom-maplibre, giving each code its table and drawing. _Avoid_: symbol set (a mapping program's file), legend
+**Table**: The named group of vector features one style source reads, e.g. `contours`, `cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`; each GeoJSON output is one table. MapLibre calls it a source layer. _Avoid_: layer (only a DXF container), output kind
 **Map frame**: Scale, resolution, origin and north rotation of the rendered sheet.
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
 

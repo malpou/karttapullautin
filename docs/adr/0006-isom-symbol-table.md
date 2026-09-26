@@ -3,19 +3,25 @@ status: accepted (fork)
 date: 2026-09-26
 ---
 
-# A generated ISOM 2017-2 symbol table
+# A vendored isom-maplibre symbol table
 
 ## Context
 
-ADR-0003 makes ISOM 2017-2 numbers the only symbol codes, but the numbers, names and geometry types are scattered as literals across the renderer, the DXF writer, the GeoJSON schema and `osm.txt`. OpenOrienteering Mapper maintains the ISOM 2017-2 symbol set as machine-readable XML (`.omap`, GPL-3, the same licence as Karttapullautin); transcribing it by hand invites errors.
+ADR-0003 makes ISOM 2017-2 codes the only symbol codes, but the codes, names and geometry types are scattered as literals across the renderer, the DXF writer, the GeoJSON schema and `osm.txt`. The fork's vector output is drawn by the MapLibre style [MetsaApp/isom-maplibre](https://github.com/MetsaApp/isom-maplibre) (MIT). Its `isom.yaml`, validated by `isom.schema.json`, lists every symbol the style draws: the "NNN.NNN" code, the table the feature is read from, and the drawing in ISOM dimensions, cross-checked against OpenOrienteering Mapper's ISOM 2017-2 symbol set. A code it does not list stays invisible.
 
 ## Decision
 
-The fork carries a machine-readable ISOM 2017-2 symbol table: for each symbol its code, name, geometry type (point, line or area), colour, ISOM 2000 predecessor and key dimensions. A converter script generates it from the vendored OpenOrienteering Mapper `.omap` into YAML with a JSON schema. A Rust `Symbol` type is generated from the table, the way the GeoJSON types are generated from their schema, and feeds the GeoJSON symbol code enum, the `osm.txt` mapping and the DXF layer names.
+The fork's symbol table is a vendored copy of isom-maplibre's `isom.yaml` and `isom.schema.json`, pinned to one commit whose SHA is recorded beside the copy.
+
+- `scripts/sync-isom-table.sh` refreshes the copy from a given commit and records the new SHA; the copy is never edited by hand.
+- `build.rs` generates a Rust `IsomCode` enum and table from the copy at build time, the way the GeoJSON types are generated from their schema: pure Rust, offline. It feeds the GeoJSON `isom_code` values, the table each feature is written to, the `osm.txt` mapping and the DXF layer names.
+- OpenOrienteering Mapper's `.omap` and `ISOM2000-ISOM 2017-2.crt` are a migration reference only, for what `isom.yaml` does not carry (symbol names, ISOM 2000 predecessors), such as the one-time `osm.txt` migration. They are not converted into the table.
+
+Amended 2026-09-26: the first version generated the table from a vendored OOM `.omap` with a converter script. Matching the style that draws the output replaced that.
 
 ## Consequences
 
-- One source for every symbol code; a symbol the table does not know cannot be emitted.
-- Upstream symbol set fixes arrive by re-running the converter, not by editing literals.
-- The `.omap` is vendored into the repository with its provenance and licence.
+- One source for every symbol code; a code the table does not list cannot be emitted, and a conformance test holds every emitted code to it.
+- Style changes arrive by re-running the sync script at a new commit; the diff of the vendored copy shows what moved.
+- A feature KP produces that the style does not draw gets no code until the symbol is added to isom-maplibre.
 - Accepted for the fork; whether upstream adopts it is the maintainers' call.
