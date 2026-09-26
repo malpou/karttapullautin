@@ -325,7 +325,10 @@ impl Config {
             )
         };
 
-        let vectorconf = gs.get("vectorconf").unwrap_or("").into();
+        let vectorconf: String = gs.get("vectorconf").unwrap_or("").into();
+        if !vectorconf.is_empty() && !Path::new(&vectorconf).is_file() {
+            return Err(format!("vectorconf file {vectorconf} does not exist").into());
+        }
         let mtkskiplayers: Vec<String> = gs
             .get("mtkskiplayers")
             .unwrap_or("")
@@ -460,5 +463,32 @@ mod test {
     fn should_load_config_template_successfully() {
         Config::from_file(Path::new("pullauta.default.ini"))
             .expect("Could not load and parse the default config template");
+    }
+
+    /// The default template with `vectorconf` set, written to a temp file and loaded.
+    fn load_with_vectorconf(vectorconf: &str) -> Result<Config, String> {
+        let template = std::fs::read_to_string("pullauta.default.ini").unwrap();
+        let ini = template.replace("\nvectorconf=\n", &format!("\nvectorconf={vectorconf}\n"));
+        assert_ne!(ini, template, "template has no empty vectorconf line");
+        let path = std::env::temp_dir().join(format!(
+            "pullauta-vectorconf-{}-{}.ini",
+            std::process::id(),
+            vectorconf.replace(['/', '.'], "_")
+        ));
+        std::fs::write(&path, ini).unwrap();
+        let config = Config::from_file(&path).map_err(|e| e.to_string());
+        std::fs::remove_file(&path).unwrap();
+        config
+    }
+
+    #[test]
+    fn vectorconf_must_exist() {
+        let Err(err) = load_with_vectorconf("no-such-mapping.txt") else {
+            panic!("a missing vectorconf file must fail the config load");
+        };
+        assert!(err.contains("no-such-mapping.txt"), "{err}");
+
+        let config = load_with_vectorconf("osm.txt").unwrap();
+        assert_eq!(config.vectorconf, "osm.txt");
     }
 }
