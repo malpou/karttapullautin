@@ -402,157 +402,142 @@ pub fn render(
                         continue;
                     }
 
-                    let isom = &mapping.isom;
+                    // symbol codes are ISOM 2017-2; `true` = the code's T suffix (upper level)
+                    match (mapping.symbol.as_str(), mapping.upper_level) {
+                        // small crossable watercourse
+                        ("305", false) => {
+                            imgblue.set_line_width(5.0);
+                            thickness = 4.0;
+                            color = Some((marsh, Image::Blue));
+                        }
+                        // vehicle track
+                        ("504", false) => {
+                            dashedline = true;
+                            thickness = 12.0;
+                            color = Some((black, Image::Black));
+                        }
+                        ("504", true) => {
+                            dashedline = true;
+                            thickness = 12.0;
+                            color = Some((black, Image::BlackTop));
+                        }
+                        // road
+                        ("503", false) => {
+                            imgblack.set_line_width(12.0);
+                            thickness = 12.0;
+                            color = Some((black, Image::Black));
+                        }
+                        ("503", true) => {
+                            imgblack.set_line_width(12.0);
+                            thickness = 12.0;
+                            color = Some((black, Image::BlackTop));
+                        }
+                        // wide road
+                        ("502", false) => {
+                            imgbrown.set_line_width(20.0);
+                            imgbrowntop.set_line_width(20.0);
+                            color = Some((brown, Image::Brown));
+                            roadedge = 26.0;
+                            thickness = 20.0;
+                            imgblack.set_line_width(26.0);
+                        }
+                        // wide road, bridges
+                        ("502", true) => {
+                            edgeimage = EdgeImage::BlackTop;
+                            imgbrown.set_line_width(14.0);
+                            imgbrowntop.set_line_width(14.0);
+                            color = Some((brown, Image::Brown));
+                            roadedge = 26.0;
+                            thickness = 14.0;
+                            imgblack.set_line_width(26.0);
+                        }
+                        // railway
+                        ("509", false) => {
+                            color = Some((white, Image::Black));
+                            roadedge = 18.0;
+                            thickness = 3.0;
+                        }
+                        ("509", true) => {
+                            color = Some((white, Image::BlackTop));
+                            edgeimage = EdgeImage::BlackTop;
+                            roadedge = 18.0;
+                            thickness = 3.0;
+                        }
+                        // small footpath
+                        ("506", false) => {
+                            dashedline = true;
+                            color = Some((black, Image::Black));
+                            thickness = 6.0;
+                            imgblack.set_line_width(6.0);
+                        }
+                        ("506", true) => {
+                            dashedline = true;
+                            color = Some((black, Image::BlackTop));
+                            thickness = 6.0;
+                            imgblack.set_line_width(6.0);
+                        }
+                        // power line
+                        ("510", false) => {
+                            color = Some((black, Image::BlackTop));
+                            thickness = 5.0;
+                            imgblacktop.set_line_width(5.0);
+                        }
+                        // impassable fence
+                        ("518", false) => {
+                            color = Some((black, Image::Black));
+                            thickness = 7.0;
+                            imgblacktop.set_line_width(7.0);
+                        }
+                        // distinct cultivation boundary
+                        ("415", false) => {
+                            color = Some((black, Image::Black));
+                            thickness = 4.0;
+                        }
 
-                    if isom == "306" {
-                        imgblue.set_line_width(5.0);
-                        thickness = 4.0;
-                        color = Some((marsh, Image::Blue));
-                    }
+                        // areas
 
-                    // small path
-                    if isom == "505" {
-                        dashedline = true;
-                        thickness = 12.0;
-                        color = Some((black, Image::Black));
-                    }
-
-                    // small path top
-                    if isom == "505T" {
-                        dashedline = true;
-                        thickness = 12.0;
-                        color = Some((black, Image::BlackTop));
-                    }
-
-                    // large path
-                    if isom == "504" {
-                        imgblack.set_line_width(12.0);
-                        thickness = 12.0;
-                        color = Some((black, Image::Black));
-                    }
-
-                    // large path top
-                    if isom == "504T" {
-                        imgblack.set_line_width(12.0);
-                        thickness = 12.0;
-                        color = Some((black, Image::BlackTop));
-                    }
-
-                    // road
-                    if isom == "503" {
-                        imgbrown.set_line_width(20.0);
-                        imgbrowntop.set_line_width(20.0);
-                        color = Some((brown, Image::Brown));
-                        roadedge = 26.0;
-                        thickness = 20.0;
-                        imgblack.set_line_width(26.0);
-                    }
-
-                    // road, bridges
-                    if isom == "503T" {
-                        edgeimage = EdgeImage::BlackTop;
-                        imgbrown.set_line_width(14.0);
-                        imgbrowntop.set_line_width(14.0);
-                        color = Some((brown, Image::Brown));
-                        roadedge = 26.0;
-                        thickness = 14.0;
-                        imgblack.set_line_width(26.0);
-                    }
-
-                    // railroads
-                    if isom == "515" {
-                        color = Some((white, Image::Black));
-                        roadedge = 18.0;
-                        thickness = 3.0;
-                    }
-
-                    // railroads top
-                    if isom == "515T" {
-                        color = Some((white, Image::BlackTop));
-                        edgeimage = EdgeImage::BlackTop;
-                        roadedge = 18.0;
-                        thickness = 3.0;
-                    }
-
-                    // small path
-                    if isom == "507" {
-                        dashedline = true;
-                        color = Some((black, Image::Black));
-                        thickness = 6.0;
-                        imgblack.set_line_width(6.0);
-                    }
-
-                    // small path top
-                    if isom == "507T" {
-                        dashedline = true;
-                        color = Some((black, Image::BlackTop));
-                        thickness = 6.0;
-                        imgblack.set_line_width(6.0);
-                    }
-
-                    // powerline
-                    if isom == "516" {
-                        color = Some((black, Image::BlackTop));
-                        thickness = 5.0;
-                        imgblacktop.set_line_width(5.0);
-                    }
-
-                    // fence
-                    if isom == "524" {
-                        color = Some((black, Image::Black));
-                        thickness = 7.0;
-                        imgblacktop.set_line_width(7.0);
-                    }
-
-                    // blackline
-                    if isom == "414" {
-                        color = Some((black, Image::Black));
-                        thickness = 4.0;
-                    }
-
-                    // areas
-
-                    // fields
-                    if isom == "401" {
-                        area = true;
-                        border = 3.0;
-                        color = Some((yellow, Image::Yellow));
-                    }
-                    // lakes
-                    if isom == "301" {
-                        area = true;
-                        border = 5.0;
-                        color = Some((blue, Image::Blue));
-                    }
-                    // marshes
-                    if isom == "310" {
-                        area = true;
-                        color = Some((marsh, Image::Marsh));
-                    }
-                    // buildings
-                    if isom == "526" {
-                        area = true;
-                        color = Some((buildingcolor, Image::Black));
-                    }
-                    // settlements
-                    if isom == "527" {
-                        area = true;
-                        color = Some((olive, Image::Olive));
-                    }
-                    // car parkings border
-                    if isom == "529.1" || isom == "301.1" {
-                        thickness = 2.0;
-                        color = Some((black, Image::Black));
-                    }
-                    // car park area
-                    if isom == "529" {
-                        area = true;
-                        color = Some((brown, Image::Parkings));
-                    }
-                    // car park top
-                    if isom == "529T" {
-                        area = true;
-                        color = Some((brown, Image::Brown));
+                        // open land
+                        ("401", false) => {
+                            area = true;
+                            border = 3.0;
+                            color = Some((yellow, Image::Yellow));
+                        }
+                        // uncrossable body of water, with bank line
+                        ("301", false) => {
+                            area = true;
+                            border = 5.0;
+                            color = Some((blue, Image::Blue));
+                        }
+                        // marsh
+                        ("308", false) => {
+                            area = true;
+                            color = Some((marsh, Image::Marsh));
+                        }
+                        // building
+                        ("521", false) => {
+                            area = true;
+                            color = Some((buildingcolor, Image::Black));
+                        }
+                        // area that shall not be entered
+                        ("520", false) => {
+                            area = true;
+                            color = Some((olive, Image::Olive));
+                        }
+                        // paved area bounding line, body of water bank line
+                        ("501.2" | "301.4", false) => {
+                            thickness = 2.0;
+                            color = Some((black, Image::Black));
+                        }
+                        // paved area
+                        ("501", false) => {
+                            area = true;
+                            color = Some((brown, Image::Parkings));
+                        }
+                        ("501", true) => {
+                            area = true;
+                            color = Some((brown, Image::Brown));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -753,5 +738,6 @@ pub fn render(
     imgolive
         .save_as(fs, &low_file)
         .expect("could not save low.png");
+
     Ok(())
 }

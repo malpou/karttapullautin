@@ -14,11 +14,15 @@ pub struct Condition {
     pub value: String,
 }
 
-/// Each mapping represents one line in the vectorconf file
+/// Each mapping represents one line in the vectorconf file:
+/// `category|symbol code[T]|conditions`, e.g. `road|502T|highway=primary&bridge=yes`.
 #[derive(Debug, PartialEq)]
 pub struct Mapping {
-    /// The ISOM code that this mapping maps the shape to
-    pub isom: String,
+    /// ISOM 2017-2 symbol code the shape is drawn with (second field, without the `T` suffix)
+    pub symbol: String,
+    /// A `T` suffix on the code: the feature passes over the others (bridge, upper level)
+    /// and is drawn on the top layer
+    pub upper_level: bool,
     /// The conditions that must be met for this mapping to be applied
     pub conditions: Vec<Condition>,
 }
@@ -35,9 +39,13 @@ impl FromStr for Mapping {
                 line
             ));
         }
-        let isom = row_data[1].to_string();
-        if isom.is_empty() {
-            return Err(format!("ISOM code most not be empty: {line}"));
+        let code = row_data[1].trim();
+        let (symbol, upper_level) = match code.strip_suffix('T') {
+            Some(symbol) => (symbol.to_string(), true),
+            None => (code.to_string(), false),
+        };
+        if symbol.is_empty() {
+            return Err(format!("Symbol code must not be empty: {line}"));
         }
 
         let conditions: Vec<Condition> = row_data[2]
@@ -60,7 +68,11 @@ impl FromStr for Mapping {
             })
             .collect::<Result<Vec<_>, Self::Err>>()?;
 
-        Ok(Self { isom, conditions })
+        Ok(Self {
+            symbol,
+            upper_level,
+            conditions,
+        })
     }
 }
 
@@ -68,7 +80,7 @@ impl FromStr for Mapping {
 mod tests {
     use super::*;
     #[test]
-    fn test_mapping_from_str_invalid_no_isom() {
+    fn test_mapping_from_str_invalid_no_symbol() {
         let line = "description||key1=value1";
         let mapping = Mapping::from_str(line);
         assert!(mapping.is_err());
@@ -86,7 +98,8 @@ mod tests {
         let line = "description|306|key1=value1";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
-            isom: "306".to_string(),
+            symbol: "306".to_string(),
+            upper_level: false,
             conditions: vec![Condition {
                 operator: Operator::Equal,
                 key: "key1".to_string(),
@@ -101,7 +114,8 @@ mod tests {
         let line = "description|306|key1=value1&key2!=value2";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
-            isom: "306".to_string(),
+            symbol: "306".to_string(),
+            upper_level: false,
             conditions: vec![
                 Condition {
                     operator: Operator::Equal,
@@ -123,7 +137,8 @@ mod tests {
         let line = "description|306|key1=value1&key2!=value2&key3=value3";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
-            isom: "306".to_string(),
+            symbol: "306".to_string(),
+            upper_level: false,
             conditions: vec![
                 Condition {
                     operator: Operator::Equal,
@@ -143,6 +158,19 @@ mod tests {
             ],
         };
         assert_eq!(mapping, expected);
+    }
+
+    #[test]
+    fn test_mapping_from_str_upper_level_suffix() {
+        let mapping = Mapping::from_str("road|502T|highway=primary&bridge=yes").unwrap();
+        assert_eq!(mapping.symbol, "502");
+        assert!(mapping.upper_level);
+
+        let mapping = Mapping::from_str(" road | 502 |highway=primary").unwrap();
+        assert_eq!(mapping.symbol, "502");
+        assert!(!mapping.upper_level);
+
+        assert!(Mapping::from_str("road|T|highway=primary").is_err());
     }
 
     #[test]
