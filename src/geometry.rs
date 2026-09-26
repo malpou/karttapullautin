@@ -238,7 +238,8 @@ impl BinaryDxf {
         }
     }
 
-    /// Write this geometry to a DXF file.
+    /// Write this geometry to a DXF file, one DXF layer per symbol code. Records with no
+    /// symbol code (the knoll-detector artifact) are left out.
     pub fn to_dxf<W: std::io::Write>(&self, writer: &mut W) -> anyhow::Result<()> {
         write!(
             writer,
@@ -250,7 +251,9 @@ impl BinaryDxf {
             match geom {
                 Geometry::Points(points) => {
                     for (point, class) in points.points.iter().zip(&points.classification) {
-                        let layer = class.to_layer();
+                        let Some(layer) = class.symbol_code() else {
+                            continue;
+                        };
 
                         write!(
                             writer,
@@ -263,7 +266,9 @@ impl BinaryDxf {
                     for (polyline, class) in
                         polylines.polylines.iter().zip(&polylines.classification)
                     {
-                        let layer = class.to_layer();
+                        let Some(layer) = class.symbol_code() else {
+                            continue;
+                        };
                         write!(writer, "POLYLINE\r\n 66\r\n1\r\n  8\r\n{layer}\r\n  0\r\n")?;
 
                         for p in polyline {
@@ -280,7 +285,9 @@ impl BinaryDxf {
                     for (polyline, (class, height)) in
                         polylines.polylines.iter().zip(&polylines.classification)
                     {
-                        let layer = class.to_layer();
+                        let Some(layer) = class.symbol_code() else {
+                            continue;
+                        };
 
                         write!(
                             writer,
@@ -349,38 +356,61 @@ pub enum Classification {
 }
 
 impl Classification {
-    /// Get the layer name for this classification.
-    pub fn to_layer(&self) -> &str {
-        match self {
-            Self::ContourSimple => "cont",
+    /// ISOM 2017-2 symbol code this classification is drawn with; DXF output also uses
+    /// it as the DXF layer name. None for [`Self::Knoll1010`], a knoll-detector artifact
+    /// with no map symbol, which vector output skips.
+    pub fn symbol_code(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::ContourSimple | Self::Contour | Self::Depression => "101",
+            Self::ContourIndex | Self::DepressionIndex => "102",
+            // intermediate (half-interval) contours are represented as form lines in ISOM
+            Self::ContourIntermed
+            | Self::ContourIndexIntermed
+            | Self::DepressionIntermed
+            | Self::DepressionIndexIntermed
+            | Self::Formline
+            | Self::FormlineDepression => "103",
+            Self::Dotknoll | Self::UglyDotknoll => "109",
+            Self::Udepression | Self::UglyUdepression | Self::SmallDepression => "111",
+            Self::Cliff2 => "202",
+            Self::Cliff3 | Self::Cliff4 => "201",
+            // a tick that belongs to symbol 101; GeoJSON marks it `slope_line: true`
+            Self::SlopeLine => "101",
+            Self::Knoll1010 => return None,
+        })
+    }
 
-            Self::Contour => "contour",
-            Self::ContourIndex => "contour_index",
-            Self::ContourIntermed => "contour_intermed",
-            Self::ContourIndexIntermed => "contour_index_intermed",
+    /// Human-readable name of the symbol, telling depression lines apart from the
+    /// contours that share their symbol code. None where [`Self::symbol_code`] is None.
+    pub fn symbol_name(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::ContourSimple | Self::Contour => "contour",
+            Self::ContourIndex => "index contour",
+            Self::ContourIntermed | Self::ContourIndexIntermed | Self::Formline => "form line",
+            Self::Depression => "depression contour",
+            Self::DepressionIndex => "depression index contour",
+            Self::DepressionIntermed | Self::DepressionIndexIntermed | Self::FormlineDepression => {
+                "depression form line"
+            }
+            Self::Dotknoll | Self::UglyDotknoll => "knoll",
+            Self::Udepression | Self::UglyUdepression | Self::SmallDepression => "small depression",
+            Self::Cliff2 => "cliff",
+            Self::Cliff3 | Self::Cliff4 => "impassable cliff",
+            Self::SlopeLine => "slope line",
+            Self::Knoll1010 => return None,
+        })
+    }
 
-            Self::Depression => "depression",
-            Self::DepressionIndex => "depression_index",
-            Self::DepressionIntermed => "depression_intermed",
-            Self::DepressionIndexIntermed => "depression_index_intermed",
+    /// Whether the knoll detector was unsure of this knoll or small depression. Definite
+    /// and uncertain points share a symbol code, so this is the only way to rank them.
+    pub fn is_ugly(&self) -> bool {
+        matches!(self, Self::UglyDotknoll | Self::UglyUdepression)
+    }
 
-            Self::Formline => "formline",
-            Self::FormlineDepression => "formline_depression",
-
-            Self::Dotknoll => "dotknoll",
-            Self::Udepression => "udepression",
-            Self::UglyDotknoll => "uglydotknoll",
-            Self::UglyUdepression => "uglyudepression",
-
-            Self::Knoll1010 => "1010",
-
-            Self::Cliff2 => "cliff2",
-            Self::Cliff3 => "cliff3",
-            Self::Cliff4 => "cliff4",
-
-            Self::SlopeLine => "slope_line",
-            Self::SmallDepression => "small_depression",
-        }
+    /// Whether this line encloses lower ground: the depression contours and the
+    /// depression form line. Unlike [`Self::is_depression`], includes the form line.
+    pub fn is_depression_line(&self) -> bool {
+        self.is_depression() || *self == Self::FormlineDepression
     }
 
     pub fn is_contour(&self) -> bool {
@@ -766,6 +796,80 @@ mod tests {
         );
         assert!(joined[1].is_empty());
         assert_eq!(xy(&joined[2]), vec![(0.0, 0.0), (1.0, 1.0)]);
+    }
+
+    #[test]
+    fn symbol_code_is_isom_2017_2_for_every_classification() {
+        use super::Classification::*;
+        let expected = [
+            (ContourSimple, Some("101"), Some("contour")),
+            (Contour, Some("101"), Some("contour")),
+            (ContourIndex, Some("102"), Some("index contour")),
+            (ContourIntermed, Some("103"), Some("form line")),
+            (ContourIndexIntermed, Some("103"), Some("form line")),
+            (Depression, Some("101"), Some("depression contour")),
+            (
+                DepressionIndex,
+                Some("102"),
+                Some("depression index contour"),
+            ),
+            (
+                DepressionIntermed,
+                Some("103"),
+                Some("depression form line"),
+            ),
+            (
+                DepressionIndexIntermed,
+                Some("103"),
+                Some("depression form line"),
+            ),
+            (Formline, Some("103"), Some("form line")),
+            (
+                FormlineDepression,
+                Some("103"),
+                Some("depression form line"),
+            ),
+            (Dotknoll, Some("109"), Some("knoll")),
+            (Udepression, Some("111"), Some("small depression")),
+            (UglyDotknoll, Some("109"), Some("knoll")),
+            (UglyUdepression, Some("111"), Some("small depression")),
+            (Knoll1010, None, None),
+            (Cliff2, Some("202"), Some("cliff")),
+            (Cliff3, Some("201"), Some("impassable cliff")),
+            (Cliff4, Some("201"), Some("impassable cliff")),
+            (SlopeLine, Some("101"), Some("slope line")),
+            (SmallDepression, Some("111"), Some("small depression")),
+        ];
+        for (c, code, name) in expected {
+            assert_eq!(c.symbol_code(), code, "{c:?}");
+            assert_eq!(c.symbol_name(), name, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn ugly_and_depression_line_flags() {
+        use super::Classification::*;
+        assert!(UglyDotknoll.is_ugly() && UglyUdepression.is_ugly());
+        assert!(!Dotknoll.is_ugly() && !Udepression.is_ugly());
+        assert!(
+            FormlineDepression.is_depression_line() && DepressionIndexIntermed.is_depression_line()
+        );
+        assert!(!Formline.is_depression_line() && !Contour.is_depression_line());
+    }
+
+    #[test]
+    fn dxf_layers_are_symbol_codes_and_skip_knoll_detector_artifact() {
+        let mut lines = Polylines::new();
+        let line = vec![Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)];
+        lines.push(line.clone(), Classification::ContourIndex);
+        lines.push(line, Classification::Knoll1010);
+        let dxf = BinaryDxf::new(Bounds::new(0.0, 1.0, 0.0, 1.0), vec![lines.into()]);
+        let mut out = Vec::new();
+        dxf.to_dxf(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("POLYLINE").count(), 1);
+        assert!(text.contains("  8\r\n102\r\n"));
+        assert!(!text.contains("1010"));
     }
 
     #[test]

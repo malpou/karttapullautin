@@ -5,15 +5,16 @@ use std::io::{BufWriter, Write};
 
 use serde_json::{Value, json};
 
-use crate::geometry::{BinaryDxf, Geometry};
+use crate::geometry::{BinaryDxf, Classification, Geometry};
 use crate::io::fs::FileSystem;
+use geojson_types::FeatureGeometryType;
 
 /// Rust types generated from `schema/geojson.schema.json` by `typify` in `build.rs`.
 ///
 /// These types are the serialization contract for GeoJSON output properties.
 /// Add new property classes to the schema file; `cargo build` regenerates this
 /// module automatically.
-#[allow(dead_code, clippy::all)]
+#[allow(clippy::all)]
 mod geojson_types {
     include!(concat!(env!("OUT_DIR"), "/geojson_types.rs"));
 }
@@ -92,13 +93,11 @@ fn r2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// Build a coordinate array for one line/ring.
-pub fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Value {
-    Value::Array(
-        pts.into_iter()
-            .map(|[x, y]| json!([r2(x), r2(y)]))
-            .collect(),
-    )
+/// Build the coordinate array for one line/ring (`.into()` for a [`Value`]).
+pub fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Vec<Value> {
+    pts.into_iter()
+        .map(|[x, y]| json!([r2(x), r2(y)]))
+        .collect()
 }
 
 /// Build a GeoJSON feature with string properties.
@@ -134,38 +133,63 @@ pub fn write_feature_collection<W: Write>(
     Ok(())
 }
 
-/// ISOM 2017-2 symbol code for a KP layer name, where one exists.
-/// 101 contour, 102 index contour, 103 form line, 109 small knoll,
-/// 111 small depression, 201 impassable cliff, 202 cliff.
-fn symbol_code(layer: &str) -> Option<&'static str> {
-    Some(match layer {
-        "cont" | "contour" | "depression" => "101",
-        "contour_index" | "depression_index" => "102",
-        // intermediate (half-interval) contours are represented as form lines in ISOM
-        "contour_intermed"
-        | "contour_index_intermed"
-        | "depression_intermed"
-        | "depression_index_intermed"
-        | "formline"
-        | "formline_depression" => "103",
-        "dotknoll" | "uglydotknoll" => "109",
-        "udepression" | "uglyudepression" => "111",
-        "cliff2" => "202",
-        "cliff3" | "cliff4" => "201",
-        _ => return None,
+/// Typed GeoJSON properties for a terrain classification: contour family, knoll and
+/// small depression, or cliff, chosen by which schema class accepts its symbol code.
+/// `elevation` is kept only for the contour family. None for a classification without
+/// a symbol code (the knoll-detector artifact), which is left out of the output.
+fn terrain_properties(
+    c: Classification,
+    elevation: Option<f64>,
+) -> Option<geojson_types::FeatureProperties> {
+    use geojson_types::{CliffProperties, ContourProperties, KnollProperties};
+
+    let code = c.symbol_code()?;
+    let symbol_name = c.symbol_name().map(String::from);
+    let flag = |set: bool| set.then_some(true);
+    Some(if let Ok(symbol) = code.parse() {
+        ContourProperties {
+            symbol,
+            symbol_name,
+            elevation,
+            depression: flag(c.is_depression_line()),
+            slope_line: flag(c == Classification::SlopeLine),
+        }
+        .into()
+    } else if let Ok(symbol) = code.parse() {
+        KnollProperties {
+            symbol,
+            symbol_name,
+            ugly: flag(c.is_ugly()),
+        }
+        .into()
+    } else {
+        CliffProperties {
+            symbol: code.parse().ok()?,
+            symbol_name,
+        }
+        .into()
     })
 }
 
-/// Feature properties for a KP layer: the ISOM 2017-2 `symbol` code, when one exists.
-fn symbol_props(layer: &str) -> Vec<(&'static str, &'static str)> {
-    symbol_code(layer)
-        .map(|code| vec![("symbol", code)])
-        .unwrap_or_default()
+fn terrain_feature(
+    geometry: FeatureGeometryType,
+    coordinates: Vec<Value>,
+    c: Classification,
+    elevation: Option<f64>,
+) -> Option<geojson_types::Feature> {
+    Some(geojson_types::Feature {
+        geometry: geojson_types::FeatureGeometry {
+            coordinates,
+            type_: geometry,
+        },
+        properties: terrain_properties(c, elevation)?,
+        type_: json!("Feature"),
+    })
 }
 
 /// Convert one or more binary DXF files (contours, cliffs, knolls...) into a single
 /// GeoJSON FeatureCollection. Polylines become LineStrings and points become Points,
-/// each with the ISOM 2017-2 `symbol` code of its layer (when known).
+/// each with the properties of its classification (see [`terrain_properties`]).
 ///
 /// Property schema: see `schema/geojson.schema.json` ($defs/ContourProperties,
 /// KnollProperties, CliffProperties).
@@ -175,48 +199,41 @@ pub fn bindxf_to_geojson(
     output: &std::path::Path,
     epsg: Option<u32>,
 ) -> anyhow::Result<()> {
-    let mut feats = Vec::new();
+    let mut features = Vec::new();
     for input in inputs {
         let dxf = BinaryDxf::from_reader(&mut fs.open(input)?)?;
         for geom in dxf.take_geometry() {
             match geom {
                 Geometry::Polylines2(pl) => {
-                    for (p, c) in pl.into_iter() {
-                        feats.push(feature(
-                            "LineString",
-                            coords_line(p.iter().map(|pt| [pt.x, pt.y])),
-                            &symbol_props(c.to_layer()),
-                        ));
-                    }
+                    features.extend(pl.into_iter().filter_map(|(p, c)| {
+                        let coords = coords_line(p.iter().map(|pt| [pt.x, pt.y]));
+                        terrain_feature(FeatureGeometryType::LineString, coords, c, None)
+                    }));
                 }
                 Geometry::Polylines3(pl) => {
-                    for (p, (c, h)) in pl.into_iter() {
-                        let mut f = feature(
-                            "LineString",
-                            coords_line(p.iter().map(|pt| [pt.x, pt.y])),
-                            &symbol_props(c.to_layer()),
-                        );
-                        f["properties"]["elevation"] = json!(h);
-                        feats.push(f);
-                    }
+                    features.extend(pl.into_iter().filter_map(|(p, (c, h))| {
+                        let coords = coords_line(p.iter().map(|pt| [pt.x, pt.y]));
+                        terrain_feature(FeatureGeometryType::LineString, coords, c, Some(h))
+                    }));
                 }
                 Geometry::Points(pts) => {
-                    for (p, c) in pts.into_iter() {
-                        feats.push(feature(
-                            "Point",
-                            json!([r2(p.x), r2(p.y)]),
-                            &symbol_props(c.to_layer()),
-                        ));
-                    }
+                    features.extend(pts.into_iter().filter_map(|(p, c)| {
+                        let coords = vec![json!(r2(p.x)), json!(r2(p.y))];
+                        terrain_feature(FeatureGeometryType::Point, coords, c, None)
+                    }));
                 }
             }
         }
     }
-    write_feature_collection(
-        &mut BufWriter::new(fs.create(output)?),
-        &feats,
-        crs(epsg).as_ref(),
-    )
+    let collection = geojson_types::GeoJsonOutput {
+        crs: crs(epsg).map(serde_json::from_value).transpose()?,
+        features,
+        type_: json!("FeatureCollection"),
+    };
+    let mut w = BufWriter::new(fs.create(output)?);
+    serde_json::to_writer(&mut w, &collection)?;
+    w.flush()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -247,6 +264,11 @@ mod tests {
             vec![Point2::new(0.0, 0.0), Point2::new(100.0, 100.0)],
             Classification::Contour,
         );
+        // the knoll-detector artifact has no symbol code and is left out
+        pls.push(
+            vec![Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)],
+            Classification::Knoll1010,
+        );
         let dxf = BinaryDxf::new(
             Bounds::new(0.0, 100.0, 0.0, 100.0),
             vec![Geometry::Polylines2(pls)],
@@ -270,6 +292,70 @@ mod tests {
         assert_eq!(feats.len(), 1);
         assert_eq!(feats[0]["geometry"]["type"], "LineString");
         assert_eq!(feats[0]["properties"]["symbol"], "101");
+    }
+
+    fn props(c: Classification, elevation: Option<f64>) -> Value {
+        serde_json::to_value(terrain_properties(c, elevation).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn terrain_properties_flags_present_only_when_set() {
+        let contour = props(Classification::Contour, Some(12.5));
+        assert_eq!(
+            contour,
+            json!({"symbol": "101", "symbol_name": "contour", "elevation": 12.5})
+        );
+
+        let depression = props(Classification::Depression, Some(12.5));
+        assert_eq!(depression["symbol"], "101");
+        assert_eq!(depression["symbol_name"], "depression contour");
+        assert_eq!(depression["depression"], true);
+        assert_eq!(
+            props(Classification::FormlineDepression, None)["depression"],
+            true
+        );
+
+        let slope_line = props(Classification::SlopeLine, Some(12.5));
+        assert_eq!(slope_line["symbol"], "101");
+        assert_eq!(slope_line["slope_line"], true);
+        assert!(slope_line.get("depression").is_none());
+
+        assert_eq!(
+            props(Classification::Dotknoll, None),
+            json!({"symbol": "109", "symbol_name": "knoll"})
+        );
+        let ugly = props(Classification::UglyUdepression, None);
+        assert_eq!(ugly["symbol"], "111");
+        assert_eq!(ugly["ugly"], true);
+
+        // knoll and cliff classes carry no elevation, even from a 3D polyline
+        assert_eq!(
+            props(Classification::SmallDepression, Some(3.0)),
+            json!({"symbol": "111", "symbol_name": "small depression"})
+        );
+        assert_eq!(
+            props(Classification::Cliff4, None),
+            json!({"symbol": "201", "symbol_name": "impassable cliff"})
+        );
+        assert!(terrain_properties(Classification::Knoll1010, None).is_none());
+    }
+
+    #[test]
+    fn terrain_properties_deserialize_into_their_schema_class() {
+        use geojson_types::FeatureProperties as P;
+        let back = |c, h| serde_json::from_value::<P>(props(c, h)).unwrap();
+        assert!(matches!(
+            back(Classification::DepressionIndex, Some(1.0)),
+            P::ContourProperties(_)
+        ));
+        assert!(matches!(
+            back(Classification::UglyDotknoll, None),
+            P::KnollProperties(_)
+        ));
+        assert!(matches!(
+            back(Classification::Cliff2, None),
+            P::CliffProperties(_)
+        ));
     }
 
     #[test]
