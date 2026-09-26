@@ -2,6 +2,8 @@ use std::{path::Path, str::FromStr};
 
 use ini::Ini;
 
+use crate::geojson::geojson_types::VegetationPropertiesSymbol;
+
 /// The config parsed from the .ini configuration file.
 pub struct Config {
     pub batch: bool,
@@ -92,6 +94,15 @@ pub struct Config {
     pub water: u8,
     pub buildings: u8,
     pub waterele: f64,
+
+    // vector export
+    /// Vectorize the vegetation, yellow and undergrowth grids into GeoJSON and DXF areas.
+    pub vector_vege: bool,
+    /// Symbol code per greenshade index (1-based); a shorter list repeats its last code.
+    /// Empty when `vector_vege` is off.
+    pub vector_greenshade_isom: Vec<VegetationPropertiesSymbol>,
+    /// Douglas-Peucker tolerance in metres for vegetation areas; 0 disables simplification.
+    pub vector_simplify: f64,
 
     // render
     pub buildingcolor: (u8, u8, u8),
@@ -315,6 +326,30 @@ impl Config {
         let buildings = parse_typed(gs, "buildingsclass", 0);
         let waterele = parse_typed(gs, "waterelevation", -999999.0);
 
+        // vector export
+        let vector_vege = match gs.get("vector_vege").unwrap_or("0") {
+            "0" => false,
+            "1" => true,
+            v => return Err(format!("Value {v} of `vector_vege` must be 0 or 1").into()),
+        };
+        let vector_greenshade_isom = if vector_vege {
+            parse_greenshade_isom(gs.get("vector_greenshade_isom").unwrap_or(""))?
+        } else {
+            Vec::new()
+        };
+        let vector_simplify: f64 = match gs.get("vector_simplify") {
+            None => 2.0,
+            Some(v) => match v.trim().parse::<f64>() {
+                Ok(eps) if eps.is_finite() && eps >= 0.0 => eps,
+                _ => {
+                    return Err(format!(
+                        "Value {v} of `vector_simplify` must be a number of metres, 0 or more"
+                    )
+                    .into());
+                }
+            },
+        };
+
         // render
         let buildingcolor: (u8, u8, u8) = {
             let mut split = gs.get("buildingcolor").unwrap_or("0,0,0").split(',');
@@ -436,6 +471,9 @@ impl Config {
             water,
             buildings,
             waterele,
+            vector_vege,
+            vector_greenshade_isom,
+            vector_simplify,
             buildingcolor,
             vectorconf,
             mtkskiplayers,
@@ -453,6 +491,25 @@ impl Config {
     }
 }
 
+/// Parse `vector_greenshade_isom`: pipe-separated vegetation symbol codes, at least one,
+/// each one the schema allows for vegetation areas.
+fn parse_greenshade_isom(
+    value: &str,
+) -> Result<Vec<VegetationPropertiesSymbol>, Box<dyn std::error::Error>> {
+    value
+        .split('|')
+        .map(|code| {
+            code.trim().parse().map_err(|_| {
+                format!(
+                    "`vector_greenshade_isom` entry `{code}` is not a vegetation symbol code \
+                     (403, 406, 407, 408 or 410)"
+                )
+                .into()
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod test {
     use std::path::Path;
@@ -465,20 +522,32 @@ mod test {
             .expect("Could not load and parse the default config template");
     }
 
-    /// The default template with `vectorconf` set, written to a temp file and loaded.
-    fn load_with_vectorconf(vectorconf: &str) -> Result<Config, String> {
+    /// The default template with the given `key=value` lines replaced (every key must
+    /// already be in the template), written to a temp file and loaded.
+    fn load_with(settings: &[(&str, &str)]) -> Result<Config, String> {
         let template = std::fs::read_to_string("pullauta.default.ini").unwrap();
-        let ini = template.replace("\nvectorconf=\n", &format!("\nvectorconf={vectorconf}\n"));
-        assert_ne!(ini, template, "template has no empty vectorconf line");
-        let path = std::env::temp_dir().join(format!(
-            "pullauta-vectorconf-{}-{}.ini",
-            std::process::id(),
-            vectorconf.replace(['/', '.'], "_")
-        ));
-        std::fs::write(&path, ini).unwrap();
+        let mut lines: Vec<String> = template.lines().map(String::from).collect();
+        for (key, value) in settings {
+            let prefix = format!("{key}=");
+            let line = lines
+                .iter_mut()
+                .find(|l| l.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("{key} is not in pullauta.default.ini"));
+            *line = format!("{key}={value}");
+        }
+        // tests run in parallel: a unique file per call
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("pullauta-config-{}-{call}.ini", std::process::id()));
+        std::fs::write(&path, lines.join("\n")).unwrap();
         let config = Config::from_file(&path).map_err(|e| e.to_string());
         std::fs::remove_file(&path).unwrap();
         config
+    }
+
+    fn load_with_vectorconf(vectorconf: &str) -> Result<Config, String> {
+        load_with(&[("vectorconf", vectorconf)])
     }
 
     #[test]
@@ -490,5 +559,55 @@ mod test {
 
         let config = load_with_vectorconf("osm.txt").unwrap();
         assert_eq!(config.vectorconf, "osm.txt");
+    }
+
+    #[test]
+    fn vector_vege_defaults_off_with_default_simplify() {
+        let config = load_with(&[]).unwrap();
+        assert!(!config.vector_vege);
+        assert!(config.vector_greenshade_isom.is_empty());
+        assert_eq!(config.vector_simplify, 2.0);
+    }
+
+    #[test]
+    fn vector_vege_must_be_0_or_1() {
+        let err = load_with(&[("vector_vege", "yes")]).err().unwrap();
+        assert!(err.contains("vector_vege"), "{err}");
+    }
+
+    #[test]
+    fn vector_greenshade_isom_parses_vegetation_codes() {
+        use crate::geojson::geojson_types::VegetationPropertiesSymbol as S;
+        let config = load_with(&[("vector_vege", "1")]).unwrap();
+        assert_eq!(
+            config.vector_greenshade_isom,
+            [S::X406, S::X406, S::X408, S::X408, S::X410]
+        );
+        let config = load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", "403")]).unwrap();
+        assert_eq!(config.vector_greenshade_isom, [S::X403]);
+    }
+
+    #[test]
+    fn vector_greenshade_isom_rejects_empty_and_non_vegetation_codes() {
+        for bad in ["", "406||410", "406|409", "406.000", "101"] {
+            let err = load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", bad)])
+                .err()
+                .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
+            assert!(err.contains("vector_greenshade_isom"), "{err}");
+        }
+        // not read while vector_vege is off
+        load_with(&[("vector_greenshade_isom", "")]).unwrap();
+    }
+
+    #[test]
+    fn vector_simplify_must_be_a_non_negative_number() {
+        let config = load_with(&[("vector_simplify", "0")]).unwrap();
+        assert_eq!(config.vector_simplify, 0.0);
+        for bad in ["-1", "abc", "", "NaN", "inf"] {
+            let err = load_with(&[("vector_simplify", bad)])
+                .err()
+                .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
+            assert!(err.contains("vector_simplify"), "{err}");
+        }
     }
 }
