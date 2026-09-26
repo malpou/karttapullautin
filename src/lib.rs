@@ -11,6 +11,7 @@ pub mod crop;
 pub mod geojson;
 pub mod geometry;
 pub mod io;
+pub mod isom;
 pub mod knolls;
 pub mod mapframe;
 pub mod merge;
