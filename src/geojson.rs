@@ -72,20 +72,13 @@ pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
 /// Legacy GeoJSON `crs` member for a projected EPSG code. RFC 7946 dropped `crs`, but
 /// GIS tools still read it, and without it projected coordinates load misplaced.
 /// None (no `epsg` config key) omits the member.
-pub fn crs(epsg: Option<u32>) -> Option<Value> {
-    epsg.map(|code| {
-        json!({"type":"name","properties":{"name": format!("urn:ogc:def:crs:EPSG::{code}")}})
+fn crs(epsg: Option<u32>) -> Option<geojson_types::Crs> {
+    epsg.map(|code| geojson_types::Crs {
+        properties: geojson_types::CrsProperties {
+            name: format!("urn:ogc:def:crs:EPSG::{code}"),
+        },
+        type_: json!("name"),
     })
-}
-
-fn write_prelude<W: Write>(w: &mut W, crs: Option<&Value>) -> anyhow::Result<()> {
-    w.write_all(b"{\"type\":\"FeatureCollection\"")?;
-    if let Some(c) = crs {
-        w.write_all(b",\"crs\":")?;
-        serde_json::to_writer(&mut *w, c)?;
-    }
-    w.write_all(b",\"features\":[")?;
-    Ok(())
 }
 
 /// Round to cm to keep files small; sub-cm is noise at map scale.
@@ -93,48 +86,15 @@ fn r2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
 }
 
-/// Build the coordinate array for one line/ring (`.into()` for a [`Value`]).
-pub fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Vec<Value> {
+/// Build the coordinate array for one line/ring.
+fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Vec<Value> {
     pts.into_iter()
         .map(|[x, y]| json!([r2(x), r2(y)]))
         .collect()
 }
 
-/// Build a GeoJSON feature with string properties.
-pub fn feature(gtype: &str, coordinates: Value, props: &[(&str, &str)]) -> Value {
-    let properties = serde_json::Map::from_iter(
-        props
-            .iter()
-            .map(|(k, v)| (k.to_string(), Value::String(v.to_string()))),
-    );
-    json!({
-        "type": "Feature",
-        "geometry": { "type": gtype, "coordinates": coordinates },
-        "properties": properties,
-    })
-}
-
-/// Write a FeatureCollection. `crs` is included verbatim when given (see [`crs`]).
-pub fn write_feature_collection<W: Write>(
-    w: &mut W,
-    features: &[Value],
-    crs: Option<&Value>,
-) -> anyhow::Result<()> {
-    write_prelude(w, crs)?;
-    let mut first = true;
-    for f in features {
-        if !first {
-            w.write_all(b",")?;
-        }
-        first = false;
-        serde_json::to_writer(&mut *w, f)?;
-    }
-    w.write_all(b"]}")?;
-    Ok(())
-}
-
-/// Typed GeoJSON properties for a terrain classification: contour family, knoll and
-/// small depression, or cliff, chosen by which schema class accepts its symbol code.
+/// Typed GeoJSON properties for a terrain classification: the schema class (contour
+/// family, knoll and small depression, or cliff) that owns its symbol code.
 /// `elevation` is kept only for the contour family. None for a classification without
 /// a symbol code (the knoll-detector artifact), which is left out of the output.
 fn terrain_properties(
@@ -146,28 +106,28 @@ fn terrain_properties(
     let code = c.symbol_code()?;
     let symbol_name = c.symbol_name().map(String::from);
     let flag = |set: bool| set.then_some(true);
-    Some(if let Ok(symbol) = code.parse() {
-        ContourProperties {
-            symbol,
+    // each arm lists exactly its schema enum, so the parse cannot fail
+    Some(match code {
+        "101" | "102" | "103" => ContourProperties {
+            symbol: code.parse().unwrap(),
             symbol_name,
             elevation,
             depression: flag(c.is_depression_line()),
             slope_line: flag(c == Classification::SlopeLine),
         }
-        .into()
-    } else if let Ok(symbol) = code.parse() {
-        KnollProperties {
-            symbol,
+        .into(),
+        "109" | "111" => KnollProperties {
+            symbol: code.parse().unwrap(),
             symbol_name,
             ugly: flag(c.is_ugly()),
         }
-        .into()
-    } else {
-        CliffProperties {
-            symbol: code.parse().ok()?,
+        .into(),
+        "201" | "202" => CliffProperties {
+            symbol: code.parse().unwrap(),
             symbol_name,
         }
-        .into()
+        .into(),
+        _ => unreachable!("symbol code {code} has no terrain schema class"),
     })
 }
 
@@ -226,7 +186,7 @@ pub fn bindxf_to_geojson(
         }
     }
     let collection = geojson_types::GeoJsonOutput {
-        crs: crs(epsg).map(serde_json::from_value).transpose()?,
+        crs: crs(epsg),
         features,
         type_: json!("FeatureCollection"),
     };
@@ -356,6 +316,15 @@ mod tests {
             back(Classification::Cliff2, None),
             P::CliffProperties(_)
         ));
+    }
+
+    #[test]
+    fn crs_names_the_epsg_code() {
+        assert_eq!(
+            serde_json::to_value(crs(Some(3067))).unwrap(),
+            json!({"type": "name", "properties": {"name": "urn:ogc:def:crs:EPSG::3067"}})
+        );
+        assert!(crs(None).is_none());
     }
 
     #[test]
