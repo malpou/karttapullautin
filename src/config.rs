@@ -111,6 +111,8 @@ pub struct Config {
     pub vector_greenshade_isom: Vec<VegetationPropertiesSymbol>,
     /// Douglas-Peucker tolerance in metres for vegetation areas; 0 disables simplification.
     pub vector_simplify: f64,
+    /// Give each green vegetation area its raw greenshade index as a `shade` property.
+    pub vector_shade: bool,
     /// EPSG code of the input data's projected CRS, declared in every GeoJSON output.
     /// None (key empty or missing) leaves the declaration out.
     pub epsg: Option<u32>,
@@ -368,6 +370,12 @@ impl Config {
         } else {
             Vec::new()
         };
+        let vector_shade = match gs.get("vector_shade").unwrap_or("0") {
+            "0" => false,
+            "1" if vector_vege => true,
+            "1" => return Err("`vector_shade=1` requires `vector_vege=1`".into()),
+            v => return Err(format!("Value {v} of `vector_shade` must be 0 or 1").into()),
+        };
         let epsg: Option<u32> = match gs.get("epsg").map(str::trim).unwrap_or("") {
             "" => None,
             v => match v.parse::<u32>() {
@@ -519,6 +527,7 @@ impl Config {
             vector_vege,
             vector_greenshade_isom,
             vector_simplify,
+            vector_shade,
             epsg,
             buildingcolor,
             vectorconf,
@@ -654,6 +663,21 @@ mod test {
                 .err()
                 .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
             assert!(err.contains("vector_simplify"), "{err}");
+        }
+    }
+
+    #[test]
+    fn vector_shade_is_0_or_1_and_needs_vector_vege() {
+        assert!(!load_with(&[]).unwrap().vector_shade);
+        let config = load_with(&[("vector_vege", "1"), ("vector_shade", "1")]).unwrap();
+        assert!(config.vector_shade);
+        let err = load_with(&[("vector_shade", "1")]).err().unwrap();
+        assert!(err.contains("vector_vege"), "{err}");
+        for bad in ["yes", "", "2"] {
+            let err = load_with(&[("vector_vege", "1"), ("vector_shade", bad)])
+                .err()
+                .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
+            assert!(err.contains("vector_shade"), "{err}");
         }
     }
 

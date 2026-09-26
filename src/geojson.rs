@@ -260,10 +260,12 @@ pub fn osm_area(
     )
 }
 
-/// Polygon feature (exterior ring, then holes) for one vegetation area. Rings are open
-/// (first vertex not repeated); GeoJSON rings are closed here.
+/// Polygon feature (exterior ring, then holes) for one vegetation area, with its
+/// greenshade index as `shade` when given. Rings are open (first vertex not repeated);
+/// GeoJSON rings are closed here.
 pub fn vegetation_area(
     symbol: geojson_types::VegetationPropertiesSymbol,
+    shade: Option<std::num::NonZeroU64>,
     rings: &[Vec<Point2>],
 ) -> geojson_types::Feature {
     feature(
@@ -275,11 +277,7 @@ pub fn vegetation_area(
                 Value::Array(coords_line(closed.map(|p| [p.x, p.y])))
             })
             .collect(),
-        geojson_types::VegetationProperties {
-            symbol,
-            shade: None,
-        }
-        .into(),
+        geojson_types::VegetationProperties { symbol, shade }.into(),
     )
 }
 
@@ -1833,6 +1831,7 @@ mod tests {
             terrain_line(Classification::Cliff2, &[[20.0, 20.0], [30.0, 30.0]]),
             vegetation_area(
                 geojson_types::VegetationPropertiesSymbol::X406,
+                std::num::NonZeroU64::new(2),
                 &[square(5.0, 5.0, 10.0)],
             ),
             terrain_point(Classification::Dotknoll, [2.0, 2.0]),
@@ -1888,6 +1887,14 @@ mod tests {
                 ),
                 (Point, "109".into(), vec![[2.0, 2.0]]),
             ]
+        );
+        let FeatureProperties::VegetationProperties(veg) = &out.features[2].properties else {
+            panic!("not vegetation: {:?}", out.features[2].properties);
+        };
+        assert_eq!(
+            veg.shade.map(u64::from),
+            Some(2),
+            "the shade survives the crop"
         );
     }
 
@@ -2029,6 +2036,7 @@ mod tests {
             &VEGETATION,
             vec![vegetation_area(
                 geojson_types::VegetationPropertiesSymbol::X406,
+                std::num::NonZeroU64::new(2),
                 &[square(0.0, 300.0, 30.0)],
             )],
         );
@@ -2095,6 +2103,10 @@ mod tests {
             by_symbol["406"][0].geometry.type_,
             FeatureGeometryType::Polygon
         );
+        let FeatureProperties::VegetationProperties(veg) = &by_symbol["406"][0].properties else {
+            panic!("not vegetation: {:?}", by_symbol["406"][0].properties);
+        };
+        assert_eq!(veg.shade.map(u64::from), Some(2), "the shade is published");
 
         let dxf = String::from_utf8(read_bytes(&fs, &out.join(COMBINED_DXF))).unwrap();
         assert!(dxf.contains("$ACADVER"));

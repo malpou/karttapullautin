@@ -133,9 +133,40 @@ fn assert_osm_features(path: &Path, geometry: &str) -> Vec<Value> {
     features
 }
 
+/// The template's `vector_greenshade_isom`: the symbol code per greenshade index (1-based;
+/// the last code repeats for higher indices).
+fn greenshade_isom() -> Vec<String> {
+    let template = include_str!("../pullauta.default.ini");
+    let line = template
+        .lines()
+        .find_map(|l| l.strip_prefix("vector_greenshade_isom="))
+        .unwrap();
+    line.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// Check a feature's `shade` against its symbol: a green area (406/408/410) has its
+/// greenshade index as an integer, mapped to its symbol by `vector_greenshade_isom`;
+/// every other feature has none.
+fn assert_shade(f: &Value, map: &[String]) {
+    let p = &f["properties"];
+    match p["symbol"].as_str().unwrap_or_default() {
+        symbol @ ("406" | "408" | "410") => {
+            let shade = p["shade"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("no shade: {f}"));
+            assert!(shade >= 1, "{f}");
+            let index = (shade as usize).min(map.len()) - 1;
+            assert_eq!(map[index], symbol, "{f}");
+        }
+        _ => assert!(p.get("shade").is_none(), "{f}"),
+    }
+}
+
 /// Check vegetation features: Polygons whose rings are closed, and properties that are
-/// only a vegetation `symbol`. Returns the symbols present.
-fn assert_vegetation_features(path: &Path) -> BTreeSet<String> {
+/// only a vegetation `symbol`, plus the greenshade index when `shade` (see
+/// [`assert_shade`]). Returns the symbols present.
+fn assert_vegetation_features(path: &Path, shade: bool) -> BTreeSet<String> {
+    let map = greenshade_isom();
     let mut symbols = BTreeSet::new();
     for f in feature_collection(path) {
         assert_eq!(f["geometry"]["type"], "Polygon", "{}: {f}", path.display());
@@ -145,7 +176,16 @@ fn assert_vegetation_features(path: &Path) -> BTreeSet<String> {
             assert_eq!(ring.first(), ring.last(), "{}: {f}", path.display());
         }
         let p = f["properties"].as_object().unwrap();
-        assert_eq!(p.len(), 1, "{}: {f}", path.display());
+        assert!(
+            p.keys().all(|k| k == "symbol" || k == "shade"),
+            "{}: {f}",
+            path.display()
+        );
+        if shade {
+            assert_shade(&f, &map);
+        } else {
+            assert!(p.get("shade").is_none(), "{}: {f}", path.display());
+        }
         let symbol = p["symbol"].as_str().unwrap();
         assert!(
             ["403", "406", "407", "408", "410"].contains(&symbol),
@@ -228,7 +268,8 @@ fn assert_terrain_outputs(tile: &Path) {
 }
 
 /// Single job on the regression tile, as in the regression workflow's single run: the
-/// terrain GeoJSON lands in temp/.
+/// terrain and vegetation GeoJSON land in temp/, the green areas without `shade`
+/// (vector_shade=0).
 #[test]
 #[ignore]
 fn single_job_writes_terrain_geojson() {
@@ -238,11 +279,15 @@ fn single_job_writes_terrain_geojson() {
 
     run_pullauta(&dir, &["test_file.laz"]);
 
-    assert_terrain_outputs(&dir.join("temp"));
+    let temp = dir.join("temp");
+    assert_terrain_outputs(&temp);
+    let green = assert_vegetation_features(&temp.join(geojson::VEGETATION.file_name()), false);
+    assert!(green.contains("406"), "{green:?}");
 }
 
 /// Batch job as in the regression workflow: one tile plus the OSM shapefile zip, with
-/// `vectorconf=osm.txt`, and vegetation vectorization on. `savetempfolders=1` keeps the
+/// `vectorconf=osm.txt`, and vegetation vectorization on, with the greenshade index
+/// (`vector_shade=1`). `savetempfolders=1` keeps the
 /// tile's temp folder as `temp_test_file_dir/`. `batchmerge=1` runs the merges and the
 /// combined export into `out/`, with `epsg` declared in every GeoJSON file.
 #[test]
@@ -266,6 +311,7 @@ fn batch_with_osm_vectorconf() {
             ("batch", "1"),
             ("vectorconf", "osm.txt"),
             ("vector_vege", "1"),
+            ("vector_shade", "1"),
             ("output_dxf", "1"),
             ("savetempfolders", "1"),
             ("batchmerge", "1"),
@@ -301,16 +347,16 @@ fn batch_with_osm_vectorconf() {
     }
 
     // vegetation: the default vector_greenshade_isom maps the greenshades to 406/408/410,
-    // open land is 403, undergrowth 407
-    let green = assert_vegetation_features(&tile.join(geojson::VEGETATION.file_name()));
+    // open land is 403, undergrowth 407; only the green areas carry a shade
+    let green = assert_vegetation_features(&tile.join(geojson::VEGETATION.file_name()), true);
     assert!(
         green.is_subset(&["406", "408", "410"].map(String::from).into()),
         "{green:?}"
     );
     assert!(green.contains("406"), "{green:?}");
-    let open_land = assert_vegetation_features(&tile.join(geojson::OPEN_LAND.file_name()));
+    let open_land = assert_vegetation_features(&tile.join(geojson::OPEN_LAND.file_name()), true);
     assert_eq!(open_land, ["403".to_string()].into());
-    let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()));
+    let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()), true);
     assert_eq!(ug, ["407".to_string()].into());
 
     // the same areas as closed DXF polylines, one DXF layer per symbol code
@@ -386,6 +432,11 @@ fn assert_batch_merge(out: &Path) {
             found.contains(symbol),
             "no {symbol} in output.geojson: {found:?}"
         );
+    }
+    // the green areas keep their shade through crop, merge and the combined export
+    let map = greenshade_isom();
+    for f in &combined {
+        assert_shade(f, &map);
     }
     // OSM features keep their category; terrain and vegetation have none
     assert!(

@@ -64,7 +64,7 @@
       "additionalProperties": false,
       "properties": {
         "symbol": { "enum": ["403", "406", "407", "408", "410"] },
-        "shade": { "type": "number" }
+        "shade": { "type": "integer", "minimum": 1 }
       }
     },
     "OsmProperties": {
