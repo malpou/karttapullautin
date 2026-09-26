@@ -1,11 +1,11 @@
 //! GeoJSON output for vector features (contours, cliffs, knolls, vector-mapped
-//! shapefile features), plus the serialization contract generated from the JSON Schema.
+//! shapefile features, vegetation areas), plus the serialization contract generated from the JSON Schema.
 
 use std::io::{BufWriter, Write};
 
 use serde_json::{Value, json};
 
-use crate::geometry::{BinaryDxf, Classification, Geometry};
+use crate::geometry::{BinaryDxf, Classification, Geometry, Point2};
 use crate::io::fs::FileSystem;
 use geojson_types::FeatureGeometryType;
 
@@ -30,6 +30,29 @@ pub struct GeoJsonOutput {
     pub skip_when_merged_bin: bool,
 }
 
+impl GeoJsonOutput {
+    /// File name of this output in a temp folder: `<name>.geojson`.
+    pub fn file_name(&self) -> String {
+        format!("{}.geojson", self.name)
+    }
+}
+
+/// Vegetation areas traced from the greenshade grid.
+pub const VEGETATION: GeoJsonOutput = GeoJsonOutput {
+    name: "vegetation",
+    skip_when_merged_bin: false,
+};
+/// Open land areas (ISOM 403), traced from the yellow grid.
+pub const YELLOW: GeoJsonOutput = GeoJsonOutput {
+    name: "yellow",
+    skip_when_merged_bin: false,
+};
+/// Undergrowth areas.
+pub const UNDERGROWTH: GeoJsonOutput = GeoJsonOutput {
+    name: "undergrowth",
+    skip_when_merged_bin: false,
+};
+
 pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
     GeoJsonOutput {
         name: "contours",
@@ -47,18 +70,9 @@ pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
         name: "cliffs",
         skip_when_merged_bin: true,
     },
-    GeoJsonOutput {
-        name: "vegetation",
-        skip_when_merged_bin: false,
-    },
-    GeoJsonOutput {
-        name: "yellow",
-        skip_when_merged_bin: false,
-    },
-    GeoJsonOutput {
-        name: "undergrowth",
-        skip_when_merged_bin: false,
-    },
+    VEGETATION,
+    YELLOW,
+    UNDERGROWTH,
     GeoJsonOutput {
         name: "osm_lines",
         skip_when_merged_bin: false,
@@ -203,6 +217,29 @@ pub fn osm_area(
             .map(|ring| Value::Array(coords_line(ring.iter().copied())))
             .collect(),
         osm_properties(symbol, category, upper_level),
+    )
+}
+
+/// Polygon feature (exterior ring, then holes) for one vegetation area. Rings are open
+/// (first vertex not repeated); GeoJSON rings are closed here.
+pub fn vegetation_area(
+    symbol: geojson_types::VegetationPropertiesSymbol,
+    rings: &[Vec<Point2>],
+) -> geojson_types::Feature {
+    feature(
+        FeatureGeometryType::Polygon,
+        rings
+            .iter()
+            .map(|ring| {
+                let closed = ring.iter().chain(ring.first());
+                Value::Array(coords_line(closed.map(|p| [p.x, p.y])))
+            })
+            .collect(),
+        geojson_types::VegetationProperties {
+            symbol,
+            shade: None,
+        }
+        .into(),
     )
 }
 

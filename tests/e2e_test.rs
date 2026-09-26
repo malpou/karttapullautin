@@ -10,9 +10,11 @@
 //! downloaded once into cargo's per-target temp directory. Each run works in a fresh
 //! directory under that temp directory, never in the repository.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use pullauta::geojson;
 use serde_json::Value;
 
 const INPUTS: &[(&str, &str)] = &[
@@ -131,9 +133,33 @@ fn assert_osm_features(path: &Path, geometry: &str) -> Vec<Value> {
     features
 }
 
+/// Check vegetation features: Polygons whose rings are closed, and properties that are
+/// only a vegetation `symbol`. Returns the symbols present.
+fn assert_vegetation_features(path: &Path) -> BTreeSet<String> {
+    let mut symbols = BTreeSet::new();
+    for f in feature_collection(path) {
+        assert_eq!(f["geometry"]["type"], "Polygon", "{}: {f}", path.display());
+        for ring in f["geometry"]["coordinates"].as_array().unwrap() {
+            let ring = ring.as_array().unwrap();
+            assert!(ring.len() >= 4, "{}: {f}", path.display());
+            assert_eq!(ring.first(), ring.last(), "{}: {f}", path.display());
+        }
+        let p = f["properties"].as_object().unwrap();
+        assert_eq!(p.len(), 1, "{}: {f}", path.display());
+        let symbol = p["symbol"].as_str().unwrap();
+        assert!(
+            ["403", "406", "407", "408", "410"].contains(&symbol),
+            "{}: {f}",
+            path.display()
+        );
+        symbols.insert(symbol.to_string());
+    }
+    symbols
+}
+
 /// Batch job as in the regression workflow: one tile plus the OSM shapefile zip, with
-/// `vectorconf=osm.txt`. `savetempfolders=1` keeps the tile's temp folder as
-/// `temp_test_file_dir/`.
+/// `vectorconf=osm.txt`, and vegetation vectorization on. `savetempfolders=1` keeps the
+/// tile's temp folder as `temp_test_file_dir/`.
 #[test]
 #[ignore]
 fn batch_with_osm_vectorconf() {
@@ -154,6 +180,7 @@ fn batch_with_osm_vectorconf() {
         &[
             ("batch", "1"),
             ("vectorconf", "osm.txt"),
+            ("vector_vege", "1"),
             ("savetempfolders", "1"),
         ],
     );
@@ -184,4 +211,29 @@ fn batch_with_osm_vectorconf() {
             "{f}"
         );
     }
+
+    // vegetation: the default vector_greenshade_isom maps the greenshades to 406/408/410,
+    // yellow is 403, undergrowth 407
+    let green = assert_vegetation_features(&tile.join(geojson::VEGETATION.file_name()));
+    assert!(
+        green.is_subset(&["406", "408", "410"].map(String::from).into()),
+        "{green:?}"
+    );
+    assert!(green.contains("406"), "{green:?}");
+    let yellow = assert_vegetation_features(&tile.join(geojson::YELLOW.file_name()));
+    assert_eq!(yellow, ["403".to_string()].into());
+    let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()));
+    assert_eq!(ug, ["407".to_string()].into());
+
+    // the same areas as closed DXF polylines, one DXF layer per symbol code
+    let dxf = std::fs::read_to_string(tile.join("vegetation.dxf")).unwrap();
+    for symbol in green.iter().chain(&yellow).chain(&ug) {
+        assert!(
+            dxf.contains(&format!(
+                "POLYLINE\r\n 66\r\n1\r\n  8\r\n{symbol}\r\n 70\r\n1\r\n"
+            )),
+            "no closed polyline on layer {symbol}"
+        );
+    }
+    assert!(tile.join("vegetation.dxf.bin").exists());
 }

@@ -254,6 +254,8 @@ pub fn makevege(
         img_height,
         PaletteColorEnum::BackgroundWhite.to_color(),
     );
+    // per 3 m cell: 1 where yellow is drawn, for vector_vege
+    let mut yellow_class = Vec2D::new(w_3, h_3, 0u8);
     for x in 0..(w_3 - 2) {
         for y in 0..(h_3 - 2) {
             let mut ghit2 = 0;
@@ -267,6 +269,7 @@ pub fn makevege(
                 }
             }
             if ghit2 as f64 / (highhit2 as f64 + ghit2 as f64 + 0.01) > yellowthreshold {
+                yellow_class[(x, y)] = 1;
                 imgye2.draw_filled_rect(
                     Rect::at(x as i32 * 3 + 2, (h_3 as i32 - y as i32) * 3 - 3).of_size(3, 3),
                     PaletteColorEnum::Yellow2.to_color(),
@@ -296,6 +299,8 @@ pub fn makevege(
         img_height,
         PaletteColorEnum::BackgroundWhite.to_color(),
     );
+    // per block cell: the greenshade index (1-based, 0 = none), for vector_vege
+    let mut green_class = Vec2D::new(w_block, h_block, 0u8);
     for x in 0..w_block {
         for y in 0..h_block {
             let roof = top[(x, y)]
@@ -341,6 +346,7 @@ pub fn makevege(
                     }
                 }
                 if greenshade > 0 {
+                    green_class[(x, y)] = greenshade as u8;
                     imggr1.draw_filled_rect(
                         Rect::at(
                             ((x as f64 - 0.5) * block) as i32 - addition,
@@ -703,6 +709,33 @@ pub fn makevege(
         .create(tmpfolder.join("vegetation.pgw"))
         .expect("cannot create pgw file");
     WorldFile::write_unit_resolution(&mut writer, xmin, ymax).expect("Cannot write pgw file");
+
+    if config.vector_vege {
+        // per block*step cell: 1 where undergrowth is drawn (same test as the raster)
+        let mut ug_class = Vec2D::new(w_block_step, h_block_step, 0u8);
+        for x in 0..w_block_step {
+            for y in 0..h_block_step {
+                let ug_entry = &ug[(x, y)];
+                let value = ug_entry.ug as f64 / (ug_entry.ug as f64 + ug_entry.ugg as f64 + 0.01);
+                if value > uglimit {
+                    ug_class[(x, y)] = 1;
+                }
+            }
+        }
+        crate::vege_vector::export_all(
+            fs,
+            config,
+            tmpfolder,
+            &green_class,
+            &yellow_class,
+            &ug_class,
+            xmin,
+            ymin,
+            xmax,
+            ymax,
+            block,
+        )?;
+    }
 
     info!("Done");
     Ok(())

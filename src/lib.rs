@@ -20,6 +20,7 @@ pub mod process;
 pub mod render;
 pub mod util;
 pub mod vec2d;
+pub mod vege_vector;
 pub mod vegetation;
 
 #[cfg(feature = "shapefile")]
