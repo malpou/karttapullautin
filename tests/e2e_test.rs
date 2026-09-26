@@ -243,7 +243,8 @@ fn single_job_writes_terrain_geojson() {
 
 /// Batch job as in the regression workflow: one tile plus the OSM shapefile zip, with
 /// `vectorconf=osm.txt`, and vegetation vectorization on. `savetempfolders=1` keeps the
-/// tile's temp folder as `temp_test_file_dir/`.
+/// tile's temp folder as `temp_test_file_dir/`. `batchmerge=1` runs the merges and the
+/// combined export into `out/`, with `epsg` declared in every GeoJSON file.
 #[test]
 #[ignore]
 fn batch_with_osm_vectorconf() {
@@ -267,6 +268,8 @@ fn batch_with_osm_vectorconf() {
             ("vector_vege", "1"),
             ("output_dxf", "1"),
             ("savetempfolders", "1"),
+            ("batchmerge", "1"),
+            ("epsg", EPSG),
         ],
     );
 
@@ -325,4 +328,87 @@ fn batch_with_osm_vectorconf() {
     assert!(tile.join("vegetation.dxf.bin").exists());
 
     assert_terrain_outputs(&tile);
+
+    assert_batch_merge(&dir.join("out"));
+}
+
+const EPSG: &str = "3067";
+
+/// Check the GeoJSON `crs` member names [`EPSG`].
+fn assert_crs(path: &Path) {
+    let val: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(
+        val["crs"]["properties"]["name"],
+        format!("urn:ogc:def:crs:EPSG::{EPSG}"),
+        "{}",
+        path.display()
+    );
+}
+
+/// Check the batch output folder after `batchmerge=1`: every GeoJSON output cropped per
+/// tile and merged, the combined export, and the merged rasters (not in the working
+/// directory).
+fn assert_batch_merge(out: &Path) {
+    for output in geojson::GEOJSON_OUTPUTS {
+        for name in [
+            output.tile_file_name("test_file"),
+            output.merged_file_name(),
+        ] {
+            let path = out.join(name);
+            feature_collection(&path);
+            assert_crs(&path);
+        }
+    }
+    // (merged_vege.png needs savetempfiles=1, which writes the tile vegetation rasters)
+    for name in ["merged.png", "merged.pgw", "merged_depr.png"] {
+        assert!(out.join(name).exists(), "{name} is not in out/");
+        assert!(
+            !out.parent().unwrap().join(name).exists(),
+            "{name} is in cwd"
+        );
+    }
+
+    for name in [geojson::COMBINED_DXF, geojson::COMBINED_CRT] {
+        assert!(out.join(name).exists(), "{name} was not written");
+    }
+    let combined_path = out.join(geojson::COMBINED_GEOJSON);
+    assert_crs(&combined_path);
+    let combined = feature_collection(&combined_path);
+    let found = symbols(&combined);
+    for symbol in [
+        "101", "102", "103", // contours, form lines
+        "109", "111", // knolls and small depressions
+        "201", "202", // cliffs
+        "403", "406", "407", // open land, vegetation, undergrowth
+        "502", "521", // OSM: wide road, building
+    ] {
+        assert!(
+            found.contains(symbol),
+            "no {symbol} in output.geojson: {found:?}"
+        );
+    }
+    // OSM features keep their category; terrain and vegetation have none
+    assert!(
+        combined
+            .iter()
+            .any(|f| f["properties"]["category"] == "building")
+    );
+    for f in &combined {
+        let geometry = f["geometry"]["type"].as_str().unwrap();
+        assert!(
+            ["Point", "LineString", "Polygon"].contains(&geometry),
+            "{f}"
+        );
+    }
+
+    // one DXF layer per symbol code, each mapped to its OCAD symbol
+    let crt = std::fs::read_to_string(out.join(geojson::COMBINED_CRT)).unwrap();
+    let dxf = std::fs::read_to_string(out.join(geojson::COMBINED_DXF)).unwrap();
+    for symbol in &found {
+        assert!(
+            crt.contains(&format!("{symbol}.000 {symbol}\n")),
+            "{symbol}"
+        );
+        assert!(dxf.contains(&format!("  8\r\n{symbol}\r\n")), "{symbol}");
+    }
 }

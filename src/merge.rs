@@ -15,6 +15,16 @@ use crate::mapframe::WorldFile;
 use crate::vec2d::Vec2D;
 use image::buffer::ConvertBuffer;
 
+/// The merged `.dxf.bin` of every tile's terrain, written to the working directory by
+/// [`bindxfmerge`] and read by the combined export.
+pub const MERGED_DXF_BIN: &str = "merged.dxf.bin";
+
+/// Whether a file in the batch output folder is a merge output (`merged.png`,
+/// `merged_vege.png`, ...), which the png merges write there and must not read back.
+fn is_merge_output(filename: &str) -> bool {
+    filename.starts_with(crate::geojson::MERGED_PREFIX)
+}
+
 fn merge_png(
     fs: &impl FileSystem,
     config: &Config,
@@ -100,6 +110,9 @@ fn merge_png(
         }
     }
 
+    // the merged image belongs next to the tiles it merges, not in the working directory
+    let outfilename = format!("{batchoutfolder}/{outfilename}");
+
     let im_rgb8: RgbImage = im.convert();
     im_rgb8
         .write_to(
@@ -151,6 +164,9 @@ pub fn pngmergevege(
     let mut png_files: Vec<PathBuf> = Vec::new();
     for path in fs.list(batchoutfolder).unwrap() {
         let filename = path.file_name().unwrap().to_str().unwrap();
+        if is_merge_output(filename) {
+            continue;
+        }
         if filename.ends_with("_vege.png")
             || (include_undergrowth && filename.ends_with("_undergrowth.png"))
         {
@@ -183,6 +199,9 @@ pub fn pngmerge(
     let mut png_files: Vec<PathBuf> = Vec::new();
     for path in fs.list(batchoutfolder).unwrap() {
         let filename = path.file_name().unwrap().to_str().unwrap();
+        if is_merge_output(filename) {
+            continue;
+        }
         if filename.ends_with(".png")
             && !filename.ends_with("_undergrowth.png")
             && !filename.ends_with("_undergrowth_bit.png")
@@ -333,7 +352,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
     // output all geometries to a single file
     if let Some(all_bounds) = first_file_bounds {
         let out_merged = BinaryDxf::new(all_bounds, all_geometries);
-        out_merged.to_writer(&mut fs.create("merged.dxf.bin")?)?;
+        out_merged.to_writer(&mut fs.create(MERGED_DXF_BIN)?)?;
 
         if config.output_dxf {
             out_merged.to_dxf(&mut fs.create("merged.dxf")?)?;

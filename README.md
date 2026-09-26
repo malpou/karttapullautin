@@ -147,12 +147,14 @@ vegetation backround images (if saved, there is parameter for saving there)
     ./pullauta pngmergevege
 
 
-The last paramameter (number) is scale factor. 2 reduces size to 50%, 4 to 25%, 20 to 5% and so on. Command writes out jpg and png versions. 
+The last paramameter (number) is scale factor. 2 reduces size to 50%, 4 to 25%, 20 to 5% and so on. Command writes out jpg and png versions (merged.png, merged.jpg and their world files) into the batch output folder. 
 Note, you easily run out of memory if you try merging together too large area with too high resolution.
 
 You can also merge dxf files (if saved, there is parameter for saving there)
 
     ./pullauta dxfmerge
+
+With `batchmerge=1` the batch run does all of the merging itself when the tiles are done: the png merges, the dxf merge, and, for the vector outputs (`vector_vege=1`, or a `vectorconf`), each tile's GeoJSON cropped to the tile, merged into `merged_*.geojson`, and published as one `output.geojson`, one `output.dxf` (symbol codes as DXF layers) and `output.ocdCrt` (the cross reference table for OCAD's DXF import), all in the batch output folder. Set `epsg` to declare the coordinate system in the GeoJSON files.
 
 ### Note:
 

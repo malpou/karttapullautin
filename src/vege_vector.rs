@@ -384,7 +384,7 @@ fn perp_dist(p: &Point2, a: &Point2, b: &Point2) -> f64 {
 }
 
 /// Douglas-Peucker on an open polyline (endpoints kept).
-fn dp(pts: &[Point2], eps: f64) -> Vec<Point2> {
+pub(crate) fn dp(pts: &[Point2], eps: f64) -> Vec<Point2> {
     let n = pts.len();
     if n <= 2 {
         return pts.to_vec();
@@ -420,7 +420,7 @@ fn dp(pts: &[Point2], eps: f64) -> Vec<Point2> {
 
 /// Douglas-Peucker for a closed ring: split at the vertex farthest from vertex 0,
 /// simplify both halves, rejoin. Ring is open (no repeated first point).
-fn simplify_closed(ring: Vec<Point2>, eps: f64) -> Vec<Point2> {
+pub(crate) fn simplify_closed(ring: Vec<Point2>, eps: f64) -> Vec<Point2> {
     if ring.len() <= 4 {
         return ring;
     }
@@ -441,7 +441,7 @@ fn simplify_closed(ring: Vec<Point2>, eps: f64) -> Vec<Point2> {
 }
 
 /// One iteration of Chaikin corner cutting on an open polyline, endpoints preserved.
-fn chaikin_open(pts: &[Point2]) -> Vec<Point2> {
+pub(crate) fn chaikin_open(pts: &[Point2]) -> Vec<Point2> {
     if pts.len() < 3 {
         return pts.to_vec();
     }
@@ -461,7 +461,7 @@ fn chaikin_open(pts: &[Point2]) -> Vec<Point2> {
 }
 
 /// One iteration of Chaikin corner cutting on a closed ring (open representation).
-fn chaikin_closed(ring: &[Point2]) -> Vec<Point2> {
+pub(crate) fn chaikin_closed(ring: &[Point2]) -> Vec<Point2> {
     let n = ring.len();
     let mut out = Vec::with_capacity(2 * n);
     for i in 0..n {
@@ -484,12 +484,13 @@ fn write_geojson_file(
     fs: &impl FileSystem,
     path: &Path,
     polygons: &[VegPolygon],
+    epsg: Option<u32>,
 ) -> anyhow::Result<()> {
     let features = polygons
         .iter()
         .map(|(symbol, rings)| geojson::vegetation_area(*symbol, rings))
         .collect();
-    geojson::write_feature_collection(fs, path, features, None)
+    geojson::write_feature_collection(fs, path, features, epsg)
 }
 
 /// Vectorize and write all vegetation vector outputs. Called from `makevege` when
@@ -562,7 +563,7 @@ pub fn export_all(
         (geojson::OPEN_LAND, &open_land_polys),
         (geojson::UNDERGROWTH, &undergrowth_polys),
     ] {
-        write_geojson_file(fs, &tmpfolder.join(output.file_name()), polys)?;
+        write_geojson_file(fs, &tmpfolder.join(output.file_name()), polys, config.epsg)?;
     }
 
     // combined DXF in draw order (stable sort keeps the traced order within a symbol)
@@ -790,7 +791,7 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let name = geojson::VEGETATION.file_name();
         let path = Path::new(&name);
-        write_geojson_file(&fs, path, &polys).unwrap();
+        write_geojson_file(&fs, path, &polys, None).unwrap();
 
         let value: serde_json::Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
         let out: GeoJsonOutput = serde_json::from_value(value.clone()).unwrap();

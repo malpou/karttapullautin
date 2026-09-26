@@ -30,6 +30,13 @@ pub struct Config {
     pub savetempfiles: bool,
     pub savetempfolders: bool,
 
+    /// Buffer in metres read from the neighbouring tiles in batch mode, so tile edges
+    /// are seamless.
+    pub batchbuffer: f64,
+    /// Run every merge step after a batch run: the png merges, the dxf merge, the
+    /// GeoJSON merge and the combined export.
+    pub batchmerge: bool,
+
     pub scalefactor: f64,
     pub vege_bitmode: bool,
     pub zoff: f64,
@@ -104,6 +111,9 @@ pub struct Config {
     pub vector_greenshade_isom: Vec<VegetationPropertiesSymbol>,
     /// Douglas-Peucker tolerance in metres for vegetation areas; 0 disables simplification.
     pub vector_simplify: f64,
+    /// EPSG code of the input data's projected CRS, declared in every GeoJSON output.
+    /// None (key empty or missing) leaves the declaration out.
+    pub epsg: Option<u32>,
 
     // render
     pub buildingcolor: (u8, u8, u8),
@@ -187,6 +197,23 @@ impl Config {
         let batchoutfolder = gs.get("batchoutfolder").unwrap_or("").to_string();
         let savetempfiles: bool = gs.get("savetempfiles").unwrap() == "1";
         let savetempfolders: bool = gs.get("savetempfolders").unwrap() == "1";
+        let batchbuffer: f64 = match gs.get("batchbuffer") {
+            None => 127.0,
+            Some(v) => match v.trim().parse::<f64>() {
+                Ok(b) if b.is_finite() && b > 0.0 => b,
+                _ => {
+                    return Err(format!(
+                        "Value {v} of `batchbuffer` must be a number of metres above 0"
+                    )
+                    .into());
+                }
+            },
+        };
+        let batchmerge = match gs.get("batchmerge").unwrap_or("0") {
+            "0" => false,
+            "1" => true,
+            v => return Err(format!("Value {v} of `batchmerge` must be 0 or 1").into()),
+        };
 
         let scalefactor: f64 = parse_typed(gs, "scalefactor", 1.0);
         let vege_bitmode: bool = gs.get("vege_bitmode").unwrap_or("0") == "1";
@@ -341,6 +368,15 @@ impl Config {
         } else {
             Vec::new()
         };
+        let epsg: Option<u32> = match gs.get("epsg").map(str::trim).unwrap_or("") {
+            "" => None,
+            v => match v.parse::<u32>() {
+                Ok(code) if code > 0 => Some(code),
+                _ => {
+                    return Err(format!("Value {v} of `epsg` must be a positive EPSG code").into());
+                }
+            },
+        };
         let vector_simplify: f64 = match gs.get("vector_simplify") {
             None => 2.0,
             Some(v) => match v.trim().parse::<f64>() {
@@ -407,6 +443,9 @@ impl Config {
                     .into(),
             );
         }
+        if batchmerge && !batch {
+            return Err("Parameter `batchmerge` is 1 but `batch` is not".into());
+        }
         Ok(Self {
             batch,
             processes,
@@ -420,6 +459,8 @@ impl Config {
             pnorthlineswidth,
             lazfolder,
             batchoutfolder,
+            batchbuffer,
+            batchmerge,
             savetempfolders,
             savetempfiles,
             scalefactor,
@@ -478,6 +519,7 @@ impl Config {
             vector_vege,
             vector_greenshade_isom,
             vector_simplify,
+            epsg,
             buildingcolor,
             vectorconf,
             mtkskiplayers,
@@ -612,6 +654,46 @@ mod test {
                 .err()
                 .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
             assert!(err.contains("vector_simplify"), "{err}");
+        }
+    }
+
+    #[test]
+    fn batch_keys_default_to_the_old_behaviour() {
+        let config = load_with(&[]).unwrap();
+        assert_eq!(config.batchbuffer, 127.0);
+        assert!(!config.batchmerge);
+        assert_eq!(config.epsg, None);
+    }
+
+    #[test]
+    fn batchbuffer_must_be_above_zero() {
+        let config = load_with(&[("batchbuffer", "50.5")]).unwrap();
+        assert_eq!(config.batchbuffer, 50.5);
+        for bad in ["0", "-1", "wide", "", "inf"] {
+            let err = load_with(&[("batchbuffer", bad)]).err().unwrap();
+            assert!(err.contains("batchbuffer"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn batchmerge_needs_batch() {
+        let config = load_with(&[("batch", "1"), ("batchmerge", "1")]).unwrap();
+        assert!(config.batchmerge);
+        let err = load_with(&[("batchmerge", "1")]).err().unwrap();
+        assert!(err.contains("batchmerge"), "{err}");
+        let err = load_with(&[("batch", "1"), ("batchmerge", "yes")])
+            .err()
+            .unwrap();
+        assert!(err.contains("batchmerge"), "{err}");
+    }
+
+    #[test]
+    fn epsg_is_a_positive_code_or_empty() {
+        assert_eq!(load_with(&[("epsg", "25832")]).unwrap().epsg, Some(25832));
+        assert_eq!(load_with(&[("epsg", " ")]).unwrap().epsg, None);
+        for bad in ["0", "-3067", "EPSG:3067", "3067.5"] {
+            let err = load_with(&[("epsg", bad)]).err().unwrap();
+            assert!(err.contains("epsg"), "{bad}: {err}");
         }
     }
 }
