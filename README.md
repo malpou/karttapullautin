@@ -60,6 +60,8 @@ Karttapullautin can also render zip files containing shape files downloaded from
 
     ./pullauta yourzipfile1.zip yourzipfile2.zip yourzipfile3.zip yourzipfile4.zip
 
+The configuration file has one rule per line, `name|symbol code|conditions`, for example `road|502T|highway=primary&bridge=yes`. Conditions are `field=value` or `field!=value` on the shape file's attributes, joined with `&`; the first rule whose conditions all hold and whose symbol code Karttapullautin can draw wins. Symbol codes are ISOM 2017-2 numbers (502 wide road, 503 road, 504 vehicle track, 506 small footpath, 509 railway, 510 power line, 518 impassable fence, 521 building, 520 area that shall not be entered, 501 paved area, 501.2 its bounding line, 401 open land, 415 cultivation boundary, 301 water, 301.4 bank line, 305 watercourse, 308 marsh). A `T` suffix (e.g. `502T`) marks an upper level, such as a bridge, drawn on top of other features.
+
 For Finns: Karttapullautin render Maastotietokanta zip files (shape files) downloaded from the download site of Maanmittauslaitos without setting a configuration file. Just leave `vectorconf` parameter empty.
 
 To print a map at right scale, you download for example IrfanView http://www.irfanview.com/ open png map, Image -> Information, set resolution 600 x 600 DPI and push "change" button and save.  Then crop map if needed (Select area with mouse and Edit -> crop selection). Print using "Print size: Original Size srom DPI". Like this your map should end up 1:10000 scale on paper.
