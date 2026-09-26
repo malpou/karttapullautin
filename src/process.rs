@@ -17,6 +17,7 @@ use crate::cliffs;
 use crate::config::Config;
 use crate::contours;
 use crate::crop;
+use crate::geojson;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::XyzInternalWriter;
@@ -545,6 +546,23 @@ pub fn process_tile(
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
         knolls::dotknolls(fs, config, tmpfolder).unwrap();
+
+        // The .dxf.bin files leave this folder only when savetempfiles is on, so the
+        // terrain reaches vector output as GeoJSON written next to its source.
+        if config.vector_vege {
+            for (source, output) in [
+                ("out2.dxf.bin", geojson::CONTOURS),
+                ("dotknolls.dxf.bin", geojson::DOTKNOLLS),
+            ] {
+                geojson::bindxf_to_geojson(
+                    fs,
+                    &[tmpfolder.join(source)],
+                    &tmpfolder.join(output.file_name()),
+                    None,
+                )
+                .unwrap();
+            }
+        }
     }
 
     if !cliffsonly && !contoursonly {
@@ -557,6 +575,16 @@ pub fn process_tile(
         info!("Cliff generation");
         timing.start_section("cliff generation");
         cliffs::makecliffs(fs, config, tmpfolder).unwrap();
+
+        if config.vector_vege {
+            geojson::bindxf_to_geojson(
+                fs,
+                &[tmpfolder.join("c2g.dxf.bin"), tmpfolder.join("c3g.dxf.bin")],
+                &tmpfolder.join(geojson::CLIFFS.file_name()),
+                None,
+            )
+            .unwrap();
+        }
     }
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");

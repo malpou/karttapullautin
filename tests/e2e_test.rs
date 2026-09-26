@@ -157,6 +157,89 @@ fn assert_vegetation_features(path: &Path) -> BTreeSet<String> {
     symbols
 }
 
+/// Check a terrain GeoJSON file: every feature has the expected geometry type and a
+/// symbol from `allowed`. Returns the features.
+fn assert_terrain_features(path: &Path, geometry: &str, allowed: &[&str]) -> Vec<Value> {
+    let features = feature_collection(path);
+    for f in &features {
+        assert_eq!(f["geometry"]["type"], geometry, "{}: {f}", path.display());
+        let symbol = f["properties"]["symbol"].as_str().unwrap_or_default();
+        assert!(allowed.contains(&symbol), "{}: {f}", path.display());
+    }
+    features
+}
+
+fn symbols(features: &[Value]) -> BTreeSet<String> {
+    features
+        .iter()
+        .map(|f| f["properties"]["symbol"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Check the terrain GeoJSON a tile's temp folder holds with vector_vege=1: contours,
+/// the renderer's form lines, knoll points and cliffs.
+fn assert_terrain_outputs(tile: &Path) {
+    let contours = assert_terrain_features(
+        &tile.join(geojson::CONTOURS.file_name()),
+        "LineString",
+        &["101", "102", "103"],
+    );
+    let found = symbols(&contours);
+    assert!(found.contains("101") && found.contains("102"), "{found:?}");
+    for f in &contours {
+        assert!(f["properties"]["elevation"].is_number(), "{f}");
+    }
+    // the regression tile has depressions; the flag is only ever true
+    assert!(
+        contours
+            .iter()
+            .any(|f| f["properties"]["depression"] == true)
+    );
+    assert!(contours.iter().all(|f| {
+        let d = &f["properties"]["depression"];
+        d.is_null() || *d == true
+    }));
+
+    let formlines = assert_terrain_features(
+        &tile.join(geojson::FORMLINES.file_name()),
+        "LineString",
+        &["103"],
+    );
+    assert!(
+        formlines
+            .iter()
+            .all(|f| f["properties"].get("elevation").is_none())
+    );
+
+    let knolls = assert_terrain_features(
+        &tile.join(geojson::DOTKNOLLS.file_name()),
+        "Point",
+        &["109", "111"],
+    );
+    assert!(symbols(&knolls).contains("109"));
+
+    let cliffs = assert_terrain_features(
+        &tile.join(geojson::CLIFFS.file_name()),
+        "LineString",
+        &["201", "202"],
+    );
+    assert!(!symbols(&cliffs).is_empty());
+}
+
+/// Single job on the regression tile, as in the regression workflow's single run: the
+/// terrain GeoJSON lands in temp/.
+#[test]
+#[ignore]
+fn single_job_writes_terrain_geojson() {
+    let dir = run_dir("e2e-single");
+    std::fs::copy(input("test_file.laz"), dir.join("test_file.laz")).unwrap();
+    write_ini(&dir, &[("vector_vege", "1")]);
+
+    run_pullauta(&dir, &["test_file.laz"]);
+
+    assert_terrain_outputs(&dir.join("temp"));
+}
+
 /// Batch job as in the regression workflow: one tile plus the OSM shapefile zip, with
 /// `vectorconf=osm.txt`, and vegetation vectorization on. `savetempfolders=1` keeps the
 /// tile's temp folder as `temp_test_file_dir/`.
@@ -239,4 +322,6 @@ fn batch_with_osm_vectorconf() {
         );
     }
     assert!(tile.join("vegetation.dxf.bin").exists());
+
+    assert_terrain_outputs(&tile);
 }
