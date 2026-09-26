@@ -159,7 +159,7 @@ fn terrain_feature(
     ))
 }
 
-/// Typed GeoJSON properties of a shapefile record matched by a vectorconf mapping:
+/// Typed GeoJSON properties of a shapefile record matched by a vector mapping rule:
 /// its symbol code, its category (the mapping's name), and `upper_level` only when set.
 fn osm_properties(
     symbol: &str,
@@ -174,7 +174,7 @@ fn osm_properties(
     .into()
 }
 
-/// LineString feature for one part of a shapefile polyline matched by a vectorconf mapping.
+/// LineString feature for one part of a shapefile polyline matched by a vector mapping rule.
 pub fn osm_line(
     symbol: &str,
     category: &str,
@@ -189,7 +189,7 @@ pub fn osm_line(
 }
 
 /// Polygon feature (exterior ring, then holes) for a shapefile polygon matched by a
-/// vectorconf mapping.
+/// vector mapping rule.
 pub fn osm_area(
     symbol: &str,
     category: &str,
