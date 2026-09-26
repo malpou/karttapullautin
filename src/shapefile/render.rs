@@ -191,7 +191,7 @@ pub fn render(
             let mut color: Option<(Color, Image)> = None;
             let mut dashedline = false;
             let mut border = 0.0;
-            // the vectorconf mapping that matched, for vector export
+            // the vector mapping rule that matched, for vector export
             let mut matched: Option<&Mapping> = None;
 
             if vectorconf.is_empty() {

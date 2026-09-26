@@ -107,16 +107,12 @@ fn feature_collection(path: &Path) -> Vec<Value> {
     features
 }
 
-/// A plain ISOM symbol number ("502"), or an OOM sub-symbol ("501.2").
-fn is_symbol_code(s: &str) -> bool {
-    let (number, part) = s.split_once('.').unwrap_or((s, "1"));
-    number.len() == 3
-        && number.chars().all(|c| c.is_ascii_digit())
-        && !part.is_empty()
-        && part.chars().all(|c| c.is_ascii_digit())
+/// A plain ISOM symbol number ("502"). osm.txt uses no OOM sub-symbols ("501.2").
+fn is_plain_symbol(s: &str) -> bool {
+    s.len() == 3 && s.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Check OSM features: the expected geometry type, a symbol code, a category, and
+/// Check OSM features: the expected geometry type, a plain symbol number, a category, and
 /// `upper_level` either absent or true.
 fn assert_osm_features(path: &Path, geometry: &str) -> Vec<Value> {
     let features = feature_collection(path);
@@ -124,7 +120,7 @@ fn assert_osm_features(path: &Path, geometry: &str) -> Vec<Value> {
         let p = &f["properties"];
         assert_eq!(f["geometry"]["type"], geometry, "{}: {f}", path.display());
         let symbol = p["symbol"].as_str().unwrap_or_default();
-        assert!(is_symbol_code(symbol), "{}: {f}", path.display());
+        assert!(is_plain_symbol(symbol), "{}: {f}", path.display());
         assert!(p["category"].is_string(), "{}: {f}", path.display());
         assert!(
             p.get("upper_level").is_none() || p["upper_level"] == true,

@@ -14,7 +14,7 @@ pub struct Condition {
     pub value: String,
 }
 
-/// Each mapping represents one line in the vectorconf file:
+/// Each mapping represents one rule (line) of a vector mapping file:
 /// `category|symbol code[T]|conditions`, e.g. `road|502T|highway=primary&bridge=yes`.
 #[derive(Debug, PartialEq)]
 pub struct Mapping {
@@ -23,7 +23,7 @@ pub struct Mapping {
     /// ISOM 2017-2 symbol code the shape is drawn with (second field, without the `T` suffix)
     pub symbol: String,
     /// A `T` suffix on the code: the feature passes over the others (bridge, upper level)
-    /// and is drawn on the top layer
+    /// and is drawn above them
     pub upper_level: bool,
     /// The conditions that must be met for this mapping to be applied
     pub conditions: Vec<Condition>,
