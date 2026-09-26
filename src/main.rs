@@ -410,15 +410,16 @@ fn main() {
             pullauta::merge::pngmerge(&fs, &config, 4.0, false).unwrap();
             pullauta::merge::pngmerge(&fs, &config, 4.0, true).unwrap();
             pullauta::merge::pngmergevege(&fs, &config, 1.0, false).unwrap();
+            // a merged.dxf.bin left by an earlier run would stand in for this run's
+            // contours and cliffs; bindxfmerge writes a new one only when the tiles
+            // kept their .dxf.bin files (savetempfiles=1)
+            let merged_bin = Path::new(pullauta::merge::MERGED_DXF_BIN);
+            if fs.exists(merged_bin) {
+                fs.remove_file(merged_bin).unwrap();
+            }
             pullauta::merge::bindxfmerge(&fs, &config).unwrap();
             pullauta::geojson::merge_geojson(&fs, out).unwrap();
-            pullauta::geojson::export_combined(
-                &fs,
-                out,
-                Path::new(pullauta::merge::MERGED_DXF_BIN),
-                config.epsg,
-            )
-            .unwrap();
+            pullauta::geojson::export_combined(&fs, out, merged_bin, config.epsg).unwrap();
         }
         return;
     }
