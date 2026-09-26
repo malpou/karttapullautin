@@ -9,7 +9,7 @@ include!(concat!(env!("OUT_DIR"), "/isom_table.rs"));
 
 /// The geometry a symbol is drawn with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Geometry {
+pub enum SymbolGeometry {
     Point,
     Line,
     Area,
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn codes_carry_their_table_and_geometry() {
-        use Geometry::*;
+        use SymbolGeometry::*;
         let expected = [
             (IsomCode::C101_000, IsomTable::Contours, Line),
             (IsomCode::C101_001, IsomTable::Contours, Line), // slope line, line-center icon
@@ -166,6 +166,35 @@ mod tests {
             Veg408,
             Veg410,
         ];
+        // fails to compile when a variant is added, so the list above stays complete
+        let _listed = |c: Classification| match c {
+            ContourSimple
+            | Contour
+            | ContourIndex
+            | ContourIntermed
+            | ContourIndexIntermed
+            | Depression
+            | DepressionIndex
+            | DepressionIntermed
+            | DepressionIndexIntermed
+            | Formline
+            | FormlineDepression
+            | Dotknoll
+            | Udepression
+            | UglyDotknoll
+            | UglyUdepression
+            | Knoll1010
+            | Cliff2
+            | Cliff3
+            | Cliff4
+            | SlopeLine
+            | SmallDepression
+            | Veg403
+            | Veg406
+            | Veg407
+            | Veg408
+            | Veg410 => (),
+        };
         let mut emitted: Vec<String> = classifications
             .iter()
             .filter_map(Classification::symbol_code)

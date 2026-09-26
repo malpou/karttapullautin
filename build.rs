@@ -83,6 +83,12 @@ fn isom_table(out_dir: &Path) {
                 .is_some_and(|icon| icon["placement"].as_str().unwrap_or("point") == "point");
         match symbols.iter_mut().find(|s| s.code == code) {
             Some(s) => {
+                if s.table != table {
+                    println!(
+                        "cargo::warning=isom.yaml: {code} is listed in {} and {table}; IsomCode::table() keeps {}",
+                        s.table, s.table
+                    );
+                }
                 s.has_fill |= is_fill;
                 s.all_point &= is_point;
             }
@@ -100,7 +106,13 @@ fn isom_table(out_dir: &Path) {
     let table_variant = |table: &str| -> String {
         table
             .split('_')
-            .map(|w| w[..1].to_uppercase() + &w[1..])
+            .map(|w| {
+                let mut chars = w.chars();
+                let first = chars
+                    .next()
+                    .expect("isom.yaml: table names have no empty `_` segment");
+                first.to_uppercase().chain(chars).collect::<String>()
+            })
             .collect()
     };
 
@@ -108,7 +120,7 @@ fn isom_table(out_dir: &Path) {
     let w = &mut src;
 
     // IsomTable
-    w.push_str("/// A table (source layer) the isom-maplibre style reads.\n");
+    w.push_str("/// A table of the isom-maplibre style: the source it reads a feature from.\n");
     w.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)] pub enum IsomTable {");
     for t in &tables {
         write!(w, "{},", table_variant(t)).unwrap();
@@ -156,8 +168,8 @@ fn isom_table(out_dir: &Path) {
         .unwrap();
     }
     w.push_str("} }");
-    w.push_str("/// The geometry the style draws this code with: an area if any of its layers is a fill, a point if every layer is a circle or a point-placed icon, a line otherwise.\n");
-    w.push_str("pub const fn geometry(self) -> Geometry { match self {");
+    w.push_str("/// The geometry the style draws this code with: an area if any of its entries is a fill, a point if every entry is a circle or a point-placed icon, a line otherwise.\n");
+    w.push_str("pub const fn geometry(self) -> SymbolGeometry { match self {");
     for s in &symbols {
         let geometry = match (s.has_fill, s.all_point) {
             (true, _) => "Area",
@@ -166,7 +178,7 @@ fn isom_table(out_dir: &Path) {
         };
         write!(
             w,
-            "IsomCode::{} => Geometry::{geometry},",
+            "IsomCode::{} => SymbolGeometry::{geometry},",
             code_variant(s.code)
         )
         .unwrap();
