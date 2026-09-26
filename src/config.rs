@@ -333,7 +333,10 @@ impl Config {
             v => return Err(format!("Value {v} of `vector_vege` must be 0 or 1").into()),
         };
         let vector_greenshade_isom = if vector_vege {
-            parse_greenshade_isom(gs.get("vector_greenshade_isom").unwrap_or(""))?
+            parse_greenshade_isom(
+                gs.get("vector_greenshade_isom")
+                    .unwrap_or("406|406|408|408|410"),
+            )?
         } else {
             Vec::new()
         };
@@ -502,7 +505,7 @@ fn parse_greenshade_isom(
             code.trim().parse().map_err(|_| {
                 format!(
                     "`vector_greenshade_isom` entry `{code}` is not a vegetation symbol code \
-                     (403, 406, 407, 408 or 410)"
+                     of the GeoJSON schema"
                 )
                 .into()
             })

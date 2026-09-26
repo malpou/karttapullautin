@@ -42,8 +42,8 @@ pub const VEGETATION: GeoJsonOutput = GeoJsonOutput {
     name: "vegetation",
     skip_when_merged_bin: false,
 };
-/// Open land areas (ISOM 403), traced from the yellow grid.
-pub const YELLOW: GeoJsonOutput = GeoJsonOutput {
+/// Open land areas (ISOM 403).
+pub const OPEN_LAND: GeoJsonOutput = GeoJsonOutput {
     name: "yellow",
     skip_when_merged_bin: false,
 };
@@ -71,7 +71,7 @@ pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
         skip_when_merged_bin: true,
     },
     VEGETATION,
-    YELLOW,
+    OPEN_LAND,
     UNDERGROWTH,
     GeoJsonOutput {
         name: "osm_lines",

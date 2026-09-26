@@ -181,6 +181,7 @@ fn batch_with_osm_vectorconf() {
             ("batch", "1"),
             ("vectorconf", "osm.txt"),
             ("vector_vege", "1"),
+            ("output_dxf", "1"),
             ("savetempfolders", "1"),
         ],
     );
@@ -213,21 +214,23 @@ fn batch_with_osm_vectorconf() {
     }
 
     // vegetation: the default vector_greenshade_isom maps the greenshades to 406/408/410,
-    // yellow is 403, undergrowth 407
+    // open land is 403, undergrowth 407
     let green = assert_vegetation_features(&tile.join(geojson::VEGETATION.file_name()));
     assert!(
         green.is_subset(&["406", "408", "410"].map(String::from).into()),
         "{green:?}"
     );
     assert!(green.contains("406"), "{green:?}");
-    let yellow = assert_vegetation_features(&tile.join(geojson::YELLOW.file_name()));
-    assert_eq!(yellow, ["403".to_string()].into());
+    let open_land = assert_vegetation_features(&tile.join(geojson::OPEN_LAND.file_name()));
+    assert_eq!(open_land, ["403".to_string()].into());
     let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()));
     assert_eq!(ug, ["407".to_string()].into());
 
     // the same areas as closed DXF polylines, one DXF layer per symbol code
-    let dxf = std::fs::read_to_string(tile.join("vegetation.dxf")).unwrap();
-    for symbol in green.iter().chain(&yellow).chain(&ug) {
+    let dxf_path = tile.join("vegetation.dxf");
+    assert!(dxf_path.exists(), "{} was not written", dxf_path.display());
+    let dxf = std::fs::read_to_string(dxf_path).unwrap();
+    for symbol in green.iter().chain(&open_land).chain(&ug) {
         assert!(
             dxf.contains(&format!(
                 "POLYLINE\r\n 66\r\n1\r\n  8\r\n{symbol}\r\n 70\r\n1\r\n"
