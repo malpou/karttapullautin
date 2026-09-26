@@ -1,5 +1,5 @@
-//! GeoJSON output for vector features (contours, cliffs, knolls),
-//! plus the serialization contract generated from the JSON Schema.
+//! GeoJSON output for vector features (contours, cliffs, knolls, vector-mapped
+//! shapefile features), plus the serialization contract generated from the JSON Schema.
 
 use std::io::{BufWriter, Write};
 
@@ -15,7 +15,7 @@ use geojson_types::FeatureGeometryType;
 /// Add new property classes to the schema file; `cargo build` regenerates this
 /// module automatically.
 #[allow(clippy::all)]
-mod geojson_types {
+pub mod geojson_types {
     include!(concat!(env!("OUT_DIR"), "/geojson_types.rs"));
 }
 
@@ -131,20 +131,98 @@ fn terrain_properties(
     })
 }
 
+fn feature(
+    geometry: FeatureGeometryType,
+    coordinates: Vec<Value>,
+    properties: geojson_types::FeatureProperties,
+) -> geojson_types::Feature {
+    geojson_types::Feature {
+        geometry: geojson_types::FeatureGeometry {
+            coordinates,
+            type_: geometry,
+        },
+        properties,
+        type_: json!("Feature"),
+    }
+}
+
 fn terrain_feature(
     geometry: FeatureGeometryType,
     coordinates: Vec<Value>,
     c: Classification,
     elevation: Option<f64>,
 ) -> Option<geojson_types::Feature> {
-    Some(geojson_types::Feature {
-        geometry: geojson_types::FeatureGeometry {
-            coordinates,
-            type_: geometry,
-        },
-        properties: terrain_properties(c, elevation)?,
-        type_: json!("Feature"),
-    })
+    Some(feature(
+        geometry,
+        coordinates,
+        terrain_properties(c, elevation)?,
+    ))
+}
+
+/// Typed GeoJSON properties of a shapefile record matched by a vectorconf mapping:
+/// its symbol code, its category (the mapping's name), and `upper_level` only when set.
+fn osm_properties(
+    symbol: &str,
+    category: &str,
+    upper_level: bool,
+) -> geojson_types::FeatureProperties {
+    geojson_types::OsmProperties {
+        symbol: symbol.to_string(),
+        category: category.to_string(),
+        upper_level: upper_level.then_some(true),
+    }
+    .into()
+}
+
+/// LineString feature for one part of a shapefile polyline matched by a vectorconf mapping.
+pub fn osm_line(
+    symbol: &str,
+    category: &str,
+    upper_level: bool,
+    line: &[[f64; 2]],
+) -> geojson_types::Feature {
+    feature(
+        FeatureGeometryType::LineString,
+        coords_line(line.iter().copied()),
+        osm_properties(symbol, category, upper_level),
+    )
+}
+
+/// Polygon feature (exterior ring, then holes) for a shapefile polygon matched by a
+/// vectorconf mapping.
+pub fn osm_area(
+    symbol: &str,
+    category: &str,
+    upper_level: bool,
+    rings: &[Vec<[f64; 2]>],
+) -> geojson_types::Feature {
+    feature(
+        FeatureGeometryType::Polygon,
+        rings
+            .iter()
+            .map(|ring| Value::Array(coords_line(ring.iter().copied())))
+            .collect(),
+        osm_properties(symbol, category, upper_level),
+    )
+}
+
+/// Write features as one GeoJSON FeatureCollection (with the legacy `crs` member when
+/// an EPSG code is given).
+pub fn write_feature_collection(
+    fs: &impl FileSystem,
+    output: &std::path::Path,
+    features: Vec<geojson_types::Feature>,
+    epsg: Option<u32>,
+) -> anyhow::Result<()> {
+    let collection = geojson_types::GeoJsonOutput {
+        crs: crs(epsg),
+        features,
+        type_: json!("FeatureCollection"),
+    };
+    let mut w = BufWriter::new(fs.create(output)?);
+    serde_json::to_writer(&mut w, &collection)?;
+    w.flush()?;
+    Ok(())
 }
 
 /// Convert one or more binary DXF files (contours, cliffs, knolls...) into a single
@@ -185,15 +263,7 @@ pub fn bindxf_to_geojson(
             }
         }
     }
-    let collection = geojson_types::GeoJsonOutput {
-        crs: crs(epsg),
-        features,
-        type_: json!("FeatureCollection"),
-    };
-    let mut w = BufWriter::new(fs.create(output)?);
-    serde_json::to_writer(&mut w, &collection)?;
-    w.flush()?;
-    Ok(())
+    write_feature_collection(fs, output, features, epsg)
 }
 
 #[cfg(test)]
@@ -316,6 +386,59 @@ mod tests {
             back(Classification::Cliff2, None),
             P::CliffProperties(_)
         ));
+    }
+
+    #[test]
+    fn osm_features_carry_symbol_category_and_upper_level() {
+        let road = serde_json::to_value(osm_line(
+            "502",
+            "road-path",
+            false,
+            &[[1.0, 2.0], [3.004, 4.0]],
+        ))
+        .unwrap();
+        assert_eq!(road["geometry"]["type"], "LineString");
+        assert_eq!(
+            road["geometry"]["coordinates"],
+            json!([[1.0, 2.0], [3.0, 4.0]])
+        );
+        assert_eq!(
+            road["properties"],
+            json!({"symbol": "502", "category": "road-path"})
+        );
+
+        // the T suffix reaches vector output as a flag; the symbol stays a plain number
+        let bridge =
+            serde_json::to_value(osm_line("502", "road-path", true, &[[0.0, 0.0]])).unwrap();
+        assert_eq!(
+            bridge["properties"],
+            json!({"symbol": "502", "category": "road-path", "upper_level": true})
+        );
+
+        let ring = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]];
+        let lake =
+            serde_json::to_value(osm_area("301", "water", false, &[ring.clone(), ring])).unwrap();
+        assert_eq!(lake["geometry"]["type"], "Polygon");
+        assert_eq!(lake["geometry"]["coordinates"].as_array().unwrap().len(), 2);
+        assert!(matches!(
+            serde_json::from_value::<geojson_types::FeatureProperties>(lake["properties"].clone())
+                .unwrap(),
+            geojson_types::FeatureProperties::OsmProperties(_)
+        ));
+    }
+
+    #[test]
+    fn write_feature_collection_writes_osm_features() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let features = vec![osm_line("506", "path", false, &[[0.0, 0.0], [1.0, 1.0]])];
+        let out = std::path::Path::new("osm_lines.geojson");
+        write_feature_collection(&fs, out, features, None).unwrap();
+
+        let val: Value = serde_json::from_reader(fs.open(out).unwrap()).unwrap();
+        assert_eq!(val["type"], "FeatureCollection");
+        assert!(val.get("crs").is_none());
+        assert_eq!(val["features"][0]["properties"]["symbol"], "506");
+        assert_eq!(val["features"][0]["properties"]["category"], "path");
     }
 
     #[test]

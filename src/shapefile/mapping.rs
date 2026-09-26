@@ -18,6 +18,8 @@ pub struct Condition {
 /// `category|symbol code[T]|conditions`, e.g. `road|502T|highway=primary&bridge=yes`.
 #[derive(Debug, PartialEq)]
 pub struct Mapping {
+    /// Free-text name (first field), exported as the GeoJSON `category`
+    pub category: String,
     /// ISOM 2017-2 symbol code the shape is drawn with (second field, without the `T` suffix)
     pub symbol: String,
     /// A `T` suffix on the code: the feature passes over the others (bridge, upper level)
@@ -39,6 +41,7 @@ impl FromStr for Mapping {
                 line
             ));
         }
+        let category = row_data[0].trim().to_string();
         let code = row_data[1].trim();
         let (symbol, upper_level) = match code.strip_suffix('T') {
             Some(symbol) => (symbol.to_string(), true),
@@ -69,6 +72,7 @@ impl FromStr for Mapping {
             .collect::<Result<Vec<_>, Self::Err>>()?;
 
         Ok(Self {
+            category,
             symbol,
             upper_level,
             conditions,
@@ -98,6 +102,7 @@ mod tests {
         let line = "description|306|key1=value1";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
+            category: "description".to_string(),
             symbol: "306".to_string(),
             upper_level: false,
             conditions: vec![Condition {
@@ -114,6 +119,7 @@ mod tests {
         let line = "description|306|key1=value1&key2!=value2";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
+            category: "description".to_string(),
             symbol: "306".to_string(),
             upper_level: false,
             conditions: vec![
@@ -137,6 +143,7 @@ mod tests {
         let line = "description|306|key1=value1&key2!=value2&key3=value3";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
+            category: "description".to_string(),
             symbol: "306".to_string(),
             upper_level: false,
             conditions: vec![
@@ -163,10 +170,12 @@ mod tests {
     #[test]
     fn test_mapping_from_str_upper_level_suffix() {
         let mapping = Mapping::from_str("road|502T|highway=primary&bridge=yes").unwrap();
+        assert_eq!(mapping.category, "road");
         assert_eq!(mapping.symbol, "502");
         assert!(mapping.upper_level);
 
         let mapping = Mapping::from_str(" road | 502 |highway=primary").unwrap();
+        assert_eq!(mapping.category, "road");
         assert_eq!(mapping.symbol, "502");
         assert!(!mapping.upper_level);
 

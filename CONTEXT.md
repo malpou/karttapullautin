@@ -12,6 +12,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Return**: One recorded laser echo with position, class and echo order. _Avoid_: point record, xyz, r3/r4/r5
 **Echo order**: A return's position among the echoes of one pulse, first through last. _Avoid_: return number, first/last flag
 **Ground return**: A return the data supplier classified as terrain. See also: Return.
+**Vector mapping**: A rule file that assigns a symbol code to shapefile records by their attributes, one `name|symbol code|conditions` rule per line; named by the `vectorconf` ini key. _Avoid_: vectorconf (the key), osm.txt (one such file)
 **Pulse density**: Laser pulses per square metre of ground in a tile. _Avoid_: point density, return density
 
 ### Relief
@@ -43,6 +44,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 ### Output
 
 **Symbol code**: The ISOM 2017-2 number a feature is drawn with, written "NNN.NNN" (`101.000`; a variant takes a non-zero suffix, e.g. slope line `101.001`, large building `521.001`). GeoJSON carries it as `isom_code`; a DXF layer is named with it. _Avoid_: layer (a DXF layer is a container, never the ISOM number), symbol (as a property name), plain `101`, ISOM 2000 numbering
+**Upper level**: A mapped feature that passes over the others, such as a bridge, drawn on top of them. A `T` suffix on the code in a vector mapping; `upper_level` in GeoJSON. _Avoid_: T code, top
 **Symbol table**: The machine-readable list of ISOM 2017-2 symbols the vector output may emit: the vendored, pinned `isom.yaml` of MetsaApp/isom-maplibre, giving each code its table and drawing. _Avoid_: symbol set (a mapping program's file), legend
 **Table**: The named group of vector features one style source reads, e.g. `contours`, `cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`; each GeoJSON output is one table. MapLibre calls it a source layer. _Avoid_: layer (only a DXF container), output kind
 **Map frame**: Scale, resolution, origin and north rotation of the rendered sheet. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre before scalefactor.

@@ -9,6 +9,7 @@ use log::{debug, info};
 
 use crate::{
     config::Config,
+    geojson,
     io::fs::FileSystem,
     mapframe::{DPI, GROUND_METRES_PER_INCH, PX_PER_METRE, WorldFile},
     shapefile::{
@@ -17,7 +18,7 @@ use crate::{
     },
 };
 use shapefile::dbase::{FieldValue, Record};
-use shapefile::{Polygon, Polyline, Shape, ShapeType};
+use shapefile::{Polygon, PolygonRing, Polyline, Shape, ShapeType};
 
 #[derive(PartialEq, Eq)]
 enum EdgeImage {
@@ -129,6 +130,10 @@ pub fn render(
         tmpfolder.to_path_buf()
     };
 
+    // vector export of the matched features, in world coordinates
+    let mut osm_lines = Vec::new();
+    let mut osm_areas = Vec::new();
+
     let mut shp_files: Vec<PathBuf> = Vec::new();
 
     for path in fs.list(&shapetmpfolder).unwrap() {
@@ -186,6 +191,8 @@ pub fn render(
             let mut color: Option<(Color, Image)> = None;
             let mut dashedline = false;
             let mut border = 0.0;
+            // the vectorconf mapping that matched, for vector export
+            let mut matched: Option<&Mapping> = None;
 
             if vectorconf.is_empty() {
                 // MML shape file
@@ -539,6 +546,10 @@ pub fn render(
                         }
                         _ => {}
                     }
+
+                    if color.is_some() {
+                        matched = Some(mapping);
+                    }
                 }
             }
 
@@ -547,6 +558,12 @@ pub fn render(
                 let shapetype = shape.shapetype();
                 if !area && shapetype == ShapeType::Polyline {
                     let polyline = Polyline::try_from(shape).unwrap();
+                    if let Some(m) = matched {
+                        osm_lines.extend(polyline.parts().iter().map(|part| {
+                            let line: Vec<[f64; 2]> = part.iter().map(|pt| [pt.x, pt.y]).collect();
+                            geojson::osm_line(&m.symbol, &m.category, m.upper_level, &line)
+                        }));
+                    }
                     let mut poly: Vec<(f32, f32)> = vec![];
                     for points in polyline.parts().iter() {
                         for point in points.iter() {
@@ -631,6 +648,20 @@ pub fn render(
                     }
                 } else if area && shapetype == ShapeType::Polygon {
                     let polygon = Polygon::try_from(shape).unwrap();
+                    if let Some(m) = matched {
+                        // one Polygon per outer ring, with the inner rings that follow it as holes
+                        let mut polys: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
+                        for ring in polygon.rings() {
+                            let pts = ring.points().iter().map(|pt| [pt.x, pt.y]).collect();
+                            match (ring, polys.last_mut()) {
+                                (PolygonRing::Inner(_), Some(poly)) => poly.push(pts),
+                                _ => polys.push(vec![pts]),
+                            }
+                        }
+                        osm_areas.extend(polys.iter().map(|rings| {
+                            geojson::osm_area(&m.symbol, &m.category, m.upper_level, rings)
+                        }));
+                    }
                     let mut polys: Vec<Vec<(f32, f32)>> = vec![];
                     for ring in polygon.rings().iter() {
                         let mut poly: Vec<(f32, f32)> = vec![];
@@ -739,5 +770,19 @@ pub fn render(
         .save_as(fs, &low_file)
         .expect("could not save low.png");
 
+    if !vectorconf_mappings.is_empty() {
+        geojson::write_feature_collection(
+            fs,
+            &tmpfolder.join("osm_lines.geojson"),
+            osm_lines,
+            None,
+        )?;
+        geojson::write_feature_collection(
+            fs,
+            &tmpfolder.join("osm_areas.geojson"),
+            osm_areas,
+            None,
+        )?;
+    }
     Ok(())
 }
