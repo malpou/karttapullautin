@@ -1,0 +1,30 @@
+on:
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+name: "E2E"
+
+env:
+  # always emit backtraces on crashes (to help debugging)
+  RUST_BACKTRACE: 1
+  # cargo should always emit color
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e:
+    name: End-to-end (regression inputs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.97
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download test data
+        run: |
+          mkdir e2e-data
+          curl -Lf "https://cdn.routechoic.es/test.laz" -o e2e-data/test_file.laz
+          curl -Lf "https://cdn.routechoic.es/test-osm.shp.zip" -o e2e-data/test_file.shp.zip
+
+      - name: Run e2e tests
+        run: PULLAUTA_E2E_DATA="$PWD/e2e-data" cargo test --release --test e2e_test -- --ignored
