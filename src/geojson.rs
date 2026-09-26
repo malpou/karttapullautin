@@ -136,8 +136,8 @@ pub fn write_feature_collection<W: Write>(
 
 /// ISOM 2017-2 symbol code for a KP layer name, where one exists.
 /// 101 contour, 102 index contour, 103 form line, 109 small knoll,
-/// 111 small depression, 201 impassable cliff, 202 rock face.
-fn layer_isom(layer: &str) -> Option<&'static str> {
+/// 111 small depression, 201 impassable cliff, 202 cliff.
+fn symbol_code(layer: &str) -> Option<&'static str> {
     Some(match layer {
         "cont" | "contour" | "depression" => "101",
         "contour_index" | "depression_index" => "102",
@@ -156,17 +156,16 @@ fn layer_isom(layer: &str) -> Option<&'static str> {
     })
 }
 
-fn layer_props(layer: &str) -> Vec<(&str, &str)> {
-    let mut props = vec![("layer", layer)];
-    if let Some(isom) = layer_isom(layer) {
-        props.push(("isom", isom));
-    }
-    props
+/// Feature properties for a KP layer: the ISOM 2017-2 `symbol` code, when one exists.
+fn symbol_props(layer: &str) -> Vec<(&'static str, &'static str)> {
+    symbol_code(layer)
+        .map(|code| vec![("symbol", code)])
+        .unwrap_or_default()
 }
 
 /// Convert one or more binary DXF files (contours, cliffs, knolls...) into a single
-/// GeoJSON FeatureCollection. Polylines become LineStrings with `layer` and (when known)
-/// `isom` properties; points become Points.
+/// GeoJSON FeatureCollection. Polylines become LineStrings and points become Points,
+/// each with the ISOM 2017-2 `symbol` code of its layer (when known).
 ///
 /// Property schema: see `schema/geojson.schema.json` ($defs/ContourProperties,
 /// KnollProperties, CliffProperties).
@@ -186,7 +185,7 @@ pub fn bindxf_to_geojson(
                         feats.push(feature(
                             "LineString",
                             coords_line(p.iter().map(|pt| [pt.x, pt.y])),
-                            &layer_props(c.to_layer()),
+                            &symbol_props(c.to_layer()),
                         ));
                     }
                 }
@@ -195,7 +194,7 @@ pub fn bindxf_to_geojson(
                         let mut f = feature(
                             "LineString",
                             coords_line(p.iter().map(|pt| [pt.x, pt.y])),
-                            &layer_props(c.to_layer()),
+                            &symbol_props(c.to_layer()),
                         );
                         f["properties"]["elevation"] = json!(h);
                         feats.push(f);
@@ -206,7 +205,7 @@ pub fn bindxf_to_geojson(
                         feats.push(feature(
                             "Point",
                             json!([r2(p.x), r2(p.y)]),
-                            &layer_props(c.to_layer()),
+                            &symbol_props(c.to_layer()),
                         ));
                     }
                 }
@@ -242,7 +241,7 @@ mod tests {
 
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
 
-        // one 2-point polyline classified as a Contour (layer "contour", isom "101")
+        // one 2-point polyline classified as a Contour (symbol "101")
         let mut pls = Polylines::new();
         pls.push(
             vec![Point2::new(0.0, 0.0), Point2::new(100.0, 100.0)],
@@ -270,22 +269,22 @@ mod tests {
         let feats = val["features"].as_array().unwrap();
         assert_eq!(feats.len(), 1);
         assert_eq!(feats[0]["geometry"]["type"], "LineString");
-        assert_eq!(feats[0]["properties"]["isom"], "101");
+        assert_eq!(feats[0]["properties"]["symbol"], "101");
     }
 
     #[test]
     fn generated_types_roundtrip_to_featurecollection_json() {
         use geojson_types::{
-            ContourProperties, ContourPropertiesIsom, ContourPropertiesLayer, Feature,
-            FeatureGeometry, FeatureGeometryType, FeatureProperties, GeoJsonOutput,
+            ContourProperties, ContourPropertiesSymbol, Feature, FeatureGeometry,
+            FeatureGeometryType, FeatureProperties, GeoJsonOutput,
         };
 
         let contour = ContourProperties {
             depression: None,
             elevation: None,
-            isom: ContourPropertiesIsom::X101,
-            layer: ContourPropertiesLayer::X101,
-            layer_description: None,
+            slope_line: None,
+            symbol: ContourPropertiesSymbol::X101,
+            symbol_name: None,
         };
         let feature = Feature {
             geometry: FeatureGeometry {
@@ -305,6 +304,7 @@ mod tests {
         assert_eq!(json["type"], "FeatureCollection");
         assert!(json["features"].is_array());
         assert_eq!(json["features"][0]["type"], "Feature");
-        assert_eq!(json["features"][0]["properties"]["isom"], "101");
+        assert_eq!(json["features"][0]["properties"]["symbol"], "101");
+        assert!(json["features"][0]["properties"].get("layer").is_none());
     }
 }

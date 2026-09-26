@@ -29,58 +29,50 @@
     },
     "ContourProperties": {
       "type": "object",
-      "required": ["layer", "isom"],
+      "required": ["symbol"],
+      "additionalProperties": false,
       "properties": {
-        "layer": { "enum": ["101", "102", "103", "105"] },
-        "isom": { "enum": ["101", "102", "103", "105"] },
+        "symbol": { "enum": ["101", "102", "103"] },
+        "symbol_name": { "type": "string" },
         "elevation": { "type": "number" },
         "depression": { "type": "boolean" },
-        "layer_description": { "type": "string" }
+        "slope_line": { "type": "boolean" }
       }
     },
     "KnollProperties": {
       "type": "object",
-      "required": ["layer", "isom"],
+      "required": ["symbol"],
+      "additionalProperties": false,
       "properties": {
-        "layer": { "enum": ["109", "111"] },
-        "isom": { "enum": ["109", "111"] },
-        "layer_description": { "type": "string" },
+        "symbol": { "enum": ["109", "111"] },
+        "symbol_name": { "type": "string" },
         "ugly": { "type": "boolean" }
       }
     },
     "CliffProperties": {
       "type": "object",
-      "required": ["layer", "isom"],
+      "required": ["symbol"],
+      "additionalProperties": false,
       "properties": {
-        "layer": { "enum": ["201", "202"] },
-        "isom": { "enum": ["201", "202"] },
-        "layer_description": { "type": "string" }
+        "symbol": { "enum": ["201", "202"] },
+        "symbol_name": { "type": "string" }
       }
     },
     "VegetationProperties": {
       "type": "object",
-      "required": ["layer", "isom"],
+      "required": ["symbol"],
+      "additionalProperties": false,
       "properties": {
-        "layer": { "enum": ["403", "406", "407", "408", "410"] },
-        "isom": { "enum": ["403", "406", "407", "408", "410"] },
+        "symbol": { "enum": ["403", "406", "407", "408", "410"] },
         "shade": { "type": "number" }
       }
     },
-    "OsmLineProperties": {
+    "OsmProperties": {
       "type": "object",
-      "required": ["layer", "isom", "category"],
+      "required": ["symbol", "category"],
+      "additionalProperties": false,
       "properties": {
-        "layer": { "type": "string" },
-        "isom": { "type": "string" },
-        "category": { "type": "string" }
-      }
-    },
-    "OsmAreaProperties": {
-      "type": "object",
-      "required": ["layer", "isom", "category"],
-      "properties": {
-        "layer": { "type": "string" },
-        "isom": { "type": "string" },
+        "symbol": { "type": "string" },
         "category": { "type": "string" }
       }
     },
@@ -103,8 +95,7 @@
             { "$ref": "#/$defs/KnollProperties" },
             { "$ref": "#/$defs/CliffProperties" },
             { "$ref": "#/$defs/VegetationProperties" },
-            { "$ref": "#/$defs/OsmLineProperties" },
-            { "$ref": "#/$defs/OsmAreaProperties" }
+            { "$ref": "#/$defs/OsmProperties" }
           ]
         }
       }
