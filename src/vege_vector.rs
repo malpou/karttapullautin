@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::num::NonZeroU64;
 use std::path::Path;
 
 use image::{GrayImage, Luma};
@@ -51,9 +52,15 @@ fn draw_order(symbol: Symbol) -> usize {
     }
 }
 
-/// One vegetation polygon: symbol code + rings (first = exterior CCW, rest = holes CW).
-/// Rings are open (first point not repeated).
-type VegPolygon = (Symbol, Vec<Vec<Point2>>);
+/// One vegetation polygon, traced from one connected component of equal grid values.
+#[derive(Debug, PartialEq)]
+struct VegPolygon {
+    /// The grid value of the component (for the green grid: the greenshade index).
+    class: u8,
+    symbol: Symbol,
+    /// First = exterior CCW, rest = holes CW. Open (first point not repeated).
+    rings: Vec<Vec<Point2>>,
+}
 
 /// A vertex on the integer cell-corner lattice.
 type V = (i64, i64);
@@ -228,7 +235,7 @@ fn grid_to_polygons(
     let mut comp_edges: Vec<_> = comp_edges.into_iter().collect();
     comp_edges.sort_unstable_by_key(|(label, _)| *label);
     for (label, (class, edges)) in comp_edges {
-        let code = code_of(class);
+        let symbol = code_of(class);
         let mut exteriors: Vec<Vec<Point2>> = Vec::new();
         let mut holes: Vec<Vec<Point2>> = Vec::new();
         for (vs, others) in chain_rings(edges) {
@@ -317,11 +324,19 @@ fn grid_to_polygons(
         let mut it = exteriors.into_iter();
         let mut rings = vec![it.next().unwrap()];
         rings.extend(holes);
-        polygons.push((code, rings));
+        polygons.push(VegPolygon {
+            class,
+            symbol,
+            rings,
+        });
         for extra in it {
             // pinch fragments below the ISOM minimum are dropped, not emitted
-            if signed_area(&extra) >= min_area_m2(code) {
-                polygons.push((code, vec![extra]));
+            if signed_area(&extra) >= min_area_m2(symbol) {
+                polygons.push(VegPolygon {
+                    class,
+                    symbol,
+                    rings: vec![extra],
+                });
             }
         }
     }
@@ -480,21 +495,28 @@ pub(crate) fn chaikin_closed(ring: &[Point2]) -> Vec<Point2> {
 }
 
 /// Write vegetation polygons as a FeatureCollection of `VegetationProperties` Polygons.
+/// With `shade`, each feature also carries its polygon's grid value as `shade`.
 fn write_geojson_file(
     fs: &impl FileSystem,
     path: &Path,
     polygons: &[VegPolygon],
+    shade: bool,
     epsg: Option<u32>,
 ) -> anyhow::Result<()> {
     let features = polygons
         .iter()
-        .map(|(symbol, rings)| geojson::vegetation_area(*symbol, rings))
+        .map(|p| {
+            // traced components are never background, so the class is non-zero
+            let shade = shade.then(|| NonZeroU64::new(p.class.into())).flatten();
+            geojson::vegetation_area(p.symbol, shade, &p.rings)
+        })
         .collect();
     geojson::write_feature_collection(fs, path, features, epsg)
 }
 
 /// Vectorize and write all vegetation vector outputs. Called from `makevege` when
-/// `vector_vege=1`. Grids: `green` = greenshade index per block cell, `open_land` = 0/1
+/// `vector_vege=1`; with `vector_shade=1` the green areas also carry their greenshade
+/// index. Grids: `green` = greenshade index per block cell, `open_land` = 0/1
 /// per 3 m cell (origin shifted +1.5 m, see makevege's 2x2 sum window), `undergrowth` = 0/1 per
 /// block*6 cell.
 #[allow(clippy::too_many_arguments)]
@@ -558,12 +580,19 @@ pub fn export_all(
         eps,
     );
 
-    for (output, polys) in [
-        (geojson::VEGETATION, &green_polys),
-        (geojson::OPEN_LAND, &open_land_polys),
-        (geojson::UNDERGROWTH, &undergrowth_polys),
+    // only the green areas have shades; open land and undergrowth are 0/1 grids
+    for (output, polys, shade) in [
+        (geojson::VEGETATION, &green_polys, config.vector_shade),
+        (geojson::OPEN_LAND, &open_land_polys, false),
+        (geojson::UNDERGROWTH, &undergrowth_polys, false),
     ] {
-        write_geojson_file(fs, &tmpfolder.join(output.file_name()), polys, config.epsg)?;
+        write_geojson_file(
+            fs,
+            &tmpfolder.join(output.file_name()),
+            polys,
+            shade,
+            config.epsg,
+        )?;
     }
 
     // combined DXF in draw order (stable sort keeps the traced order within a symbol)
@@ -572,12 +601,12 @@ pub fn export_all(
         .chain(&open_land_polys)
         .chain(&undergrowth_polys)
         .collect();
-    all.sort_by_key(|(symbol, _)| draw_order(*symbol));
+    all.sort_by_key(|p| draw_order(p.symbol));
 
     let mut lines: Polylines<Point2, Classification> = Polylines::new();
-    for (symbol, rings) in all {
-        let class = classification(*symbol);
-        for ring in rings {
+    for p in all {
+        let class = classification(p.symbol);
+        for ring in &p.rings {
             let mut closed = ring.clone();
             closed.push(ring[0].clone());
             lines.push(closed, class);
@@ -619,14 +648,14 @@ mod tests {
         assert_eq!(polys.len(), 2, "expected big region + diagonal cell");
         let big = polys
             .iter()
-            .find(|(_, rings)| rings[0].len() > 4)
+            .find(|p| p.rings[0].len() > 4)
             .expect("big region present");
-        assert_eq!(big.1.len(), 2, "big region should have exterior + hole");
-        assert!(signed_area(&big.1[0]) > 0.0, "exterior must be CCW");
-        assert!(signed_area(&big.1[1]) < 0.0, "hole must be CW");
+        assert_eq!(big.rings.len(), 2, "big region should have exterior + hole");
+        assert!(signed_area(&big.rings[0]) > 0.0, "exterior must be CCW");
+        assert!(signed_area(&big.rings[1]) < 0.0, "hole must be CW");
         // the exterior ring encloses all 25 cells; the hole is a separate ring of 1 cell
-        assert_eq!(signed_area(&big.1[0]), 25.0 * 100.0);
-        assert_eq!(signed_area(&big.1[1]), -100.0);
+        assert_eq!(signed_area(&big.rings[0]), 25.0 * 100.0);
+        assert_eq!(signed_area(&big.rings[1]), -100.0);
     }
 
     #[test]
@@ -648,8 +677,8 @@ mod tests {
         };
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 3.0, &code_of, [0, 0], 0.0);
         assert_eq!(polys.len(), 1);
-        assert_eq!(polys[0].0, Symbol::X410);
-        assert_eq!(polys[0].1.len(), 1, "island dissolved, no hole");
+        assert_eq!(polys[0].symbol, Symbol::X410);
+        assert_eq!(polys[0].rings.len(), 1, "island dissolved, no hole");
     }
 
     /// Speckled multi-class grid: after the dissolve fixpoint no emitted polygon may be
@@ -678,11 +707,12 @@ mod tests {
         // cell 3 m => 9 m² per cell, minimums are 225/110.25/64 m²
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 3.0, &code_of, [0, 0], 0.0);
         assert!(!polys.is_empty());
-        for (code, rings) in &polys {
-            let a = signed_area(&rings[0]);
+        for p in &polys {
+            let a = signed_area(&p.rings[0]);
             assert!(
-                a >= min_area_m2(*code),
-                "polygon of symbol {code} below minimum: {a} m²"
+                a >= min_area_m2(p.symbol),
+                "polygon of symbol {} below minimum: {a} m²",
+                p.symbol
             );
         }
     }
@@ -717,7 +747,7 @@ mod tests {
                 .map(|p| ((p.x * 1000.0).round() as i64, (p.y * 1000.0).round() as i64))
                 .collect()
         };
-        let (a, b) = (seam(&polys[0].1), seam(&polys[1].1));
+        let (a, b) = (seam(&polys[0].rings), seam(&polys[1].rings));
         assert!(a.len() >= 2, "seam vertices expected");
         assert_eq!(
             a, b,
@@ -791,21 +821,21 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let name = geojson::VEGETATION.file_name();
         let path = Path::new(&name);
-        write_geojson_file(&fs, path, &polys, None).unwrap();
+        write_geojson_file(&fs, path, &polys, false, None).unwrap();
 
         let value: serde_json::Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
         let out: GeoJsonOutput = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(out.features.len(), polys.len());
-        for (feature, (symbol, rings)) in out.features.iter().zip(&polys) {
+        for (feature, p) in out.features.iter().zip(&polys) {
             assert_eq!(feature.geometry.type_, FeatureGeometryType::Polygon);
             let FeatureProperties::VegetationProperties(props) = &feature.properties else {
                 panic!("not vegetation properties: {:?}", feature.properties);
             };
-            assert_eq!(props.symbol, *symbol);
+            assert_eq!(props.symbol, p.symbol);
             assert!(props.shade.is_none());
             // GeoJSON rings are closed: one more position than the open ring
-            assert_eq!(feature.geometry.coordinates.len(), rings.len());
-            for (coords, ring) in feature.geometry.coordinates.iter().zip(rings) {
+            assert_eq!(feature.geometry.coordinates.len(), p.rings.len());
+            for (coords, ring) in feature.geometry.coordinates.iter().zip(&p.rings) {
                 let coords = coords.as_array().unwrap();
                 assert_eq!(coords.len(), ring.len() + 1);
                 assert_eq!(coords.first(), coords.last());
@@ -814,5 +844,32 @@ mod tests {
         // only `symbol` in the properties
         let props = &value["features"][0]["properties"];
         assert_eq!(props.as_object().unwrap().len(), 1, "{props}");
+    }
+
+    #[test]
+    fn write_geojson_file_with_shade_adds_the_greenshade_index() {
+        use crate::geojson::geojson_types::{FeatureProperties, GeoJsonOutput};
+
+        let polys = grid_to_polygons(&speckle(), (0.0, 0.0), 3.0, &speckle_code, [0, 0], 2.0);
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let path = Path::new("vegetation.geojson");
+        write_geojson_file(&fs, path, &polys, true, None).unwrap();
+
+        let value: serde_json::Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
+        let out: GeoJsonOutput = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(out.features.len(), polys.len());
+        let mut shades = std::collections::BTreeSet::new();
+        for (i, (feature, p)) in out.features.iter().zip(&polys).enumerate() {
+            let FeatureProperties::VegetationProperties(props) = &feature.properties else {
+                panic!("not vegetation properties: {:?}", feature.properties);
+            };
+            let shade = props.shade.expect("every green area has a shade").get();
+            assert_eq!(shade, u64::from(p.class));
+            assert_eq!(props.symbol, speckle_code(p.class), "shade {shade}");
+            // an integer in the JSON, not a string or a float
+            assert!(value["features"][i]["properties"]["shade"].is_u64());
+            shades.insert(shade);
+        }
+        assert_eq!(shades.into_iter().collect::<Vec<_>>(), [1, 2, 3]);
     }
 }
