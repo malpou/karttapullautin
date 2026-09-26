@@ -37,6 +37,28 @@ impl GeoJsonOutput {
     }
 }
 
+/// Contours (101, 102, and the depression and slope-line variants), from `out2.dxf.bin`.
+pub const CONTOURS: GeoJsonOutput = GeoJsonOutput {
+    name: "contours",
+    skip_when_merged_bin: true,
+};
+/// The renderer's form lines (103), from `formlines.dxf.bin`.
+pub const FORMLINES: GeoJsonOutput = GeoJsonOutput {
+    name: "formlines",
+    skip_when_merged_bin: true,
+};
+/// Knoll and small depression points (109, 111), from `dotknolls.dxf.bin`. Not skipped:
+/// `merged.dxf.bin` carries them too, but its points are never read, so this file is
+/// their only source.
+pub const DOTKNOLLS: GeoJsonOutput = GeoJsonOutput {
+    name: "dotknolls",
+    skip_when_merged_bin: false,
+};
+/// Cliffs (201, 202), from `c2g.dxf.bin` and `c3g.dxf.bin` in one file.
+pub const CLIFFS: GeoJsonOutput = GeoJsonOutput {
+    name: "cliffs",
+    skip_when_merged_bin: true,
+};
 /// Vegetation areas traced from the greenshade grid.
 pub const VEGETATION: GeoJsonOutput = GeoJsonOutput {
     name: "vegetation",
@@ -52,35 +74,27 @@ pub const UNDERGROWTH: GeoJsonOutput = GeoJsonOutput {
     name: "undergrowth",
     skip_when_merged_bin: false,
 };
+/// Shapefile lines matched by a vector mapping rule.
+pub const OSM_LINES: GeoJsonOutput = GeoJsonOutput {
+    name: "osm_lines",
+    skip_when_merged_bin: false,
+};
+/// Shapefile areas matched by a vector mapping rule.
+pub const OSM_AREAS: GeoJsonOutput = GeoJsonOutput {
+    name: "osm_areas",
+    skip_when_merged_bin: false,
+};
 
 pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
-    GeoJsonOutput {
-        name: "contours",
-        skip_when_merged_bin: true,
-    },
-    GeoJsonOutput {
-        name: "formlines",
-        skip_when_merged_bin: true,
-    },
-    GeoJsonOutput {
-        name: "dotknolls",
-        skip_when_merged_bin: false,
-    },
-    GeoJsonOutput {
-        name: "cliffs",
-        skip_when_merged_bin: true,
-    },
+    CONTOURS,
+    FORMLINES,
+    DOTKNOLLS,
+    CLIFFS,
     VEGETATION,
     OPEN_LAND,
     UNDERGROWTH,
-    GeoJsonOutput {
-        name: "osm_lines",
-        skip_when_merged_bin: false,
-    },
-    GeoJsonOutput {
-        name: "osm_areas",
-        skip_when_merged_bin: false,
-    },
+    OSM_LINES,
+    OSM_AREAS,
 ];
 
 /// Legacy GeoJSON `crs` member for a projected EPSG code. RFC 7946 dropped `crs`, but
