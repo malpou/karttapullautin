@@ -317,6 +317,180 @@ pub fn bindxf_to_geojson(
     write_feature_collection(fs, output, features, epsg)
 }
 
+fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+}
+
+// The ISOM 2017-2 contour and point-symbol rules below are applied by the combined
+// export, after the per-tile outputs are merged: the knolls that survive spacing are
+// only known then, across tile edges.
+
+/// ISOM 2017-2 minimum dimensions for contours, in ground metres. The standard specifies
+/// them on the 1:15,000 original, so ground metres = mm x 15: the smallest bend that can
+/// be drawn is 0.25 mm centre to centre (3.75 m) and the mouth of a re-entrant or spur
+/// must be wider than 0.5 mm (7.5 m). The wider bound subsumes the narrower one, so a
+/// single pass at 8 m enforces both.
+const MIN_MOUTH_M: f64 = 8.0;
+
+/// A bound on how much line one splice may consume. Nothing removed can depart further
+/// than MIN_MOUTH_M from the join that replaces it, so this only stops a long
+/// near-parallel double-back from being swallowed in a single cut.
+const MAX_DETOUR_M: f64 = 24.0;
+
+/// Distance from `p` to the segment `a`-`b`.
+fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+    let len2 = vx * vx + vy * vy;
+    if len2 == 0.0 {
+        return dist(p, a);
+    }
+    let t = (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2).clamp(0.0, 1.0);
+    dist(p, [a[0] + t * vx, a[1] + t * vy])
+}
+
+/// Splice out excursions that leave and return within MIN_MOUTH_M *and* never depart
+/// further than MIN_MOUTH_M from the join replacing them: the wobbles ISOM 2017-2 means
+/// by "small details on contours should be avoided because they tend to hide the main
+/// features of the terrain".
+///
+/// Both bounds matter. The first alone would let a narrow re-entrant be truncated at any
+/// neck along its length; together they guarantee nothing is removed that reaches beyond
+/// what the symbol's own minimum dimension can carry. A closed ring is protected from
+/// being consumed whole by requiring the kept remainder to stay above the same bound.
+#[cfg_attr(not(test), expect(dead_code, reason = "called by the combined export"))]
+fn generalise_contour(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if pts.len() < 4 {
+        return pts.to_vec();
+    }
+    let mut cum = Vec::with_capacity(pts.len());
+    cum.push(0.0);
+    for w in pts.windows(2) {
+        cum.push(cum[cum.len() - 1] + dist(w[0], w[1]));
+    }
+    let total = cum[cum.len() - 1];
+    let mut out = Vec::with_capacity(pts.len());
+    let mut i = 0;
+    while i < pts.len() {
+        out.push(pts[i]);
+        // the furthest vertex that comes back within the minimum mouth on a short detour
+        let mut jump = None;
+        let mut j = i + 1;
+        while j < pts.len() && cum[j] - cum[i] <= MAX_DETOUR_M {
+            let along = cum[j] - cum[i];
+            if along > MIN_MOUTH_M
+                && along < total - MIN_MOUTH_M
+                && dist(pts[i], pts[j]) < MIN_MOUTH_M
+                && pts[i + 1..j]
+                    .iter()
+                    .all(|p| seg_dist(*p, pts[i], pts[j]) < MIN_MOUTH_M)
+            {
+                jump = Some(j);
+            }
+            j += 1;
+        }
+        i = jump.unwrap_or(i + 1);
+    }
+    out
+}
+
+/// ISOM 2017-2 requires that symbol 109/110 "shall not touch or overlap contours", and
+/// that "contours shall be adapted or broken in order not to touch" them. The knoll's
+/// position is the whole information the symbol carries, so the contour is the side that
+/// gives way. 109 is a 0.4 mm dot on the 1:15,000 original (a 6 m footprint, 3 m radius)
+/// plus half a contour width of air.
+const KNOLL_CLEAR_M: f64 = 3.5;
+
+/// Break a contour into the pieces that stay clear of the knoll symbols, dropping any
+/// piece too short to be a line.
+///
+/// Cuts at vertices rather than interpolating the exact crossing point. Contour vertices
+/// are ~1.2 m apart, well inside the clearance, so the gap is right to within a vertex.
+#[cfg_attr(not(test), expect(dead_code, reason = "called by the combined export"))]
+fn break_at_knolls(pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    if knolls.is_empty() {
+        return vec![pts.to_vec()];
+    }
+    let mut parts = Vec::new();
+    let mut cur: Vec<[f64; 2]> = Vec::new();
+    for p in pts {
+        if knolls.iter().any(|k| dist(*k, *p) < KNOLL_CLEAR_M) {
+            if cur.len() > 1 {
+                parts.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+        } else {
+            cur.push(*p);
+        }
+    }
+    if cur.len() > 1 {
+        parts.push(cur);
+    }
+    parts
+}
+
+/// True for the contour family (101 contour, 102 index, 103 form line): the symbols the
+/// ISOM contour rules above apply to.
+#[cfg_attr(not(test), expect(dead_code, reason = "called by the combined export"))]
+fn is_contour_family(symbol: &str) -> bool {
+    matches!(symbol, "101" | "102" | "103")
+}
+
+/// Apply the ISOM contour rules to one published line: generalise detail below what the
+/// symbol can carry, then break where a knoll symbol needs room. Anything that is not a
+/// contour passes through as a single piece, untouched.
+#[cfg_attr(not(test), expect(dead_code, reason = "called by the combined export"))]
+fn conform_contour(symbol: &str, pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    if !is_contour_family(symbol) {
+        return vec![pts.to_vec()];
+    }
+    break_at_knolls(&generalise_contour(pts), knolls)
+}
+
+/// ISOM 109/110/111 point symbols must not touch or overlap each other either (12 m
+/// footprint length).
+const POINT_MIN_SPACING_M: f64 = 12.0;
+
+/// The knoll and small depression point symbols that survive to the map: the Point
+/// features of a dot knolls GeoJSON file (see [`DOTKNOLLS`]) through a greedy spacing
+/// filter ranked by certainty, so the detector's definite symbols win over the `ugly`
+/// ones when two candidates are closer than the minimum. A missing file has none.
+#[cfg_attr(not(test), expect(dead_code, reason = "called by the combined export"))]
+pub(crate) fn published_knolls(
+    fs: &impl FileSystem,
+    path: &std::path::Path,
+) -> anyhow::Result<Vec<([f64; 2], geojson_types::KnollProperties)>> {
+    if !fs.exists(path) {
+        return Ok(Vec::new());
+    }
+    let collection: geojson_types::GeoJsonOutput =
+        serde_json::from_reader(std::io::BufReader::new(fs.open(path)?))?;
+    let mut candidates: Vec<_> = collection
+        .features
+        .into_iter()
+        .filter_map(|f| {
+            let geojson_types::FeatureProperties::KnollProperties(props) = f.properties else {
+                return None;
+            };
+            let c = &f.geometry.coordinates;
+            let point = f.geometry.type_ == FeatureGeometryType::Point;
+            match (point, c.first()?.as_f64(), c.get(1)?.as_f64()) {
+                (true, Some(x), Some(y)) => Some(([x, y], props)),
+                _ => None,
+            }
+        })
+        .collect();
+    // stable: definite first, each group in file order
+    candidates.sort_by_key(|(_, props)| props.ugly == Some(true));
+    let mut kept: Vec<([f64; 2], geojson_types::KnollProperties)> = Vec::new();
+    for (p, props) in candidates {
+        if kept.iter().all(|(k, _)| dist(*k, p) >= POINT_MIN_SPACING_M) {
+            kept.push((p, props));
+        }
+    }
+    Ok(kept)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +635,109 @@ mod tests {
             .map(|f| f["properties"]["symbol"].clone())
             .collect();
         assert_eq!(symbols, [json!("202"), json!("201")]);
+    }
+
+    /// A wobble that leaves and returns inside the ISOM minimum mouth is not a bend the
+    /// symbol can carry, so it must not survive to the map.
+    #[test]
+    fn generalise_contour_splices_out_sub_minimum_wobble() {
+        // a straight line with a 3 m spike that opens a 2 m mouth
+        let mut pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        pts.splice(20..20, [[20.0, 3.0], [21.0, 3.0]]);
+        let out = generalise_contour(&pts);
+        assert!(
+            out.iter().all(|p| p[1] == 0.0),
+            "sub-minimum spike survived: {out:?}"
+        );
+        // the line itself is untouched apart from the spike
+        assert_eq!(out.first(), pts.first());
+        assert_eq!(out.last(), pts.last());
+    }
+
+    /// A deep re-entrant is real terrain, not a wobble, even where its limbs run closer
+    /// than the minimum mouth. It may lose no more than what fits inside the ISOM
+    /// minimum, never the valley.
+    #[test]
+    fn generalise_contour_keeps_a_deep_reentrant() {
+        let mut pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        let deep: Vec<[f64; 2]> = (0..30)
+            .map(|i| [20.0, -f64::from(i)])
+            .chain((0..30).rev().map(|i| [22.0, -f64::from(i)]))
+            .collect();
+        pts.splice(20..20, deep);
+        let out = generalise_contour(&pts);
+        let depth = out.iter().fold(0.0f64, |d, p| d.min(p[1]));
+        assert!(
+            depth <= -29.0 + MIN_MOUTH_M,
+            "a 29 m re-entrant lost more than the ISOM minimum: kept only {depth} m"
+        );
+    }
+
+    /// ISOM 2017-2: the contour gives way to symbol 109/110, and the gap it leaves has to
+    /// be wide enough for the symbol to sit in.
+    #[test]
+    fn break_at_knolls_opens_a_gap_around_the_symbol() {
+        let pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        let parts = break_at_knolls(&pts, &[[20.0, 0.0]]);
+        assert_eq!(parts.len(), 2, "contour was not broken");
+        for part in &parts {
+            for p in part {
+                assert!(
+                    dist(*p, [20.0, 0.0]) >= KNOLL_CLEAR_M,
+                    "contour still touches the knoll at {p:?}"
+                );
+            }
+        }
+        // and a contour nowhere near a knoll is left as one piece
+        assert_eq!(break_at_knolls(&pts, &[[20.0, 50.0]]).len(), 1);
+    }
+
+    #[test]
+    fn conform_contour_breaks_only_the_contour_family() {
+        let pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
+        let knolls = [[10.0, 1.0], [30.0, -1.0]];
+        for symbol in ["101", "102", "103"] {
+            assert_eq!(conform_contour(symbol, &pts, &knolls).len(), 3, "{symbol}");
+        }
+        // a cliff passes through whole, even next to a knoll
+        assert_eq!(conform_contour("201", &pts, &knolls), vec![pts.clone()]);
+    }
+
+    #[test]
+    fn published_knolls_prefers_definite_over_ugly() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let path = Path::new("dotknolls.geojson");
+        assert!(published_knolls(&fs, path).unwrap().is_empty());
+
+        // an ugly knoll listed first, a definite one 5 m away, a far ugly one, and a
+        // contour that is not a point symbol at all
+        let knoll = |x: f64, c| {
+            terrain_feature(
+                FeatureGeometryType::Point,
+                vec![json!(x), json!(0.0)],
+                c,
+                None,
+            )
+            .unwrap()
+        };
+        let features = vec![
+            knoll(0.0, Classification::UglyDotknoll),
+            knoll(5.0, Classification::Dotknoll),
+            knoll(50.0, Classification::UglyDotknoll),
+            terrain_feature(
+                FeatureGeometryType::LineString,
+                vec![json!([0.0, 0.0]), json!([1.0, 0.0])],
+                Classification::Contour,
+                None,
+            )
+            .unwrap(),
+        ];
+        write_feature_collection(&fs, path, features, None).unwrap();
+
+        let kept = published_knolls(&fs, path).unwrap();
+        let kept: Vec<([f64; 2], Option<bool>)> =
+            kept.into_iter().map(|(p, props)| (p, props.ugly)).collect();
+        assert_eq!(kept, [([5.0, 0.0], None), ([50.0, 0.0], Some(true))]);
     }
 
     fn props(c: Classification, elevation: Option<f64>) -> Value {
