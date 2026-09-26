@@ -30,8 +30,8 @@ pub struct Config {
     pub savetempfiles: bool,
     pub savetempfolders: bool,
 
-    /// Buffer in metres read from the neighbouring tiles in batch mode, so tile edges
-    /// are seamless.
+    /// Padding in metres: the strip of the neighbouring tiles processed with each tile
+    /// in batch mode, so features meet at the tile edges.
     pub batchbuffer: f64,
     /// Run every merge step after a batch run: the png merges, the dxf merge, the
     /// GeoJSON merge and the combined export.

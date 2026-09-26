@@ -503,7 +503,7 @@ pub(crate) fn published_knolls(
     if !fs.exists(path) {
         return Ok(Vec::new());
     }
-    let mut candidates: Vec<_> = read_collection(fs, path)?
+    let candidates = read_collection(fs, path)?
         .features
         .into_iter()
         .filter_map(|f| {
@@ -518,7 +518,14 @@ pub(crate) fn published_knolls(
             }
         })
         .collect();
-    // stable: definite first, each group in file order
+    Ok(space_knolls(candidates))
+}
+
+/// The greedy spacing filter of [`published_knolls`], definite before `ugly`.
+fn space_knolls(
+    mut candidates: Vec<([f64; 2], geojson_types::KnollProperties)>,
+) -> Vec<([f64; 2], geojson_types::KnollProperties)> {
+    // stable: definite first, each group in input order
     candidates.sort_by_key(|(_, props)| props.ugly == Some(true));
     let mut kept: Vec<([f64; 2], geojson_types::KnollProperties)> = Vec::new();
     for (p, props) in candidates {
@@ -526,7 +533,7 @@ pub(crate) fn published_knolls(
             kept.push((p, props));
         }
     }
-    Ok(kept)
+    kept
 }
 
 // Batch mode: each tile's GeoJSON is cropped to the tile into the batch output folder,
@@ -696,7 +703,7 @@ fn clip_polygon(coords: &[Value], bbox: &Rect) -> Option<Vec<Value>> {
     Some(out)
 }
 
-/// Crop every feature of a GeoJSON file to the bbox (a batch tile without its buffer)
+/// Crop every feature of a GeoJSON file to the bbox (a batch tile without its padding)
 /// and write the result, carrying the input's `crs` over. A line that leaves the box
 /// and comes back becomes one LineString feature per part, each with the line's
 /// properties.
@@ -726,10 +733,11 @@ pub fn crop_geojson(
                 }
             }
             FeatureGeometryType::Point => {
+                // half-open, so a point on the edge two tiles share lands in one of them
                 let inside = matches!(
                     (coords.first().and_then(Value::as_f64), coords.get(1).and_then(Value::as_f64)),
-                    (Some(x), Some(y)) if (bbox.minx..=bbox.maxx).contains(&x)
-                        && (bbox.miny..=bbox.maxy).contains(&y)
+                    (Some(x), Some(y)) if (bbox.minx..bbox.maxx).contains(&x)
+                        && (bbox.miny..bbox.maxy).contains(&y)
                 );
                 if inside {
                     features.push(f);
@@ -746,7 +754,7 @@ pub fn crop_geojson(
 /// file name order; the first tile's `crs` is carried over.
 pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &Path) -> anyhow::Result<()> {
     for output in GEOJSON_OUTPUTS {
-        let suffix = format!("_{}", output.file_name());
+        let suffix = output.tile_file_name("");
         let merged_name = output.merged_file_name();
         let mut files: Vec<_> = fs
             .list(batchoutfolder)?
@@ -775,10 +783,11 @@ pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &Path) -> anyhow::Res
 /// Symbols whose geometry is organic and gets Bezier curves in the combined DXF (and the
 /// same curve, sampled, in the combined GeoJSON). Roads and buildings stay straight.
 fn curve_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "101" | "102" | "103" | "201" | "202" | "306" | "403" | "406" | "407" | "408" | "410"
-    )
+    is_contour_family(symbol)
+        || matches!(
+            symbol,
+            "201" | "202" | "306" | "403" | "406" | "407" | "408" | "410"
+        )
 }
 
 /// Fit a piecewise cubic Bezier through the (thinned) polyline with Catmull-Rom
@@ -1110,20 +1119,18 @@ impl Combined {
     }
 
     /// A line through the ISOM rules: each published piece becomes a DXF entity and a
-    /// LineString feature with the line's properties.
-    fn line(
-        &mut self,
-        pts: &[[f64; 2]],
-        closed: bool,
-        props: &FeatureProperties,
-        knolls: &[[f64; 2]],
-    ) {
+    /// LineString feature with the line's properties. A line that ends where it starts
+    /// (a contour loop) stays closed until a knoll breaks it.
+    fn line(&mut self, pts: &[[f64; 2]], props: &FeatureProperties, knolls: &[[f64; 2]]) {
         let symbol = symbol(props);
         let elevation = match props {
             FeatureProperties::ContourProperties(p) => p.elevation,
             _ => None,
         };
-        for piece in published_pieces(&symbol, &smoothed(&symbol, pts), closed, knolls) {
+        let pts = smoothed(&symbol, pts);
+        let closed = pts.len() > 3 && pts.first() == pts.last();
+        for piece in published_pieces(&symbol, &pts, closed, knolls) {
+            let closed = closed && piece.first() == piece.last();
             self.dxf_entity(&symbol, &piece, closed, elevation);
             self.features.push(feature(
                 FeatureGeometryType::LineString,
@@ -1205,8 +1212,42 @@ pub fn export_combined(
 ) -> anyhow::Result<()> {
     use geojson_types::{ContourPropertiesSymbol, FeatureProperties as P};
 
+    let have_merged_bin = fs.exists(merged_bin);
+    let mut bin_lines: Vec<(Vec<[f64; 2]>, Classification, Option<f64>)> = Vec::new();
+    let mut bin_knolls = Vec::new();
+    if have_merged_bin {
+        let dxf = BinaryDxf::from_reader(&mut fs.open(merged_bin)?)?;
+        for geom in dxf.take_geometry() {
+            match geom {
+                Geometry::Polylines2(pl) => bin_lines.extend(
+                    pl.into_iter()
+                        .map(|(p, c)| (p.iter().map(|q| [q.x, q.y]).collect(), c, None)),
+                ),
+                Geometry::Polylines3(pl) => bin_lines.extend(
+                    pl.into_iter()
+                        .map(|(p, (c, h))| (p.iter().map(|q| [q.x, q.y]).collect(), c, Some(h))),
+                ),
+                Geometry::Points(pts) => {
+                    bin_knolls.extend(pts.into_iter().filter_map(
+                        |(p, c)| match terrain_properties(c, None)? {
+                            P::KnollProperties(props) => Some(([p.x, p.y], props)),
+                            _ => None,
+                        },
+                    ))
+                }
+            }
+        }
+    }
+
     // The point symbols are settled first: ISOM makes the contours give way to them.
-    let knolls = published_knolls(fs, &batchoutfolder.join(DOTKNOLLS.merged_file_name()))?;
+    // The merged dot knolls GeoJSON is their source; merged.dxf.bin carries the same
+    // points and stands in only without it (vector_vege=0).
+    let dotknolls = batchoutfolder.join(DOTKNOLLS.merged_file_name());
+    let knolls = if fs.exists(&dotknolls) {
+        published_knolls(fs, &dotknolls)?
+    } else {
+        space_knolls(bin_knolls)
+    };
     let knoll_pts: Vec<[f64; 2]> = knolls.iter().map(|(p, _)| *p).collect();
 
     let mut out = Combined::new();
@@ -1223,30 +1264,11 @@ pub fn export_combined(
         }
     };
 
-    let have_merged_bin = fs.exists(merged_bin);
-    if have_merged_bin {
-        let dxf = BinaryDxf::from_reader(&mut fs.open(merged_bin)?)?;
-        for geom in dxf.take_geometry() {
-            let lines: Vec<(Vec<[f64; 2]>, Classification, Option<f64>)> = match geom {
-                Geometry::Polylines2(pl) => pl
-                    .into_iter()
-                    .map(|(p, c)| (p.iter().map(|q| [q.x, q.y]).collect(), c, None))
-                    .collect(),
-                Geometry::Polylines3(pl) => pl
-                    .into_iter()
-                    .map(|(p, (c, h))| (p.iter().map(|q| [q.x, q.y]).collect(), c, Some(h)))
-                    .collect(),
-                // the knoll points come from the merged dot knolls GeoJSON (see
-                // published_knolls); taking them here as well would publish each twice
-                Geometry::Points(_) => continue,
-            };
-            for (pts, c, elevation) in lines {
-                match terrain_properties(c, elevation) {
-                    None => {} // the knoll-detector artifact
-                    Some(P::CliffProperties(p)) => add_dash(p, &pts),
-                    Some(props) => out.line(&pts, c.is_area(), &props, &knoll_pts),
-                }
-            }
+    for (pts, c, elevation) in bin_lines {
+        match terrain_properties(c, elevation) {
+            None => {} // the knoll-detector artifact
+            Some(P::CliffProperties(p)) => add_dash(p, &pts),
+            Some(props) => out.line(&pts, &props, &knoll_pts),
         }
     }
 
@@ -1274,7 +1296,7 @@ pub fn export_combined(
                 }
                 (FeatureGeometryType::LineString, props) if half_interval(&props) => {}
                 (FeatureGeometryType::LineString, props) => {
-                    out.line(&line_points(coords), false, &props, &knoll_pts)
+                    out.line(&line_points(coords), &props, &knoll_pts)
                 }
                 (FeatureGeometryType::Polygon, props) => {
                     out.polygon(&polygon_rings(coords), props, &knoll_pts)
@@ -1815,6 +1837,8 @@ mod tests {
             ),
             terrain_point(Classification::Dotknoll, [2.0, 2.0]),
             terrain_point(Classification::Dotknoll, [12.0, 2.0]),
+            // on the edge shared with the next tile: that tile keeps it
+            terrain_point(Classification::Dotknoll, [10.0, 2.0]),
         ];
         write_feature_collection(&fs, Path::new("in.geojson"), features, Some(25832)).unwrap();
 
@@ -2025,7 +2049,13 @@ mod tests {
         let out = Path::new("out");
         merged_outputs(&fs, out);
 
-        export_combined(&fs, out, Path::new("merged.dxf.bin"), Some(25832)).unwrap();
+        export_combined(
+            &fs,
+            out,
+            Path::new(crate::merge::MERGED_DXF_BIN),
+            Some(25832),
+        )
+        .unwrap();
 
         let combined = read(&fs, &out.join(COMBINED_GEOJSON));
         assert_eq!(
@@ -2108,7 +2138,7 @@ mod tests {
                 Classification::Cliff3,
             );
         }
-        let bin = Path::new("merged.dxf.bin");
+        let bin = Path::new(crate::merge::MERGED_DXF_BIN);
         BinaryDxf::new(
             Bounds::new(0.0, 100.0, 0.0, 700.0),
             vec![Geometry::Polylines3(contours), Geometry::Polylines2(cliffs)],
@@ -2143,11 +2173,64 @@ mod tests {
     }
 
     #[test]
+    fn export_combined_takes_knolls_from_merged_bin_without_the_geojson() {
+        use crate::geometry::{Bounds, Point3, Points, Polylines};
+
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let out = Path::new("out");
+        fs.create_dir_all(out).unwrap();
+        // vector_vege=0: no merged GeoJSON, only merged.dxf.bin with a straight contour
+        // through a knoll, and a closed contour loop well away from it
+        let mut contours = Polylines::new();
+        contours.push(
+            (0..=100)
+                .map(|x| Point3::new(x as f64, 0.0, 10.0))
+                .collect(),
+            (Classification::Contour, 10.0),
+        );
+        let lp = |x: f64, y: f64| Point3::new(x, y, 20.0);
+        let mut ring: Vec<Point3> = (0..40).map(|i| lp(200.0 + i as f64, 0.0)).collect();
+        ring.extend((0..40).map(|i| lp(240.0, i as f64)));
+        ring.extend((0..40).map(|i| lp(240.0 - i as f64, 40.0)));
+        ring.extend((0..=40).map(|i| lp(200.0, 40.0 - i as f64)));
+        contours.push(ring, (Classification::Contour, 20.0));
+        let mut points = Points::new();
+        points.push(Point2::new(50.0, 0.0), Classification::Dotknoll);
+        let bin = Path::new(crate::merge::MERGED_DXF_BIN);
+        BinaryDxf::new(
+            Bounds::new(0.0, 300.0, 0.0, 100.0),
+            vec![Geometry::Polylines3(contours), Geometry::Points(points)],
+        )
+        .to_writer(&mut fs.create(bin).unwrap())
+        .unwrap();
+
+        export_combined(&fs, out, bin, None).unwrap();
+
+        let combined = read(&fs, &out.join(COMBINED_GEOJSON));
+        let lines: Vec<Vec<[f64; 2]>> = combined
+            .features
+            .iter()
+            .filter(|f| f.geometry.type_ == FeatureGeometryType::LineString)
+            .map(|f| line_points(&f.geometry.coordinates))
+            .collect();
+        let points = combined
+            .features
+            .iter()
+            .filter(|f| symbol(&f.properties) == "109")
+            .count();
+        assert_eq!(points, 1);
+        // the straight contour broken in two around the knoll, the loop kept closed
+        assert_eq!(lines.len(), 3);
+        let closed = lines.iter().filter(|l| l.first() == l.last()).count();
+        assert_eq!(closed, 1);
+    }
+
+    #[test]
     fn export_combined_writes_nothing_without_outputs() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
-        export_combined(&fs, out, Path::new("merged.dxf.bin"), None).unwrap();
+        export_combined(&fs, out, Path::new(crate::merge::MERGED_DXF_BIN), None).unwrap();
         assert!(!fs.exists(out.join(COMBINED_GEOJSON)));
         assert!(!fs.exists(out.join(COMBINED_DXF)));
     }
