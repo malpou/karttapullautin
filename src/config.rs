@@ -96,7 +96,8 @@ pub struct Config {
     pub waterele: f64,
 
     // vector export
-    /// Vectorize the vegetation, yellow and undergrowth grids into GeoJSON and DXF areas.
+    /// Vectorize the vegetation, yellow and undergrowth grids into GeoJSON and DXF areas,
+    /// and write contours, form lines, knolls and cliffs as GeoJSON too.
     pub vector_vege: bool,
     /// Symbol code per greenshade index (1-based); a shorter list repeats its last code.
     /// Empty when `vector_vege` is off.

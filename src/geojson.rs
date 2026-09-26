@@ -320,6 +320,7 @@ pub fn bindxf_to_geojson(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn geojson_outputs_no_duplicate_names() {
@@ -373,6 +374,93 @@ mod tests {
         assert_eq!(feats.len(), 1);
         assert_eq!(feats[0]["geometry"]["type"], "LineString");
         assert_eq!(feats[0]["properties"]["symbol"], "101");
+    }
+
+    /// Write `geometry` as a binary DXF at `path` in the memory file system.
+    fn write_bin(fs: &impl FileSystem, path: &str, geometry: Vec<Geometry>) {
+        use crate::geometry::Bounds;
+        BinaryDxf::new(Bounds::new(0.0, 100.0, 0.0, 100.0), geometry)
+            .to_writer(&mut fs.create(path).unwrap())
+            .unwrap();
+    }
+
+    fn read_features(fs: &impl FileSystem, path: &str) -> Vec<Value> {
+        let val: Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
+        val["features"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn bindxf_to_geojson_maps_each_geometry_type() {
+        use crate::geometry::{Point3, Points, Polylines};
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+
+        let mut contours = Polylines::new();
+        contours.push(
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            (Classification::ContourIndex, 45.0),
+        );
+        let mut formlines = Polylines::new();
+        formlines.push(
+            vec![Point2::new(0.0, 0.0), Point2::new(2.0, 2.0)],
+            Classification::Formline,
+        );
+        let mut knolls = Points::new();
+        knolls.push(Point2::new(5.004, 6.0), Classification::Dotknoll);
+        write_bin(
+            &fs,
+            "in.dxf.bin",
+            vec![contours.into(), formlines.into(), knolls.into()],
+        );
+
+        bindxf_to_geojson(
+            &fs,
+            &[PathBuf::from("in.dxf.bin")],
+            Path::new("out.geojson"),
+            None,
+        )
+        .unwrap();
+        let feats = read_features(&fs, "out.geojson");
+        assert_eq!(feats.len(), 3);
+
+        // a 3D polyline is a LineString that keeps its elevation
+        assert_eq!(feats[0]["geometry"]["type"], "LineString");
+        assert_eq!(feats[0]["properties"]["symbol"], "102");
+        assert_eq!(feats[0]["properties"]["elevation"], 45.0);
+        // a 2D polyline has none
+        assert_eq!(feats[1]["geometry"]["type"], "LineString");
+        assert_eq!(feats[1]["properties"]["symbol"], "103");
+        assert!(feats[1]["properties"].get("elevation").is_none());
+        // a point is a Point
+        assert_eq!(feats[2]["geometry"]["type"], "Point");
+        assert_eq!(feats[2]["geometry"]["coordinates"], json!([5.0, 6.0]));
+        assert_eq!(feats[2]["properties"]["symbol"], "109");
+    }
+
+    #[test]
+    fn bindxf_to_geojson_combines_both_cliff_files() {
+        use crate::geometry::Polylines;
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        for (path, class) in [
+            ("c2g.dxf.bin", Classification::Cliff2),
+            ("c3g.dxf.bin", Classification::Cliff4),
+        ] {
+            let mut cliffs = Polylines::new();
+            cliffs.push(vec![Point2::new(0.0, 0.0), Point2::new(3.0, 0.0)], class);
+            write_bin(&fs, path, vec![cliffs.into()]);
+        }
+
+        bindxf_to_geojson(
+            &fs,
+            &[PathBuf::from("c2g.dxf.bin"), PathBuf::from("c3g.dxf.bin")],
+            Path::new(&CLIFFS.file_name()),
+            None,
+        )
+        .unwrap();
+        let symbols: Vec<Value> = read_features(&fs, "cliffs.geojson")
+            .iter()
+            .map(|f| f["properties"]["symbol"].clone())
+            .collect();
+        assert_eq!(symbols, [json!("202"), json!("201")]);
     }
 
     fn props(c: Classification, elevation: Option<f64>) -> Value {
