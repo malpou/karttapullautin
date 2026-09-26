@@ -43,5 +43,6 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 
 **Symbol code**: The ISOM 2017-2 number a feature is drawn with. _Avoid_: layer (a DXF layer is a container, never the ISOM number), ISOM 2000 numbering
 **Upper level**: A mapped feature that passes over the others, such as a bridge, drawn on top of them. A `T` suffix on the code in a vector mapping; `upper_level` in GeoJSON. _Avoid_: T code, top
+**Vegetation area**: A green shade, open land or undergrowth patch traced from its grid into a polygon of one symbol code, at least that symbol's ISOM minimum area; smaller patches dissolve into their surroundings. _Avoid_: vege polygon, yellow polygon
 **Map frame**: Scale, resolution, origin and north rotation of the rendered sheet. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre before scalefactor.
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
