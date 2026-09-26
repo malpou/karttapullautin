@@ -493,8 +493,8 @@ fn write_geojson_file(
 }
 
 /// Vectorize and write all vegetation vector outputs. Called from `makevege` when
-/// `vector_vege=1`. Grids: `green` = greenshade index per block cell, `yellow` = 0/1 per
-/// 3 m cell (origin shifted +1.5 m, see makevege's 2x2 sum window), `ug` = 0/1 per
+/// `vector_vege=1`. Grids: `green` = greenshade index per block cell, `open_land` = 0/1
+/// per 3 m cell (origin shifted +1.5 m, see makevege's 2x2 sum window), `undergrowth` = 0/1 per
 /// block*6 cell.
 #[allow(clippy::too_many_arguments)]
 pub fn export_all(
@@ -502,12 +502,9 @@ pub fn export_all(
     config: &Config,
     tmpfolder: &Path,
     green: &Vec2D<u8>,
-    yellow: &Vec2D<u8>,
-    ug: &Vec2D<u8>,
-    xmin: f64,
-    ymin: f64,
-    xmax: f64,
-    ymax: f64,
+    open_land: &Vec2D<u8>,
+    undergrowth: &Vec2D<u8>,
+    bounds: Bounds,
     block: f64,
 ) -> Result<(), Box<dyn Error>> {
     log::info!("Vectorizing vegetation...");
@@ -522,7 +519,7 @@ pub fn export_all(
         }
     };
     let green_med = [radius(config.med, block), radius(config.med2, block)];
-    let yellow_med = if config.proceed_yellows {
+    let open_land_med = if config.proceed_yellows {
         [radius(config.med, 3.0), radius(config.med2, 3.0)]
     } else {
         [radius(config.medyellow, 3.0), 0]
@@ -535,18 +532,25 @@ pub fn export_all(
             .expect("vector_greenshade_isom is validated non-empty at config load")
     };
 
-    let green_polys = grid_to_polygons(green, (xmin, ymin), block, &green_code, green_med, eps);
-    let yellow_polys = grid_to_polygons(
-        yellow,
-        (xmin + 1.5, ymin + 1.5),
-        3.0,
-        &|_| Symbol::X403,
-        yellow_med,
+    let green_polys = grid_to_polygons(
+        green,
+        (bounds.xmin, bounds.ymin),
+        block,
+        &green_code,
+        green_med,
         eps,
     );
-    let ug_polys = grid_to_polygons(
-        ug,
-        (xmin, ymin),
+    let open_land_polys = grid_to_polygons(
+        open_land,
+        (bounds.xmin + 1.5, bounds.ymin + 1.5),
+        3.0,
+        &|_| Symbol::X403,
+        open_land_med,
+        eps,
+    );
+    let undergrowth_polys = grid_to_polygons(
+        undergrowth,
+        (bounds.xmin, bounds.ymin),
         block * 6.0,
         &|_| Symbol::X407,
         [0, 0],
@@ -555,8 +559,8 @@ pub fn export_all(
 
     for (output, polys) in [
         (geojson::VEGETATION, &green_polys),
-        (geojson::YELLOW, &yellow_polys),
-        (geojson::UNDERGROWTH, &ug_polys),
+        (geojson::OPEN_LAND, &open_land_polys),
+        (geojson::UNDERGROWTH, &undergrowth_polys),
     ] {
         write_geojson_file(fs, &tmpfolder.join(output.file_name()), polys)?;
     }
@@ -564,8 +568,8 @@ pub fn export_all(
     // combined DXF in draw order (stable sort keeps the traced order within a symbol)
     let mut all: Vec<&VegPolygon> = green_polys
         .iter()
-        .chain(&yellow_polys)
-        .chain(&ug_polys)
+        .chain(&open_land_polys)
+        .chain(&undergrowth_polys)
         .collect();
     all.sort_by_key(|(symbol, _)| draw_order(*symbol));
 
@@ -578,7 +582,7 @@ pub fn export_all(
             lines.push(closed, class);
         }
     }
-    let dxf = BinaryDxf::new(Bounds::new(xmin, xmax, ymin, ymax), vec![lines.into()]);
+    let dxf = BinaryDxf::new(bounds, vec![lines.into()]);
     dxf.to_writer(&mut fs.create(tmpfolder.join("vegetation.dxf.bin"))?)?;
     if config.output_dxf {
         dxf.to_dxf(&mut fs.create(tmpfolder.join("vegetation.dxf"))?)?;
@@ -619,8 +623,7 @@ mod tests {
         assert_eq!(big.1.len(), 2, "big region should have exterior + hole");
         assert!(signed_area(&big.1[0]) > 0.0, "exterior must be CCW");
         assert!(signed_area(&big.1[1]) < 0.0, "hole must be CW");
-        // exterior area = 25 cells - 1 hole cell => shoelace = 24 cells * 100 m²... the
-        // exterior ring itself encloses 25 cells (the hole is a separate ring)
+        // the exterior ring encloses all 25 cells; the hole is a separate ring of 1 cell
         assert_eq!(signed_area(&big.1[0]), 25.0 * 100.0);
         assert_eq!(signed_area(&big.1[1]), -100.0);
     }
@@ -671,7 +674,7 @@ mod tests {
                 _ => Symbol::X410,
             }
         };
-        // cell 3 m => 9 m² per cell, minimums are 225/110/68 m²
+        // cell 3 m => 9 m² per cell, minimums are 225/110.25/64 m²
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 3.0, &code_of, [0, 0], 0.0);
         assert!(!polys.is_empty());
         for (code, rings) in &polys {
