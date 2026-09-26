@@ -73,7 +73,8 @@
       "additionalProperties": false,
       "properties": {
         "symbol": { "type": "string" },
-        "category": { "type": "string" }
+        "category": { "type": "string" },
+        "upper_level": { "type": "boolean" }
       }
     },
     "Feature": {

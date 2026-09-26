@@ -12,6 +12,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Return**: One recorded laser echo with position, class and echo order. _Avoid_: point record, xyz, r3/r4/r5
 **Echo order**: A return's position among the echoes of one pulse, first through last. _Avoid_: return number, first/last flag
 **Ground return**: A return the data supplier classified as terrain. See also: Return.
+**Vector mapping**: A rule file that assigns a symbol code to shapefile records by their attributes, one `name|symbol code|conditions` rule per line; named by the `vectorconf` ini key. _Avoid_: vectorconf (the key), osm.txt (one such file)
 
 ### Relief
 
@@ -41,5 +42,6 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 ### Output
 
 **Symbol code**: The ISOM 2017-2 number a feature is drawn with. _Avoid_: layer (a DXF layer is a container, never the ISOM number), ISOM 2000 numbering
+**Upper level**: A mapped feature that passes over the others, such as a bridge, drawn on top of them. A `T` suffix on the code in a vector mapping; `upper_level` in GeoJSON. _Avoid_: T code, top
 **Map frame**: Scale, resolution, origin and north rotation of the rendered sheet. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre before scalefactor.
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
