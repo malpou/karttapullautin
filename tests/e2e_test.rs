@@ -196,12 +196,12 @@ fn batch_with_osm_vectorconf() {
             .any(|f| f["properties"]["symbol"] == symbol && f["properties"]["category"] == category)
     };
 
-    let lines = assert_osm_features(&tile.join("osm_lines.geojson"), "LineString");
+    let lines = assert_osm_features(&tile.join(geojson::OSM_LINES.file_name()), "LineString");
     // osm.txt rules in ISOM 2017-2: primary roads are wide roads, paths small footpaths
     assert!(has(&lines, "502", "road-path"));
     assert!(has(&lines, "506", "road-path"));
 
-    let areas = assert_osm_features(&tile.join("osm_areas.geojson"), "Polygon");
+    let areas = assert_osm_features(&tile.join(geojson::OSM_AREAS.file_name()), "Polygon");
     assert!(has(&areas, "521", "building"));
     assert!(has(&areas, "301", "water"));
     for f in &areas {

@@ -773,13 +773,13 @@ pub fn render(
     if !vectorconf_mappings.is_empty() {
         geojson::write_feature_collection(
             fs,
-            &tmpfolder.join("osm_lines.geojson"),
+            &tmpfolder.join(geojson::OSM_LINES.file_name()),
             osm_lines,
             None,
         )?;
         geojson::write_feature_collection(
             fs,
-            &tmpfolder.join("osm_areas.geojson"),
+            &tmpfolder.join(geojson::OSM_AREAS.file_name()),
             osm_areas,
             None,
         )?;
