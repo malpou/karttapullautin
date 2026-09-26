@@ -12,10 +12,12 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Return**: One recorded laser echo with position, class and echo order. _Avoid_: point record, xyz, r3/r4/r5
 **Echo order**: A return's position among the echoes of one pulse, first through last. _Avoid_: return number, first/last flag
 **Ground return**: A return the data supplier classified as terrain. See also: Return.
+**Pulse density**: Laser pulses per square metre of ground in a tile. _Avoid_: point density, return density
 
 ### Relief
 
 **Ground model**: The gridded terrain surface derived from ground returns. _Avoid_: heightmap, hmap, xyz, DEM
+**Cell size**: Ground distance between neighbouring cells of the ground model. _Avoid_: resolution, grid step
 **Local relief**: Height range within a small window around a cell. _Avoid_: steepness, slope
 **Contour interval**: Vertical spacing of full contours on the finished map.
 **Contour**: A line of equal height at a multiple of the contour interval (ISOM 101).
@@ -40,5 +42,13 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 ### Output
 
 **Symbol code**: The ISOM 2017-2 number a feature is drawn with. _Avoid_: layer (a DXF layer is a container, never the ISOM number), ISOM 2000 numbering
+**Symbol table**: The machine-readable list of ISOM 2017-2 symbols: code, name, geometry type, colour, dimensions. _Avoid_: symbol set (a mapping program's file), legend
 **Map frame**: Scale, resolution, origin and north rotation of the rendered sheet.
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
+
+### Development
+
+**Fidelity**: Agreement of output with what the Perl program produces for the same input. _Avoid_: faithfulness, classic
+**Output change**: Any difference in pixels, debug intermediates or vector output on the regression tile against the previous baseline. _Avoid_: regression (for an intended change)
+**Regression tile**: The fixed test tile whose rendered map and vector output every branch is compared against. _Avoid_: test file, golden tile
+**Debug intermediates**: Stage results written to disk only on request, for inspection, with no format guarantee. _Avoid_: temp files, cache
