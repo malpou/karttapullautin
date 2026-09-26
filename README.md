@@ -177,6 +177,64 @@ Make your changes, then youd run:
 
 The new binary will be accessible in the `target/release/` directory
 
+### Measuring an output change
+
+A change that alters the map should say by how much. `eval` compares two
+outputs and prints a report:
+
+    ./pullauta eval <baseline> <candidate> [--tolerance <metres>] [--diff-dir <dir>] [--format text|json] [--fail-on-change] [--expected <report.json>]
+
+`baseline` and `candidate` are two files or two directories. Directories are
+walked recursively and files are paired by relative path; files of any kind
+present on only one side are listed. The baseline can be the base branch's output or a
+reference map in the same formats.
+
+- `*.png`: changed pixels (count and percentage). When the two images hold at
+  most 32 colours between them (such as `temp/vegetation.png`), every colour
+  is also scored as a class: pixel counts on each side and
+  intersection-over-union. `--diff-dir` writes `<name>.diff.png` for every
+  pair that differs: the baseline in light grey, changed pixels in red.
+  Images must be the same size.
+- `*.geojson`: features are grouped by symbol code (the `symbol` property;
+  `isom` and then `layer` are read when it is missing).
+  Per code: feature, point, line and polygon counts, total line length, total
+  polygon area and proper line crossings on each side; for lines, the share of
+  candidate length within the tolerance of a baseline line (precision), the
+  share of baseline length within the tolerance of a candidate line (recall),
+  the Hausdorff distance and the mean distance each way; for points, the share
+  on each side with a counterpart within the tolerance and the Hausdorff
+  distance; for polygons, the same line measures over their rings, so a moved
+  polygon shows even when its area does not change. The tolerance defaults to
+  1 m. Coordinates are read as projected metres, as the pipeline writes them.
+
+A typical check runs both builds in separate directories on the same input,
+then compares them:
+
+    (cd base && /path/to/base/pullauta ../test_file.laz)
+    (cd branch && /path/to/branch/pullauta ../test_file.laz)
+    ./pullauta eval base branch --diff-dir diffs
+
+`--format json` prints the report as JSON. It is deterministic, so it can be
+committed and diffed: keys are sorted, the input and diff-image paths are left
+out, and every measure is rounded to six decimals.
+
+Two options make `eval` a gate that exits with status 2 on failure (1 is
+kept for errors such as unreadable input):
+
+- `--fail-on-change` fails when any pair differs: a changed pixel, a changed
+  per-code total, a non-zero Hausdorff distance, a file that cannot be read,
+  or a PNG or GeoJSON file present on one side only. Other unpaired files are
+  listed but do not fail the gate.
+- `--expected <report.json>` passes when nothing differs or when the JSON
+  report equals the given file, and it decides alone when both options are
+  given. Commit the report of an intended change and
+  the gate accepts exactly that change:
+
+      ./pullauta eval base branch --format json > expected.json
+      ./pullauta eval base branch --expected expected.json
+
+`eval` only reads its inputs; it never runs the pipeline.
+
 ## Contributors
 
 @jagge @rphlo @antbern
