@@ -269,7 +269,12 @@ impl BinaryDxf {
                         let Some(layer) = class.symbol_code() else {
                             continue;
                         };
-                        write!(writer, "POLYLINE\r\n 66\r\n1\r\n  8\r\n{layer}\r\n  0\r\n")?;
+                        // closed flag (70=1) on area rings so importers read them as areas
+                        let closed = if class.is_area() { " 70\r\n1\r\n" } else { "" };
+                        write!(
+                            writer,
+                            "POLYLINE\r\n 66\r\n1\r\n  8\r\n{layer}\r\n{closed}  0\r\n"
+                        )?;
 
                         for p in polyline {
                             write!(
@@ -353,6 +358,15 @@ pub enum Classification {
     /// and maps to 101 downstream. Generated in merge, alongside the ring it belongs to.
     SlopeLine,
     SmallDepression,
+
+    /// Vegetation and open-land areas, one per ISOM 2017-2 area symbol, traced from the
+    /// vegetation grids into closed rings. Kept at the end so the bincode variant indices
+    /// of the older variants (and thus existing `.dxf.bin` files) stay stable.
+    Veg403,
+    Veg406,
+    Veg407,
+    Veg408,
+    Veg410,
 }
 
 impl Classification {
@@ -376,6 +390,11 @@ impl Classification {
             Self::Cliff3 | Self::Cliff4 => "201",
             // a tick that belongs to symbol 101; GeoJSON marks it `slope_line: true`
             Self::SlopeLine => "101",
+            Self::Veg403 => "403",
+            Self::Veg406 => "406",
+            Self::Veg407 => "407",
+            Self::Veg408 => "408",
+            Self::Veg410 => "410",
             Self::Knoll1010 => return None,
         })
     }
@@ -397,8 +416,21 @@ impl Classification {
             Self::Cliff2 => "cliff",
             Self::Cliff3 | Self::Cliff4 => "impassable cliff",
             Self::SlopeLine => "slope line",
+            Self::Veg403 => "rough open land",
+            Self::Veg406 => "vegetation: slow running",
+            Self::Veg407 => "vegetation: slow running, good visibility",
+            Self::Veg408 => "vegetation: walk",
+            Self::Veg410 => "vegetation: fight",
             Self::Knoll1010 => return None,
         })
+    }
+
+    /// Whether this classification is an area symbol, whose polylines are closed rings.
+    pub fn is_area(&self) -> bool {
+        matches!(
+            self,
+            Self::Veg403 | Self::Veg406 | Self::Veg407 | Self::Veg408 | Self::Veg410
+        )
     }
 
     /// Whether the knoll detector was unsure of this knoll or small depression. Definite
@@ -870,6 +902,35 @@ mod tests {
         assert_eq!(text.matches("POLYLINE").count(), 1);
         assert!(text.contains("  8\r\n102\r\n"));
         assert!(!text.contains("1010"));
+    }
+
+    #[test]
+    fn dxf_area_rings_are_closed_polylines_on_their_symbol_layer() {
+        let mut lines = Polylines::new();
+        let ring = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(0.0, 1.0),
+            Point2::new(0.0, 0.0),
+        ];
+        lines.push(ring.clone(), Classification::Veg406);
+        lines.push(ring, Classification::Contour);
+        let dxf = BinaryDxf::new(Bounds::new(0.0, 1.0, 0.0, 1.0), vec![lines.into()]);
+        let mut out = Vec::new();
+        dxf.to_dxf(&mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n406\r\n 70\r\n1\r\n  0\r\n"));
+        assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n101\r\n  0\r\n"));
+    }
+
+    /// `.dxf.bin` stores a classification as its variant index: new variants go at the
+    /// end so existing indices (and files) keep their meaning.
+    #[test]
+    fn classification_variant_indices_are_stable() {
+        assert_eq!(Classification::ContourSimple as u8, 0);
+        assert_eq!(Classification::SmallDepression as u8, 20);
+        assert_eq!(Classification::Veg403 as u8, 21);
+        assert_eq!(Classification::Veg410 as u8, 25);
     }
 
     #[test]
