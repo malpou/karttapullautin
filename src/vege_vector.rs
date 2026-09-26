@@ -788,7 +788,8 @@ mod tests {
 
         let polys = grid_to_polygons(&speckle(), (0.0, 0.0), 3.0, &speckle_code, [0, 0], 2.0);
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let path = Path::new("vegetation.geojson");
+        let name = geojson::VEGETATION.file_name();
+        let path = Path::new(&name);
         write_geojson_file(&fs, path, &polys).unwrap();
 
         let value: serde_json::Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
