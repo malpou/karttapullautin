@@ -14,7 +14,7 @@ use imageproc::region_labelling::{Connectivity, connected_components};
 use crate::config::Config;
 use crate::geojson;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode as Code;
-use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
+use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines, signed_area};
 use crate::io::fs::FileSystem;
 use crate::vec2d::Vec2D;
 
@@ -377,18 +377,6 @@ fn chain_rings(mut edges: EdgeMap) -> Vec<(Vec<V>, Vec<u32>)> {
     rings
 }
 
-/// Shoelace formula; positive = counter-clockwise. Ring is open.
-fn signed_area(ring: &[Point2]) -> f64 {
-    let n = ring.len();
-    let mut s = 0.0;
-    for i in 0..n {
-        let p = &ring[i];
-        let q = &ring[(i + 1) % n];
-        s += p.x * q.y - q.x * p.y;
-    }
-    s / 2.0
-}
-
 fn perp_dist(p: &Point2, a: &Point2, b: &Point2) -> f64 {
     let (dx, dy) = (b.x - a.x, b.y - a.y);
     let len = (dx * dx + dy * dy).sqrt();
@@ -429,7 +417,7 @@ pub(crate) fn dp(pts: &[Point2], eps: f64) -> Vec<Point2> {
     pts.iter()
         .zip(keep)
         .filter(|&(_, k)| k)
-        .map(|(p, _)| p.clone())
+        .map(|(p, _)| *p)
         .collect()
 }
 
@@ -448,7 +436,7 @@ pub(crate) fn simplify_closed(ring: Vec<Point2>, eps: f64) -> Vec<Point2> {
         .unwrap();
     let mut first = dp(&ring[..=far], eps);
     let mut second: Vec<Point2> = ring[far..].to_vec();
-    second.push(ring[0].clone());
+    second.push(ring[0]);
     let second = dp(&second, eps);
     // first ends at ring[far], second starts there and ends at ring[0] = first[0]
     first.extend_from_slice(&second[1..second.len() - 1]);
@@ -460,7 +448,7 @@ pub(crate) fn chaikin_open(pts: &[Point2]) -> Vec<Point2> {
     if pts.len() < 3 {
         return pts.to_vec();
     }
-    let mut out = vec![pts[0].clone()];
+    let mut out = vec![pts[0]];
     for w in pts.windows(2) {
         out.push(Point2::new(
             0.75 * w[0].x + 0.25 * w[1].x,
@@ -471,7 +459,7 @@ pub(crate) fn chaikin_open(pts: &[Point2]) -> Vec<Point2> {
             0.25 * w[0].y + 0.75 * w[1].y,
         ));
     }
-    out.push(pts[pts.len() - 1].clone());
+    out.push(pts[pts.len() - 1]);
     out
 }
 
@@ -600,7 +588,7 @@ pub fn export_all(
         let class = classification(p.code);
         for ring in &p.rings {
             let mut closed = ring.clone();
-            closed.push(ring[0].clone());
+            closed.push(ring[0]);
             lines.push(closed, class);
         }
     }

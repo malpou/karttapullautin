@@ -4,10 +4,16 @@
 //! `pullauta eval <baseline> <candidate>` takes two files or two directories.
 //! Directories are walked recursively and files are paired by relative path:
 //! `*.png` pairs get a pixel comparison ([`raster`]), `*.geojson` pairs get
-//! per-symbol-code metrics ([`vector`]). The baseline can be the output of
-//! the base branch or a reference map in the same formats, so the same
-//! report serves "what did this change do" and "how close is this to a
-//! trusted map".
+//! per-symbol-code metrics ([`vector`]). Pairing by path covers every layout
+//! the pipeline writes: the tables in `temp/` (`contours.geojson`, ...), a
+//! batch folder's `<tile>_<table>.geojson` and `merged_<table>.geojson`, and
+//! the combined export's `<table>.geojson`.
+//!
+//! The baseline can be the output of the base branch or a reference map, so
+//! the same report serves "what did this change do" and "how close is this to
+//! a trusted map". A reference map in one GeoJSON file, holding every table's
+//! codes, can be compared with a directory: the directory's `<table>.geojson`
+//! files are read as one map.
 //!
 //! The JSON report is deterministic: keys are sorted, run-specific paths are
 //! left out and every measure is rounded to six decimals, so a report can be
@@ -23,13 +29,17 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use serde::Serialize;
 
+use crate::geojson;
+use crate::isom::IsomTable;
+
 pub const USAGE: &str = "USAGE: pullauta eval <baseline> <candidate> [--tolerance <metres>] [--diff-dir <dir>] [--format text|json] [--fail-on-change] [--expected <report.json>]
 
-Compares two files, or two directories paired by relative path.
+Compares two files, two directories paired by relative path, or one GeoJSON
+file with a directory's <table>.geojson files read as one map.
   *.png      changed pixels; per-colour IoU when both hold at most 32 colours
-  *.geojson  per symbol code (symbol, else isom, else layer): counts, length,
-             area, crossings, line precision/recall/Hausdorff/mean distance and
-             point precision/recall/Hausdorff
+  *.geojson  per symbol code (isom_code): counts, length, area, crossings,
+             line precision/recall/Hausdorff/mean distance and point
+             precision/recall/Hausdorff; unknown codes are counted
   --tolerance       match distance in metres for GeoJSON geometry (default 1)
   --diff-dir        write <name>.diff.png for every PNG pair that differs
   --format          text (default) or json
@@ -106,7 +116,7 @@ pub struct Report {
     pub candidate: PathBuf,
     pub tolerance_m: f64,
     pub rasters: BTreeMap<String, Outcome<RasterEntry>>,
-    pub vectors: BTreeMap<String, Outcome<BTreeMap<String, vector::CodeComparison>>>,
+    pub vectors: BTreeMap<String, Outcome<vector::VectorComparison>>,
     /// Files of any kind present only in the baseline directory.
     pub baseline_only: Vec<String>,
     /// Files of any kind present only in the candidate directory.
@@ -123,8 +133,8 @@ impl Report {
             Outcome::Ok(e) => e.comparison.changed_pixels > 0,
             Outcome::Err { .. } => true,
         };
-        let vector_changed = |v: &Outcome<BTreeMap<String, vector::CodeComparison>>| match v {
-            Outcome::Ok(codes) => codes.values().any(vector::CodeComparison::has_change),
+        let vector_changed = |v: &Outcome<vector::VectorComparison>| match v {
+            Outcome::Ok(v) => v.has_change(),
             Outcome::Err { .. } => true,
         };
         self.baseline_only.iter().any(measurable)
@@ -205,14 +215,52 @@ fn compare_raster(
     })
 }
 
+/// One side of a GeoJSON pair: a file, or a directory whose tables are read
+/// as one map.
+enum VectorSide<'a> {
+    File(&'a Path),
+    Tables(&'a Path),
+}
+
+impl VectorSide<'_> {
+    fn load(&self, side: &str) -> anyhow::Result<vector::FileGeometry> {
+        match self {
+            VectorSide::File(path) => {
+                vector::load(path).with_context(|| format!("reading the {side} GeoJSON"))
+            }
+            VectorSide::Tables(dir) => {
+                let mut all = vector::FileGeometry::default();
+                let mut found = false;
+                for &table in IsomTable::ALL {
+                    let path = dir.join(geojson::file_name(table));
+                    if path.is_file() {
+                        let file = vector::load(&path).with_context(|| {
+                            format!("reading the {side} {}", geojson::file_name(table))
+                        })?;
+                        all.append(file);
+                        found = true;
+                    }
+                }
+                anyhow::ensure!(found, "the {side} directory holds no <table>.geojson");
+                Ok(all)
+            }
+        }
+    }
+}
+
 fn compare_vector(
-    baseline: &Path,
-    candidate: &Path,
+    baseline: VectorSide,
+    candidate: VectorSide,
     tolerance: f64,
-) -> anyhow::Result<BTreeMap<String, vector::CodeComparison>> {
-    let b = vector::load(baseline).context("reading the baseline GeoJSON")?;
-    let c = vector::load(candidate).context("reading the candidate GeoJSON")?;
+) -> anyhow::Result<vector::VectorComparison> {
+    let b = baseline.load("baseline")?;
+    let c = candidate.load("candidate")?;
     Ok(vector::compare(&b, &c, tolerance))
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
 /// Compare `baseline` with `candidate` (two files, or two directories).
@@ -241,12 +289,34 @@ pub fn evaluate(baseline: &Path, candidate: &Path, opts: &Options) -> anyhow::Re
             if kind(baseline).is_none() || kind(baseline) != kind(candidate) {
                 bail!("both files must be .png or both .geojson");
             }
-            let name = candidate
-                .file_name()
-                .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-            vec![(name, baseline.to_path_buf(), candidate.to_path_buf())]
+            vec![(
+                file_name(candidate),
+                baseline.to_path_buf(),
+                candidate.to_path_buf(),
+            )]
         }
-        _ => bail!("compare two files or two directories, not one of each"),
+        // one GeoJSON map against a directory's tables, keyed by the file
+        (baseline_is_dir, _) => {
+            let (file, b, c) = if baseline_is_dir {
+                (
+                    candidate,
+                    VectorSide::Tables(baseline),
+                    VectorSide::File(candidate),
+                )
+            } else {
+                (
+                    baseline,
+                    VectorSide::File(baseline),
+                    VectorSide::Tables(candidate),
+                )
+            };
+            if kind(file) != Some(Kind::Vector) {
+                bail!("a file compared with a directory must be .geojson");
+            }
+            let entry = compare_vector(b, c, opts.tolerance_m);
+            report.vectors.insert(file_name(file), entry.into());
+            return Ok(report);
+        }
     };
     for (name, b, c) in pairs {
         match kind(&c) {
@@ -255,7 +325,8 @@ pub fn evaluate(baseline: &Path, candidate: &Path, opts: &Options) -> anyhow::Re
                 report.rasters.insert(name, entry.into());
             }
             Some(Kind::Vector) => {
-                let entry = compare_vector(&b, &c, opts.tolerance_m);
+                let entry =
+                    compare_vector(VectorSide::File(&b), VectorSide::File(&c), opts.tolerance_m);
                 report.vectors.insert(name, entry.into());
             }
             None => unreachable!("pairs hold only .png and .geojson files"),
@@ -386,18 +457,26 @@ pub fn text(r: &Report) -> String {
     }
     for (name, entry) in &r.vectors {
         let _ = writeln!(s, "\n{name}:");
-        let codes = match entry {
+        let v = match entry {
             Outcome::Err { error } => {
                 let _ = writeln!(s, "  error: {error}");
                 continue;
             }
-            Outcome::Ok(codes) => codes,
+            Outcome::Ok(v) => v,
         };
-        for (code, c) in codes {
+        for (code, u) in &v.unknown_codes {
+            let _ = writeln!(
+                s,
+                "  unknown isom_code {code}: features {}",
+                pair(u.baseline as f64, u.candidate as f64, 0)
+            );
+        }
+        for (code, c) in &v.codes {
             let (b, k) = (&c.baseline, &c.candidate); // k: candidate
             let _ = write!(
                 s,
-                "  {code:<8} features {}",
+                "  {:<8} features {}",
+                code.as_str(),
                 pair(b.features as f64, k.features as f64, 0)
             );
             if b.points + k.points > 0 {
@@ -454,6 +533,7 @@ pub fn text(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::isom::IsomCode;
     use image::{Rgba, RgbaImage};
 
     fn args(s: &str) -> Vec<String> {
@@ -514,13 +594,13 @@ mod tests {
         let contour = |y: f64| {
             format!(
                 r#"{{"type":"FeatureCollection","features":[{{"type":"Feature",
-                "properties":{{"symbol":"101"}},
+                "properties":{{"isom_code":"101.000"}},
                 "geometry":{{"type":"LineString","coordinates":[[0,{y}],[10,{y}]]}}}}]}}"#
             )
         };
-        std::fs::write(base.join("out.geojson"), contour(0.0)).unwrap();
-        std::fs::write(cand.join("out.geojson"), contour(2.0)).unwrap();
-        std::fs::write(base.join("gone.geojson"), contour(0.0)).unwrap();
+        std::fs::write(base.join("temp/contours.geojson"), contour(0.0)).unwrap();
+        std::fs::write(cand.join("temp/contours.geojson"), contour(2.0)).unwrap();
+        std::fs::write(base.join("cliffs.geojson"), contour(0.0)).unwrap();
         std::fs::write(cand.join("new.png"), b"not a png").unwrap();
 
         let opts = Options {
@@ -539,18 +619,18 @@ mod tests {
         };
         assert_eq!(vege.comparison.changed_pixels, 1);
         assert!(diffs.join("temp/vegetation.png.diff.png").exists());
-        let Outcome::Ok(codes) = &r.vectors["out.geojson"] else {
-            panic!("out.geojson failed");
+        let Outcome::Ok(contours) = &r.vectors["temp/contours.geojson"] else {
+            panic!("contours.geojson failed");
         };
-        let lines = codes["101"].lines.unwrap();
+        let lines = contours.codes[&IsomCode::C101_000].lines.unwrap();
         assert_eq!((lines.precision, lines.hausdorff_m), (0.0, 2.0));
-        assert_eq!(r.baseline_only, ["gone.geojson"]);
+        assert_eq!(r.baseline_only, ["cliffs.geojson"]);
         assert_eq!(r.candidate_only, ["new.png"]);
 
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["rasters"]["same.png"]["changed_pixels"], 0);
         assert_eq!(
-            json["vectors"]["out.geojson"]["101"]["baseline"]["length_m"],
+            json["vectors"]["temp/contours.geojson"]["codes"]["101.000"]["baseline"]["length_m"],
             10.0
         );
         let t = text(&r);
@@ -602,9 +682,10 @@ mod tests {
             &Options::default(),
         );
         let only = only.unwrap();
-        assert_eq!(only.baseline_only, ["vegetation.png"]);
+        assert_eq!(only.baseline_only, ["contours.geojson", "vegetation.png"]);
         assert!(only.has_change());
         std::fs::remove_file(root.join("base/temp/vegetation.png")).unwrap();
+        std::fs::remove_file(root.join("base/temp/contours.geojson")).unwrap();
         std::fs::write(root.join("base/temp/x.pgw"), "1").unwrap();
         let unmeasured = evaluate(
             &root.join("base/temp"),
@@ -615,6 +696,73 @@ mod tests {
         assert_eq!(unmeasured.baseline_only, ["x.pgw"]);
         assert!(!unmeasured.has_change());
 
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A reference map in one file against a run's tables: the tables are
+    /// read as one map, whichever side the file is on.
+    #[test]
+    fn reference_file_against_a_directory_of_tables() {
+        let root = std::env::temp_dir().join(format!("pullauta-eval-ref-{}", std::process::id()));
+        let run = root.join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let feature = |code: &str, y: f64| {
+            format!(
+                r#"{{"type":"Feature","properties":{{"isom_code":"{code}"}},
+                "geometry":{{"type":"LineString","coordinates":[[0,{y}],[10,{y}]]}}}}"#
+            )
+        };
+        let fc = |features: &[String]| {
+            format!(
+                r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+                features.join(",")
+            )
+        };
+        let reference = root.join("reference.geojson");
+        std::fs::write(
+            &reference,
+            fc(&[
+                feature("101.000", 0.0),
+                feature("201.000", 5.0),
+                feature("777", 0.0),
+            ]),
+        )
+        .unwrap();
+        std::fs::write(run.join("contours.geojson"), fc(&[feature("101.000", 0.0)])).unwrap();
+        std::fs::write(run.join("cliffs.geojson"), fc(&[feature("201.000", 5.5)])).unwrap();
+        // not a table of the combined layout: not read
+        std::fs::write(
+            run.join("tile_cliffs.geojson"),
+            fc(&[feature("201.000", 9.0)]),
+        )
+        .unwrap();
+
+        for (b, c) in [(&reference, &run), (&run, &reference)] {
+            let r = evaluate(b, c, &Options::default()).unwrap();
+            let Outcome::Ok(v) = &r.vectors["reference.geojson"] else {
+                panic!("reference.geojson failed");
+            };
+            let contours = &v.codes[&IsomCode::C101_000];
+            assert!(!contours.has_change());
+            let cliffs = v.codes[&IsomCode::C201_000].lines.unwrap();
+            assert_eq!(
+                (cliffs.precision, cliffs.recall, cliffs.hausdorff_m),
+                (1.0, 1.0, 0.5)
+            );
+            assert_eq!(v.codes.len(), 2);
+            assert_eq!(v.unknown_codes.len(), 1);
+            assert!(r.has_change());
+        }
+
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let r = evaluate(&reference, &empty, &Options::default()).unwrap();
+        assert!(matches!(
+            r.vectors["reference.geojson"],
+            Outcome::Err { .. }
+        ));
+        let png = root.join("map.png");
+        assert!(evaluate(&png, &run, &Options::default()).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

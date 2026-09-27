@@ -192,7 +192,10 @@ outputs and prints a report:
 `baseline` and `candidate` are two files or two directories. Directories are
 walked recursively and files are paired by relative path; files of any kind
 present on only one side are listed. The baseline can be the base branch's output or a
-reference map in the same formats.
+reference map in the same formats. A reference map in one GeoJSON file can also be
+compared with a directory: the directory's `<table>.geojson` files (`contours`,
+`cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`, as in
+`temp/` or the combined export) are read as one map.
 
 - `*.png`: changed pixels (count and percentage). When the two images hold at
   most 32 colours between them (such as `temp/vegetation.png`), every colour
@@ -200,8 +203,9 @@ reference map in the same formats.
   intersection-over-union. `--diff-dir` writes `<name>.diff.png` for every
   pair that differs: the baseline in light grey, changed pixels in red.
   Images must be the same size.
-- `*.geojson`: features are grouped by symbol code (the `symbol` property;
-  `isom` and then `layer` are read when it is missing).
+- `*.geojson`: features are grouped by symbol code (the `isom_code` property,
+  `NNN.NNN`). Features with no code, or a code the symbol table does not list,
+  are counted by the value found; a different count is a change.
   Per code: feature, point, line and polygon counts, total line length, total
   polygon area and proper line crossings on each side; for lines, the share of
   candidate length within the tolerance of a baseline line (precision), the

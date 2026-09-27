@@ -6,7 +6,7 @@
 use crate::isom::IsomCode;
 
 /// A 2D point
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point2 {
     /// The x coordinate of this point.
     pub x: f64,
@@ -18,6 +18,23 @@ impl Point2 {
     /// Create a new point from the given coordinates.
     pub fn new(x: f64, y: f64) -> Self {
         Self { x, y }
+    }
+
+    /// Euclidean distance to `other`.
+    pub fn distance(self, other: Point2) -> f64 {
+        ((self.x - other.x).powi(2) + (self.y - other.y).powi(2)).sqrt()
+    }
+
+    /// Shortest distance to the segment from `a` to `b` (to `a` when they coincide).
+    pub fn distance_to_segment(self, a: Point2, b: Point2) -> f64 {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        let l2 = dx * dx + dy * dy;
+        let t = if l2 == 0.0 {
+            0.0
+        } else {
+            (((self.x - a.x) * dx + (self.y - a.y) * dy) / l2).clamp(0.0, 1.0)
+        };
+        self.distance(Point2::new(a.x + t * dx, a.y + t * dy))
     }
 }
 
@@ -196,6 +213,22 @@ impl Bounds {
             ymin,
             ymax,
         }
+    }
+
+    /// The smallest box holding every point; `None` when there are none.
+    pub fn around(points: impl IntoIterator<Item = Point2>) -> Option<Self> {
+        let mut points = points.into_iter();
+        let first = points.next()?;
+        Some(
+            points.fold(Self::new(first.x, first.x, first.y, first.y), |b, p| {
+                Self::new(
+                    b.xmin.min(p.x),
+                    b.xmax.max(p.x),
+                    b.ymin.min(p.y),
+                    b.ymax.max(p.y),
+                )
+            }),
+        )
     }
 }
 
@@ -505,7 +538,7 @@ impl Ring {
         if let (Some(first), Some(last)) = (points.first(), points.last())
             && (first.x != last.x || first.y != last.y)
         {
-            let first = first.clone();
+            let first = *first;
             points.push(first);
         }
         Self { points }
@@ -538,23 +571,22 @@ impl Ring {
     /// Legacy behaviour kept on purpose: an empty ring yields `f64::MAX.sqrt()`.
     pub fn distance_to_point(&self, p: Point2) -> f64 {
         let n = self.points.len();
-        let mut best = f64::MAX;
-        for i in 0..n {
-            let j = (i + 1) % n;
-            let (ax, ay) = (self.points[i].x, self.points[i].y);
-            let (bx, by) = (self.points[j].x, self.points[j].y);
-            let (dx, dy) = (bx - ax, by - ay);
-            let l2 = dx * dx + dy * dy;
-            let t = if l2 == 0.0 {
-                0.0
-            } else {
-                (((p.x - ax) * dx + (p.y - ay) * dy) / l2).clamp(0.0, 1.0)
-            };
-            let (cx, cy) = (ax + t * dx, ay + t * dy);
-            best = best.min((p.x - cx).powi(2) + (p.y - cy).powi(2));
-        }
-        best.sqrt()
+        (0..n)
+            .map(|i| p.distance_to_segment(self.points[i], self.points[(i + 1) % n]))
+            .fold(f64::MAX.sqrt(), f64::min)
     }
+}
+
+/// Shoelace formula; positive = counter-clockwise. The ring may be open or closed.
+pub fn signed_area(ring: &[Point2]) -> f64 {
+    let n = ring.len();
+    let mut s = 0.0;
+    for i in 0..n {
+        let p = &ring[i];
+        let q = &ring[(i + 1) % n];
+        s += p.x * q.y - q.x * p.y;
+    }
+    s / 2.0
 }
 
 /// Join polylines whose quantized endpoints (1 mm) meet, end to end.
@@ -744,6 +776,29 @@ mod tests {
         let ring = unit_square_closed();
         assert!(ring.contains(Point2::new(0.5, 0.0)));
         assert!(!ring.contains(Point2::new(1.0, 0.5)));
+    }
+
+    #[test]
+    fn point_distances_and_bounds() {
+        let p = Point2::new;
+        assert_eq!(p(0.0, 0.0).distance(p(3.0, 4.0)), 5.0);
+        // beyond the end, beside the middle, and a zero-length segment
+        assert_eq!(
+            p(13.0, 4.0).distance_to_segment(p(0.0, 0.0), p(10.0, 0.0)),
+            5.0
+        );
+        assert_eq!(
+            p(5.0, -2.0).distance_to_segment(p(0.0, 0.0), p(10.0, 0.0)),
+            2.0
+        );
+        assert_eq!(
+            p(3.0, 4.0).distance_to_segment(p(0.0, 0.0), p(0.0, 0.0)),
+            5.0
+        );
+        assert!(Bounds::around([]).is_none());
+        let b = Bounds::around([p(1.0, 5.0), p(-2.0, 3.0), p(4.0, 0.0)]).unwrap();
+        assert_eq!((b.xmin, b.xmax, b.ymin, b.ymax), (-2.0, 4.0, 0.0, 5.0));
+        assert_eq!(signed_area(&[p(0.0, 0.0), p(2.0, 0.0), p(2.0, 2.0)]), 2.0);
     }
 
     #[test]
