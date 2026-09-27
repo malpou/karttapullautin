@@ -1,5 +1,5 @@
 # The commit whose output CI compares this branch's output with
 # (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
 # How to move it: CHANGES.md.
-ref = "6e13d16fa613afbe1dc1c464447f5f177cbb8221"
-note = "pr/las-class commit 1: LAS classes and return flags declared (xyz.bin version byte only, 0 px)"
+ref = "6c18c2d3114d1133719c18d18d6c5204367eac29"
+note = "pr/contour-level commit 1: contour files carry the traced level (contour temp files only, 0 px)"

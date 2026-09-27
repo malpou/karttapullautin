@@ -133,3 +133,34 @@ change; the regression jobs use the default. Baseline moves to 6e13d16.
   The regression tile has no withheld, synthetic or overlap returns, so
   every flags byte is 0.
 - Per code: every code is identical.
+
+### 2026-09-27: pr/contour-level
+
+Contours carry the level they were traced at: `heightmap2contours` writes
+`Polylines3` with the level as z, and `smoothjoin` and `knolldetector`
+read it instead of interpolating the ground model at the first vertex
+exactly on a grid line. The consumers' `(h/interval+0.5).floor()*interval`
+snap moved to the tracer, so the level is the same value they computed.
+Baseline moves to 6c18c2d.
+
+- Pixels: 0 changed in the single job and the batch job.
+- Per-code metrics: identical for every code in every GeoJSON (101-103
+  counts and lengths unchanged); `out2.dxf.bin`, `knollheads.txt`,
+  `depressions.txt` and `detected.*` are identical: the old lookups found
+  a level for every line they used on this tile.
+- Bytes, in `single/temp/`, `batch/temp1/` and
+  `batch/temp_test_file_dir/`: `contours03.dxf.bin` 38 721 616 ->
+  58 578 160, `contours03.dxf` 142 742 149 -> 178 335 860, `out.dxf.bin`
+  4 332 066 -> 6 537 858, `out.dxf` 15 834 166 -> 18 593 070. Vertices
+  and their order are unchanged (the DXF files are identical once the
+  group 38 and 30 lines are dropped); the growth is the per-vertex z.
+- Not in the jobs, measured once with `basemapinterval=5` on both jobs:
+  0 px and identical metrics; `basemap.dxf(.bin)` in every temp folder,
+  `out/test_file_basemap.*` and `merged_basemap.*`/`merged.dxf(.bin)`
+  gain z the same way, and in `out/output.dxf` 395 short 101 POLYLINEs
+  (the basemap contours the export does not fit as SPLINEs) gain group
+  38 with their level (15 to 80 m in 5 m steps). No GeoJSON changes.
+- Off this tile: a line whose vertices all miss the old exact on-grid
+  test (non-binary cell sizes) used to get level NaN in smoothjoin (never
+  a depression, NaN height in `out2`) or 0 in knolldetector (its
+  knoll/depression test against 0 m); it now gets its traced level.
