@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
-use log::info;
+use log::{info, warn};
 use serde_json::{Value, json};
 
 use crate::geometry::{BinaryDxf, Classification, Geometry, Point2};
@@ -302,7 +302,8 @@ pub fn write_feature_collection(
 /// Write the features of one stage into the tables in `folder`, each feature to the
 /// table of its symbol code. A table keeps the features of the other stages and loses
 /// what `source` wrote there before, so a stage that runs again replaces its features
-/// instead of adding to them. A table file is created only when it gets a feature.
+/// instead of adding to them. A table file is created only when it gets a feature, and
+/// one that cannot be read (left by an earlier version) is replaced.
 pub fn write_tables(
     fs: &impl FileSystem,
     folder: &Path,
@@ -322,7 +323,14 @@ pub fn write_tables(
         let new = by_table.remove(&table).unwrap_or_default();
         let path = folder.join(file_name(table));
         let mut features = if fs.exists(&path) {
-            read_collection(fs, &path)?.features
+            // one this version cannot read is left from a run of an earlier one
+            read_collection(fs, &path).map_or_else(
+                |e| {
+                    warn!("Replacing {}, unreadable: {e}", path.display());
+                    Vec::new()
+                },
+                |c| c.features,
+            )
         } else if new.is_empty() {
             continue;
         } else {
@@ -1489,6 +1497,22 @@ mod tests {
         assert_eq!(codes, [json!("202.000"), json!("201.000")]);
     }
 
+    /// A table file an earlier version left in a reused temp folder is replaced, not an
+    /// error.
+    #[test]
+    fn write_tables_replaces_an_unreadable_table() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let old = json!({"type": "FeatureCollection", "features": [{"type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [0.0, 0.0]},
+            "properties": {"symbol": "201"}}]});
+        serde_json::to_writer(fs.create(file_name(IsomTable::Cliffs)).unwrap(), &old).unwrap();
+        let cliff = terrain_line(Classification::Cliff2, &[[0.0, 0.0], [3.0, 0.0]]);
+        write_tables(&fs, Path::new(""), Source::Cliffs, vec![cliff], None).unwrap();
+        let cliffs = read_features(&fs, IsomTable::Cliffs);
+        assert_eq!(cliffs.len(), 1);
+        assert_eq!(cliffs[0]["properties"]["isom_code"], "202.000");
+    }
+
     /// Two stages share the contours table: each run of a stage replaces its own
     /// features there and keeps the other's.
     #[test]
@@ -1754,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn write_tables_writes_osm_features_to_their_code_s_table() {
+    fn write_tables_writes_osm_features_to_the_table_of_their_code() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let line = [[0.0, 0.0], [1.0, 1.0]];
         let features = vec![
