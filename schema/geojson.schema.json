@@ -27,52 +27,56 @@
         }
       }
     },
+    "IsomCode": {
+      "description": "An ISOM 2017-2 symbol code of the isom-maplibre symbol table, \"NNN.NNN\".",
+      "type": "string",
+      "pattern": "^[0-9]{3}\\.[0-9]{3}$"
+    },
     "ContourProperties": {
       "type": "object",
-      "required": ["symbol"],
+      "required": ["isom_code"],
       "additionalProperties": false,
       "properties": {
-        "symbol": { "enum": ["101", "102", "103"] },
+        "isom_code": { "enum": ["101.000", "101.001", "102.000", "103.000"] },
         "symbol_name": { "type": "string" },
         "elevation": { "type": "number" },
-        "depression": { "type": "boolean" },
-        "slope_line": { "type": "boolean" }
+        "depression": { "type": "boolean" }
       }
     },
     "KnollProperties": {
       "type": "object",
-      "required": ["symbol"],
+      "required": ["isom_code"],
       "additionalProperties": false,
       "properties": {
-        "symbol": { "enum": ["109", "111"] },
+        "isom_code": { "enum": ["109.000", "111.000"] },
         "symbol_name": { "type": "string" },
         "ugly": { "type": "boolean" }
       }
     },
     "CliffProperties": {
       "type": "object",
-      "required": ["symbol"],
+      "required": ["isom_code"],
       "additionalProperties": false,
       "properties": {
-        "symbol": { "enum": ["201", "202"] },
+        "isom_code": { "enum": ["201.000", "202.000"] },
         "symbol_name": { "type": "string" }
       }
     },
     "VegetationProperties": {
       "type": "object",
-      "required": ["symbol"],
+      "required": ["isom_code"],
       "additionalProperties": false,
       "properties": {
-        "symbol": { "enum": ["403", "406", "407", "408", "410"] },
+        "isom_code": { "enum": ["403.000", "406.000", "407.000", "408.000", "410.000"] },
         "shade": { "type": "integer", "minimum": 1 }
       }
     },
     "OsmProperties": {
       "type": "object",
-      "required": ["symbol", "category"],
+      "required": ["isom_code", "category"],
       "additionalProperties": false,
       "properties": {
-        "symbol": { "type": "string" },
+        "isom_code": { "$ref": "#/$defs/IsomCode" },
         "category": { "type": "string" },
         "upper_level": { "type": "boolean" }
       }

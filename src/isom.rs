@@ -53,10 +53,24 @@ impl FromStr for IsomCode {
     }
 }
 
+/// Written as the "NNN.NNN" string, the GeoJSON `isom_code`.
+impl serde::Serialize for IsomCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// Read from the "NNN.NNN" string; a code the table does not list is an error.
+impl<'de> serde::Deserialize<'de> for IsomCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Classification;
 
     #[test]
     fn vendored_table_matches_its_schema() {
@@ -132,92 +146,28 @@ mod tests {
         );
     }
 
-    /// Every plain symbol number KP emits today, from [`Classification::symbol_code`] and
-    /// the bundled vector mapping files, held against the table. The known gap is spelled
-    /// out so the switch to `isom_code` (ENG-310) has to settle it.
+    /// The GeoJSON schema types each property class's `isom_code` as an enum of the codes
+    /// KP emits in it: every one is in the symbol table, in the table the class is
+    /// written to. Mapping file codes are held to the table when they are parsed.
     #[test]
-    fn codes_kp_emits_today_are_in_the_table_but_518() {
-        use Classification::*;
-        let classifications = [
-            ContourSimple,
-            Contour,
-            ContourIndex,
-            ContourIntermed,
-            ContourIndexIntermed,
-            Depression,
-            DepressionIndex,
-            DepressionIntermed,
-            DepressionIndexIntermed,
-            Formline,
-            FormlineDepression,
-            Dotknoll,
-            Udepression,
-            UglyDotknoll,
-            UglyUdepression,
-            Knoll1010,
-            Cliff2,
-            Cliff3,
-            Cliff4,
-            SlopeLine,
-            SmallDepression,
-            Veg403,
-            Veg406,
-            Veg407,
-            Veg408,
-            Veg410,
+    fn schema_codes_are_in_the_table_of_their_class() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
+        let classes = [
+            ("ContourProperties", IsomTable::Contours),
+            ("KnollProperties", IsomTable::KnollsPoints),
+            ("CliffProperties", IsomTable::Cliffs),
+            ("VegetationProperties", IsomTable::VegetationAreas),
         ];
-        // fails to compile when a variant is added, so the list above stays complete
-        let _listed = |c: Classification| match c {
-            ContourSimple
-            | Contour
-            | ContourIndex
-            | ContourIntermed
-            | ContourIndexIntermed
-            | Depression
-            | DepressionIndex
-            | DepressionIntermed
-            | DepressionIndexIntermed
-            | Formline
-            | FormlineDepression
-            | Dotknoll
-            | Udepression
-            | UglyDotknoll
-            | UglyUdepression
-            | Knoll1010
-            | Cliff2
-            | Cliff3
-            | Cliff4
-            | SlopeLine
-            | SmallDepression
-            | Veg403
-            | Veg406
-            | Veg407
-            | Veg408
-            | Veg410 => (),
-        };
-        let mut emitted: Vec<String> = classifications
-            .iter()
-            .filter_map(Classification::symbol_code)
-            .map(str::to_string)
-            .collect();
-        for mapping in [
-            include_str!("../osm.txt"),
-            include_str!("../fastighetskartan.txt"),
-        ] {
-            emitted.extend(mapping.lines().filter_map(|line| {
-                let code = line.split('|').nth(1)?.trim();
-                Some(code.strip_suffix('T').unwrap_or(code).to_string())
-            }));
+        for (class, table) in classes {
+            let codes = schema["$defs"][class]["properties"]["isom_code"]["enum"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{class}: isom_code is not an enum"));
+            assert!(!codes.is_empty());
+            for code in codes {
+                let code: IsomCode = code.as_str().unwrap().parse().unwrap();
+                assert_eq!(code.table(), table, "{class}: {code}");
+            }
         }
-        emitted.sort();
-        emitted.dedup();
-
-        let missing: Vec<&str> = emitted
-            .iter()
-            .filter(|code| format!("{code}.000").parse::<IsomCode>().is_err())
-            .map(String::as_str)
-            .collect();
-        // 518 (impassable fence or wall, osm.txt `barrier`) has no symbol in isom-maplibre
-        assert_eq!(missing, ["518"], "emitted: {emitted:?}");
     }
 }

@@ -1,5 +1,7 @@
 use std::str::FromStr;
 
+use crate::isom::IsomCode;
+
 #[derive(Debug, PartialEq)]
 pub enum Operator {
     Equal,
@@ -15,13 +17,14 @@ pub struct Condition {
 }
 
 /// Each mapping represents one rule (line) of a vector mapping file:
-/// `category|symbol code[T]|conditions`, e.g. `road|502T|highway=primary&bridge=yes`.
+/// `category|symbol code[T]|conditions`, e.g. `road|502.000T|highway=primary&bridge=yes`.
 #[derive(Debug, PartialEq)]
 pub struct Mapping {
     /// Free-text name (first field), exported as the GeoJSON `category`
     pub category: String,
-    /// ISOM 2017-2 symbol code the shape is drawn with (second field, without the `T` suffix)
-    pub symbol: String,
+    /// ISOM 2017-2 symbol code the shape is drawn with (second field, without the `T`
+    /// suffix), one of the symbol table's
+    pub isom_code: IsomCode,
     /// A `T` suffix on the code: the feature passes over the others (bridge, upper level)
     /// and is drawn above them
     pub upper_level: bool,
@@ -43,13 +46,11 @@ impl FromStr for Mapping {
         }
         let category = row_data[0].trim().to_string();
         let code = row_data[1].trim();
-        let (symbol, upper_level) = match code.strip_suffix('T') {
-            Some(symbol) => (symbol.to_string(), true),
-            None => (code.to_string(), false),
+        let (code, upper_level) = match code.strip_suffix('T') {
+            Some(code) => (code, true),
+            None => (code, false),
         };
-        if symbol.is_empty() {
-            return Err(format!("Symbol code must not be empty: {line}"));
-        }
+        let isom_code = code.parse().map_err(|e| format!("{e}: {line}"))?;
 
         let conditions: Vec<Condition> = row_data[2]
             .split('&')
@@ -73,7 +74,7 @@ impl FromStr for Mapping {
 
         Ok(Self {
             category,
-            symbol,
+            isom_code,
             upper_level,
             conditions,
         })
@@ -92,18 +93,18 @@ mod tests {
 
     #[test]
     fn test_mapping_from_str_invalid_no_conditions() {
-        let line = "description|306|";
+        let line = "description|306.000|";
         let mapping = Mapping::from_str(line);
         assert!(mapping.is_err());
     }
 
     #[test]
     fn test_mapping_from_str_valid_single() {
-        let line = "description|306|key1=value1";
+        let line = "description|306.000|key1=value1";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
             category: "description".to_string(),
-            symbol: "306".to_string(),
+            isom_code: IsomCode::C306_000,
             upper_level: false,
             conditions: vec![Condition {
                 operator: Operator::Equal,
@@ -116,11 +117,11 @@ mod tests {
 
     #[test]
     fn test_mapping_from_str_valid_two() {
-        let line = "description|306|key1=value1&key2!=value2";
+        let line = "description|306.000|key1=value1&key2!=value2";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
             category: "description".to_string(),
-            symbol: "306".to_string(),
+            isom_code: IsomCode::C306_000,
             upper_level: false,
             conditions: vec![
                 Condition {
@@ -140,11 +141,11 @@ mod tests {
 
     #[test]
     fn test_mapping_from_str_valid_more() {
-        let line = "description|306|key1=value1&key2!=value2&key3=value3";
+        let line = "description|306.000|key1=value1&key2!=value2&key3=value3";
         let mapping = Mapping::from_str(line).unwrap();
         let expected = Mapping {
             category: "description".to_string(),
-            symbol: "306".to_string(),
+            isom_code: IsomCode::C306_000,
             upper_level: false,
             conditions: vec![
                 Condition {
@@ -169,36 +170,45 @@ mod tests {
 
     #[test]
     fn test_mapping_from_str_upper_level_suffix() {
-        let mapping = Mapping::from_str("road|502T|highway=primary&bridge=yes").unwrap();
+        let mapping = Mapping::from_str("road|502.000T|highway=primary&bridge=yes").unwrap();
         assert_eq!(mapping.category, "road");
-        assert_eq!(mapping.symbol, "502");
+        assert_eq!(mapping.isom_code, IsomCode::C502_000);
         assert!(mapping.upper_level);
 
-        let mapping = Mapping::from_str(" road | 502 |highway=primary").unwrap();
+        let mapping = Mapping::from_str(" road | 502.000 |highway=primary").unwrap();
         assert_eq!(mapping.category, "road");
-        assert_eq!(mapping.symbol, "502");
+        assert_eq!(mapping.isom_code, IsomCode::C502_000);
         assert!(!mapping.upper_level);
 
         assert!(Mapping::from_str("road|T|highway=primary").is_err());
     }
 
+    /// A code the symbol table does not list, or a plain ISOM number, is refused.
+    #[test]
+    fn test_mapping_from_str_code_outside_the_symbol_table() {
+        for code in ["502", "518.000", "501.2", "502T"] {
+            let err = Mapping::from_str(&format!("road|{code}|highway=primary")).unwrap_err();
+            assert!(err.contains("symbol table"), "{code}: {err}");
+        }
+    }
+
     #[test]
     fn test_mapping_from_str_invalid() {
-        let line = "306|key1=value1&key2!=value2";
+        let line = "306.000|key1=value1&key2!=value2";
         let result = Mapping::from_str(line);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_mapping_from_str_invalid_operator() {
-        let line = "description|306|key1=value1&key2>value2";
+        let line = "description|306.000|key1=value1&key2>value2";
         let result = Mapping::from_str(line);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_mapping_from_str_missing_sections() {
-        let line = "306|key1=value1";
+        let line = "306.000|key1=value1";
         let result = Mapping::from_str(line);
         assert!(result.is_err());
     }
@@ -212,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_mapping_from_str_extra_sections() {
-        let line = "description|306|key1=value1&key2!=value2|extra";
+        let line = "description|306.000|key1=value1&key2!=value2|extra";
         let result = Mapping::from_str(line);
         assert!(result.is_err());
     }

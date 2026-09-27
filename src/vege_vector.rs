@@ -13,7 +13,7 @@ use imageproc::region_labelling::{Connectivity, connected_components};
 
 use crate::config::Config;
 use crate::geojson;
-use crate::geojson::geojson_types::VegetationPropertiesSymbol as Symbol;
+use crate::geojson::geojson_types::VegetationPropertiesIsomCode as Symbol;
 use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
 use crate::io::fs::FileSystem;
 use crate::vec2d::Vec2D;
@@ -22,33 +22,33 @@ use crate::vec2d::Vec2D;
 /// "Minimum area" parameters (footprints at 1:15,000, 1 mm = 15 m).
 fn min_area_m2(symbol: Symbol) -> f64 {
     match symbol {
-        Symbol::X403 => 225.0,  // Rough open land: 1 x 1 mm (15 x 15 m)
-        Symbol::X406 => 225.0,  // Vegetation, slow running: 1 x 1 mm (15 x 15 m)
-        Symbol::X407 => 337.5,  // Slow running, good visibility: 1.5 x 1 mm (22.5 x 15 m)
-        Symbol::X408 => 110.25, // Vegetation, walk: 0.7 x 0.7 mm (10.5 x 10.5 m)
-        Symbol::X410 => 64.0,   // Vegetation, fight: 0.55 x 0.55 mm (8 x 8 m)
+        Symbol::X403000 => 225.0,  // Rough open land: 1 x 1 mm (15 x 15 m)
+        Symbol::X406000 => 225.0,  // Vegetation, slow running: 1 x 1 mm (15 x 15 m)
+        Symbol::X407000 => 337.5,  // Slow running, good visibility: 1.5 x 1 mm (22.5 x 15 m)
+        Symbol::X408000 => 110.25, // Vegetation, walk: 0.7 x 0.7 mm (10.5 x 10.5 m)
+        Symbol::X410000 => 64.0,   // Vegetation, fight: 0.55 x 0.55 mm (8 x 8 m)
     }
 }
 
 /// The DXF classification of a vegetation symbol.
 fn classification(symbol: Symbol) -> Classification {
     match symbol {
-        Symbol::X403 => Classification::Veg403,
-        Symbol::X406 => Classification::Veg406,
-        Symbol::X407 => Classification::Veg407,
-        Symbol::X408 => Classification::Veg408,
-        Symbol::X410 => Classification::Veg410,
+        Symbol::X403000 => Classification::Veg403,
+        Symbol::X406000 => Classification::Veg406,
+        Symbol::X407000 => Classification::Veg407,
+        Symbol::X408000 => Classification::Veg408,
+        Symbol::X410000 => Classification::Veg410,
     }
 }
 
 /// DXF draw order, light to dark, so map programs stack the areas the way the raster does.
 fn draw_order(symbol: Symbol) -> usize {
     match symbol {
-        Symbol::X403 => 0,
-        Symbol::X406 => 1,
-        Symbol::X408 => 2,
-        Symbol::X410 => 3,
-        Symbol::X407 => 4,
+        Symbol::X403000 => 0,
+        Symbol::X406000 => 1,
+        Symbol::X408000 => 2,
+        Symbol::X410000 => 3,
+        Symbol::X407000 => 4,
     }
 }
 
@@ -494,25 +494,18 @@ pub(crate) fn chaikin_closed(ring: &[Point2]) -> Vec<Point2> {
     out
 }
 
-/// Write vegetation polygons as a FeatureCollection of `VegetationProperties` Polygons.
-/// With `shade`, each feature also carries its polygon's grid value as `shade`.
-fn write_geojson_file(
-    fs: &impl FileSystem,
-    path: &Path,
+/// Vegetation polygons as `VegetationProperties` Polygon features. With `shade`, each
+/// feature also carries its polygon's grid value as `shade`.
+fn area_features(
     polygons: &[VegPolygon],
     shade: bool,
-    epsg: Option<u32>,
-) -> anyhow::Result<()> {
-    let features = polygons
-        .iter()
-        .map(|p| {
-            let shade = shade.then(|| {
-                NonZeroU64::new(p.value.into()).expect("traced components are never background")
-            });
-            geojson::vegetation_area(p.symbol, shade, &p.rings)
-        })
-        .collect();
-    geojson::write_feature_collection(fs, path, features, epsg)
+) -> impl Iterator<Item = geojson::geojson_types::Feature> + '_ {
+    polygons.iter().map(move |p| {
+        let shade = shade.then(|| {
+            NonZeroU64::new(p.value.into()).expect("traced components are never background")
+        });
+        geojson::vegetation_area(p.symbol, shade, &p.rings)
+    })
 }
 
 /// Vectorize and write all vegetation vector outputs. Called from `makevege` when
@@ -568,7 +561,7 @@ pub fn export_all(
         open_land,
         (bounds.xmin + 1.5, bounds.ymin + 1.5),
         3.0,
-        &|_| Symbol::X403,
+        &|_| Symbol::X403000,
         open_land_med,
         eps,
     );
@@ -576,25 +569,23 @@ pub fn export_all(
         undergrowth,
         (bounds.xmin, bounds.ymin),
         block * 6.0,
-        &|_| Symbol::X407,
+        &|_| Symbol::X407000,
         [0, 0],
         eps,
     );
 
     // only the green areas have shades; open land and undergrowth are 0/1 grids
-    for (output, polys, shade) in [
-        (geojson::VEGETATION, &green_polys, config.vector_shade),
-        (geojson::OPEN_LAND, &open_land_polys, false),
-        (geojson::UNDERGROWTH, &undergrowth_polys, false),
-    ] {
-        write_geojson_file(
-            fs,
-            &tmpfolder.join(output.file_name()),
-            polys,
-            shade,
-            config.epsg,
-        )?;
-    }
+    let features = area_features(&green_polys, config.vector_shade)
+        .chain(area_features(&open_land_polys, false))
+        .chain(area_features(&undergrowth_polys, false))
+        .collect();
+    geojson::write_tables(
+        fs,
+        tmpfolder,
+        geojson::Source::Vegetation,
+        features,
+        config.epsg,
+    )?;
 
     // combined DXF in draw order (stable sort keeps the traced order within a symbol)
     let mut all: Vec<&VegPolygon> = green_polys
@@ -643,7 +634,7 @@ mod tests {
         // no isolated patch here; dissolve tested separately
 
         // min area tiny so nothing dissolves (cell=10 -> 100 m² per cell)
-        let polys = grid_to_polygons(&grid, (0.0, 0.0), 10.0, &|_| Symbol::X410, [0, 0], 0.0);
+        let polys = grid_to_polygons(&grid, (0.0, 0.0), 10.0, &|_| Symbol::X410000, [0, 0], 0.0);
 
         // the diagonal cell is its own component -> 2 polygons
         assert_eq!(polys.len(), 2, "expected big region + diagonal cell");
@@ -672,13 +663,13 @@ mod tests {
         grid[(4, 2)] = 2;
         let code_of = |c: u8| -> Symbol {
             match c {
-                1 => Symbol::X410,
-                _ => Symbol::X406,
+                1 => Symbol::X410000,
+                _ => Symbol::X406000,
             }
         };
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 3.0, &code_of, [0, 0], 0.0);
         assert_eq!(polys.len(), 1);
-        assert_eq!(polys[0].symbol, Symbol::X410);
+        assert_eq!(polys[0].symbol, Symbol::X410000);
         assert_eq!(polys[0].rings.len(), 1, "island dissolved, no hole");
     }
 
@@ -700,9 +691,9 @@ mod tests {
         }
         let code_of = |c: u8| -> Symbol {
             match c {
-                1 => Symbol::X406,
-                2 => Symbol::X408,
-                _ => Symbol::X410,
+                1 => Symbol::X406000,
+                2 => Symbol::X408000,
+                _ => Symbol::X410000,
             }
         };
         // cell 3 m => 9 m² per cell, minimums are 225/110.25/64 m²
@@ -735,8 +726,8 @@ mod tests {
         }
         let code_of = |c: u8| -> Symbol {
             match c {
-                1 => Symbol::X406,
-                _ => Symbol::X410,
+                1 => Symbol::X406000,
+                _ => Symbol::X410000,
             }
         };
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 5.0, &code_of, [0, 0], 2.0);
@@ -794,9 +785,9 @@ mod tests {
 
     fn speckle_code(c: u8) -> Symbol {
         match c {
-            1 => Symbol::X406,
-            2 => Symbol::X408,
-            _ => Symbol::X410,
+            1 => Symbol::X406000,
+            2 => Symbol::X408000,
+            _ => Symbol::X410000,
         }
     }
 
@@ -813,17 +804,24 @@ mod tests {
     }
 
     #[test]
-    fn write_geojson_file_writes_vegetation_polygons() {
+    fn area_features_are_vegetation_polygons() {
         use crate::geojson::geojson_types::{
             FeatureGeometryType, FeatureProperties, GeoJsonOutput,
         };
 
         let polys = grid_to_polygons(&speckle(), (0.0, 0.0), 3.0, &speckle_code, [0, 0], 2.0);
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let name = geojson::VEGETATION.file_name();
-        let path = Path::new(&name);
-        write_geojson_file(&fs, path, &polys, false, None).unwrap();
+        let features = area_features(&polys, false).collect();
+        geojson::write_tables(
+            &fs,
+            Path::new(""),
+            geojson::Source::Vegetation,
+            features,
+            None,
+        )
+        .unwrap();
 
+        let path = geojson::file_name(crate::isom::IsomTable::VegetationAreas);
         let value: serde_json::Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
         let out: GeoJsonOutput = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(out.features.len(), polys.len());
@@ -832,7 +830,7 @@ mod tests {
             let FeatureProperties::VegetationProperties(props) = &feature.properties else {
                 panic!("not vegetation properties: {:?}", feature.properties);
             };
-            assert_eq!(props.symbol, p.symbol);
+            assert_eq!(props.isom_code, p.symbol);
             assert!(props.shade.is_none());
             // GeoJSON rings are closed: one more position than the open ring
             assert_eq!(feature.geometry.coordinates.len(), p.rings.len());
@@ -842,31 +840,27 @@ mod tests {
                 assert_eq!(coords.first(), coords.last());
             }
         }
-        // only `symbol` in the properties
+        // only `isom_code` in the properties
         let props = &value["features"][0]["properties"];
         assert_eq!(props.as_object().unwrap().len(), 1, "{props}");
     }
 
     #[test]
-    fn write_geojson_file_with_shade_adds_the_greenshade_index() {
-        use crate::geojson::geojson_types::{FeatureProperties, GeoJsonOutput};
+    fn area_features_with_shade_add_the_greenshade_index() {
+        use crate::geojson::geojson_types::FeatureProperties;
 
         let polys = grid_to_polygons(&speckle(), (0.0, 0.0), 3.0, &speckle_code, [0, 0], 2.0);
-        let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let path = Path::new("vegetation.geojson");
-        write_geojson_file(&fs, path, &polys, true, None).unwrap();
-
-        let value: serde_json::Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
-        let out: GeoJsonOutput = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(out.features.len(), polys.len());
+        let features: Vec<_> = area_features(&polys, true).collect();
+        let value = serde_json::json!({ "features": features });
+        assert_eq!(features.len(), polys.len());
         let mut shades = std::collections::BTreeSet::new();
-        for (i, (feature, p)) in out.features.iter().zip(&polys).enumerate() {
+        for (i, (feature, p)) in features.iter().zip(&polys).enumerate() {
             let FeatureProperties::VegetationProperties(props) = &feature.properties else {
                 panic!("not vegetation properties: {:?}", feature.properties);
             };
             let shade = props.shade.expect("every green area has a shade").get();
             assert_eq!(shade, u64::from(p.value));
-            assert_eq!(props.symbol, speckle_code(p.value), "shade {shade}");
+            assert_eq!(props.isom_code, speckle_code(p.value), "shade {shade}");
             // an integer in the JSON, not a string or a float
             assert!(value["features"][i]["properties"]["shade"].is_u64());
             shades.insert(shade);

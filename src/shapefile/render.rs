@@ -409,38 +409,39 @@ pub fn render(
                         continue;
                     }
 
-                    // symbol codes are ISOM 2017-2; `true` = the code's T suffix (upper level)
-                    match (mapping.symbol.as_str(), mapping.upper_level) {
+                    // `true` = the code's T suffix (upper level)
+                    use crate::isom::IsomCode::*;
+                    match (mapping.isom_code, mapping.upper_level) {
                         // small crossable watercourse
-                        ("305", false) => {
+                        (C305_000, false) => {
                             imgblue.set_line_width(5.0);
                             thickness = 4.0;
                             color = Some((marsh, Image::Blue));
                         }
                         // vehicle track
-                        ("504", false) => {
+                        (C504_000, false) => {
                             dashedline = true;
                             thickness = 12.0;
                             color = Some((black, Image::Black));
                         }
-                        ("504", true) => {
+                        (C504_000, true) => {
                             dashedline = true;
                             thickness = 12.0;
                             color = Some((black, Image::BlackTop));
                         }
                         // road
-                        ("503", false) => {
+                        (C503_000, false) => {
                             imgblack.set_line_width(12.0);
                             thickness = 12.0;
                             color = Some((black, Image::Black));
                         }
-                        ("503", true) => {
+                        (C503_000, true) => {
                             imgblack.set_line_width(12.0);
                             thickness = 12.0;
                             color = Some((black, Image::BlackTop));
                         }
                         // wide road
-                        ("502", false) => {
+                        (C502_000, false) => {
                             imgbrown.set_line_width(20.0);
                             imgbrowntop.set_line_width(20.0);
                             color = Some((brown, Image::Brown));
@@ -449,7 +450,7 @@ pub fn render(
                             imgblack.set_line_width(26.0);
                         }
                         // wide road, bridges
-                        ("502", true) => {
+                        (C502_000, true) => {
                             edgeimage = EdgeImage::BlackTop;
                             imgbrown.set_line_width(14.0);
                             imgbrowntop.set_line_width(14.0);
@@ -459,44 +460,44 @@ pub fn render(
                             imgblack.set_line_width(26.0);
                         }
                         // railway
-                        ("509", false) => {
+                        (C509_000, false) => {
                             color = Some((white, Image::Black));
                             roadedge = 18.0;
                             thickness = 3.0;
                         }
-                        ("509", true) => {
+                        (C509_000, true) => {
                             color = Some((white, Image::BlackTop));
                             edgeimage = EdgeImage::BlackTop;
                             roadedge = 18.0;
                             thickness = 3.0;
                         }
                         // small footpath
-                        ("506", false) => {
+                        (C506_000, false) => {
                             dashedline = true;
                             color = Some((black, Image::Black));
                             thickness = 6.0;
                             imgblack.set_line_width(6.0);
                         }
-                        ("506", true) => {
+                        (C506_000, true) => {
                             dashedline = true;
                             color = Some((black, Image::BlackTop));
                             thickness = 6.0;
                             imgblack.set_line_width(6.0);
                         }
                         // power line
-                        ("510", false) => {
+                        (C510_000, false) => {
                             color = Some((black, Image::BlackTop));
                             thickness = 5.0;
                             imgblacktop.set_line_width(5.0);
                         }
-                        // impassable fence
-                        ("518", false) => {
+                        // fence
+                        (C516_000, false) => {
                             color = Some((black, Image::Black));
                             thickness = 7.0;
                             imgblacktop.set_line_width(7.0);
                         }
                         // distinct cultivation boundary
-                        ("415", false) => {
+                        (C415_000, false) => {
                             color = Some((black, Image::Black));
                             thickness = 4.0;
                         }
@@ -504,43 +505,38 @@ pub fn render(
                         // areas
 
                         // open land
-                        ("401", false) => {
+                        (C401_000, false) => {
                             area = true;
                             border = 3.0;
                             color = Some((yellow, Image::Yellow));
                         }
                         // uncrossable body of water, with bank line
-                        ("301", false) => {
+                        (C301_000, false) => {
                             area = true;
                             border = 5.0;
                             color = Some((blue, Image::Blue));
                         }
                         // marsh
-                        ("308", false) => {
+                        (C308_000, false) => {
                             area = true;
                             color = Some((marsh, Image::Marsh));
                         }
                         // building
-                        ("521", false) => {
+                        (C521_000, false) => {
                             area = true;
                             color = Some((buildingcolor, Image::Black));
                         }
                         // area that shall not be entered
-                        ("520", false) => {
+                        (C520_000, false) => {
                             area = true;
                             color = Some((olive, Image::Olive));
                         }
-                        // paved area bounding line, body of water bank line
-                        ("501.2" | "301.4", false) => {
-                            thickness = 2.0;
-                            color = Some((black, Image::Black));
-                        }
                         // paved area
-                        ("501", false) => {
+                        (C501_000, false) => {
                             area = true;
                             color = Some((brown, Image::Parkings));
                         }
-                        ("501", true) => {
+                        (C501_000, true) => {
                             area = true;
                             color = Some((brown, Image::Brown));
                         }
@@ -561,7 +557,7 @@ pub fn render(
                     if let Some(m) = matched {
                         osm_lines.extend(polyline.parts().iter().map(|part| {
                             let line: Vec<[f64; 2]> = part.iter().map(|pt| [pt.x, pt.y]).collect();
-                            geojson::osm_line(&m.symbol, &m.category, m.upper_level, &line)
+                            geojson::osm_line(m.isom_code, &m.category, m.upper_level, &line)
                         }));
                     }
                     let mut poly: Vec<(f32, f32)> = vec![];
@@ -659,7 +655,7 @@ pub fn render(
                             }
                         }
                         osm_areas.extend(polys.iter().map(|rings| {
-                            geojson::osm_area(&m.symbol, &m.category, m.upper_level, rings)
+                            geojson::osm_area(m.isom_code, &m.category, m.upper_level, rings)
                         }));
                     }
                     let mut polys: Vec<Vec<(f32, f32)>> = vec![];
@@ -771,16 +767,12 @@ pub fn render(
         .expect("could not save low.png");
 
     if !vectorconf_mappings.is_empty() {
-        geojson::write_feature_collection(
+        osm_lines.append(&mut osm_areas);
+        geojson::write_tables(
             fs,
-            &tmpfolder.join(geojson::OSM_LINES.file_name()),
+            tmpfolder,
+            geojson::Source::VectorMapping,
             osm_lines,
-            config.epsg,
-        )?;
-        geojson::write_feature_collection(
-            fs,
-            &tmpfolder.join(geojson::OSM_AREAS.file_name()),
-            osm_areas,
             config.epsg,
         )?;
     }

@@ -2,7 +2,7 @@ use std::{path::Path, str::FromStr};
 
 use ini::Ini;
 
-use crate::geojson::geojson_types::VegetationPropertiesSymbol;
+use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 
 /// The config parsed from the .ini configuration file.
 pub struct Config {
@@ -108,7 +108,7 @@ pub struct Config {
     pub vector_vege: bool,
     /// Symbol code per greenshade index (1-based); a shorter list repeats its last code.
     /// Empty when `vector_vege` is off.
-    pub vector_greenshade_isom: Vec<VegetationPropertiesSymbol>,
+    pub vector_greenshade_isom: Vec<VegetationPropertiesIsomCode>,
     /// Douglas-Peucker tolerance in metres for vegetation areas; 0 disables simplification.
     pub vector_simplify: f64,
     /// Give each green vegetation area its greenshade index as a `shade` property.
@@ -365,7 +365,7 @@ impl Config {
         let vector_greenshade_isom = if vector_vege {
             parse_greenshade_isom(
                 gs.get("vector_greenshade_isom")
-                    .unwrap_or("406|406|408|408|410"),
+                    .unwrap_or("406.000|406.000|408.000|408.000|410.000"),
             )?
         } else {
             Vec::new()
@@ -550,7 +550,7 @@ impl Config {
 /// each one the schema allows for vegetation areas.
 fn parse_greenshade_isom(
     value: &str,
-) -> Result<Vec<VegetationPropertiesSymbol>, Box<dyn std::error::Error>> {
+) -> Result<Vec<VegetationPropertiesIsomCode>, Box<dyn std::error::Error>> {
     value
         .split('|')
         .map(|code| {
@@ -632,19 +632,20 @@ mod test {
 
     #[test]
     fn vector_greenshade_isom_parses_vegetation_codes() {
-        use crate::geojson::geojson_types::VegetationPropertiesSymbol as S;
+        use crate::geojson::geojson_types::VegetationPropertiesIsomCode as S;
         let config = load_with(&[("vector_vege", "1")]).unwrap();
         assert_eq!(
             config.vector_greenshade_isom,
-            [S::X406, S::X406, S::X408, S::X408, S::X410]
+            [S::X406000, S::X406000, S::X408000, S::X408000, S::X410000]
         );
-        let config = load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", "403")]).unwrap();
-        assert_eq!(config.vector_greenshade_isom, [S::X403]);
+        let config =
+            load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", "403.000")]).unwrap();
+        assert_eq!(config.vector_greenshade_isom, [S::X403000]);
     }
 
     #[test]
     fn vector_greenshade_isom_rejects_empty_and_non_vegetation_codes() {
-        for bad in ["", "406||410", "406|409", "406.000", "101"] {
+        for bad in ["", "406.000||410.000", "406.000|409.000", "406", "101.000"] {
             let err = load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", bad)])
                 .err()
                 .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));

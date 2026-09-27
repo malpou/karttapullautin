@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use pullauta::geojson;
+use pullauta::isom::{IsomCode, IsomTable};
 use serde_json::Value;
 
 const INPUTS: &[(&str, &str)] = &[
@@ -115,7 +116,8 @@ fn feature_collection(path: &Path) -> Vec<Value> {
 }
 
 /// Validate every `.geojson` file under `dir` against `schema/geojson.schema.json`, the
-/// public contract of the vector output. Returns how many files were checked.
+/// public contract of the vector output, and against the isom-maplibre symbol table (see
+/// [`assert_table_conformance`]). Returns how many files were checked.
 fn assert_schema_conformance(dir: &Path) -> usize {
     let schema: Value =
         serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
@@ -132,9 +134,40 @@ fn assert_schema_conformance(dir: &Path) -> usize {
             .map(|e| format!("{} at {}", e, e.instance_path()))
             .collect();
         assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
+        assert_table_conformance(&path, &val);
         checked += 1;
     }
     checked
+}
+
+/// The table a GeoJSON file holds, by its name: `<table>.geojson`, or with a tile or
+/// the merge prefix, `<prefix>_<table>.geojson`.
+fn table_of(path: &Path) -> IsomTable {
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    *IsomTable::ALL
+        .iter()
+        .find(|t| stem == t.as_str() || stem.ends_with(&format!("_{}", t.as_str())))
+        .unwrap_or_else(|| panic!("{} is not named after a table", path.display()))
+}
+
+/// Every feature's `isom_code` is a code of the isom-maplibre symbol table (a `stack`
+/// entry of the vendored `isom.yaml`), and the file it was written to is that code's
+/// table: the style draws every feature, from the source it reads the code from.
+fn assert_table_conformance(path: &Path, collection: &Value) {
+    let table = table_of(path);
+    for f in collection["features"].as_array().unwrap() {
+        let code = f["properties"]["isom_code"].as_str().unwrap_or_default();
+        let code: IsomCode = code
+            .parse()
+            .unwrap_or_else(|e| panic!("{}: {e}: {f}", path.display()));
+        assert_eq!(
+            code.table(),
+            table,
+            "{}: {code} belongs to {}",
+            path.display(),
+            code.table().as_str()
+        );
+    }
 }
 
 /// Every file under `dir`, recursively, in name order.
@@ -155,20 +188,21 @@ fn files(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A plain ISOM symbol number ("502"). osm.txt uses no OOM sub-symbols ("501.2").
-fn is_plain_symbol(s: &str) -> bool {
-    s.len() == 3 && s.chars().all(|c| c.is_ascii_digit())
-}
-
-/// Check OSM features: the expected geometry type, a plain symbol number, a category, and
-/// `upper_level` either absent or true.
-fn assert_osm_features(path: &Path, geometry: &str) -> Vec<Value> {
-    let features = feature_collection(path);
+/// The OSM features of a table (those with a `category`): only the keys `isom_code`,
+/// `category` and `upper_level`, the last either absent or true.
+fn osm_features(path: &Path) -> Vec<Value> {
+    let features: Vec<Value> = feature_collection(path)
+        .into_iter()
+        .filter(|f| f["properties"].get("category").is_some())
+        .collect();
     for f in &features {
-        let p = &f["properties"];
-        assert_eq!(f["geometry"]["type"], geometry, "{}: {f}", path.display());
-        let symbol = p["symbol"].as_str().unwrap_or_default();
-        assert!(is_plain_symbol(symbol), "{}: {f}", path.display());
+        let p = f["properties"].as_object().unwrap();
+        assert!(
+            p.keys()
+                .all(|k| ["isom_code", "category", "upper_level"].contains(&k.as_str())),
+            "{}: {f}",
+            path.display()
+        );
         assert!(p["category"].is_string(), "{}: {f}", path.display());
         assert!(
             p.get("upper_level").is_none() || p["upper_level"] == true,
@@ -190,31 +224,35 @@ fn greenshade_isom() -> Vec<String> {
     line.split('|').map(|c| c.trim().to_string()).collect()
 }
 
-/// Check a feature's `shade` against its symbol: a green area (a symbol in `map`, the
-/// template's 406/408/410) has its greenshade index as an integer, mapped to its symbol
+/// Check a feature's `shade` against its code: a green area (a code in `map`, the
+/// template's 406/408/410) has its greenshade index as an integer, mapped to its code
 /// by `vector_greenshade_isom`; every other feature has none.
 fn assert_shade(f: &Value, map: &[String]) {
     let p = &f["properties"];
-    match p["symbol"].as_str().unwrap_or_default() {
-        symbol if map.iter().any(|m| m == symbol) => {
+    match p["isom_code"].as_str().unwrap_or_default() {
+        code if map.iter().any(|m| m == code) && p.get("category").is_none() => {
             let shade = p["shade"]
                 .as_u64()
                 .unwrap_or_else(|| panic!("no shade: {f}"));
             assert!(shade >= 1, "{f}");
             let index = (shade as usize).min(map.len()) - 1;
-            assert_eq!(map[index], symbol, "{f}");
+            assert_eq!(map[index], code, "{f}");
         }
         _ => assert!(p.get("shade").is_none(), "{f}"),
     }
 }
 
-/// Check vegetation features: Polygons whose rings are closed, and properties that are
-/// only a vegetation `symbol`, plus the greenshade index on green areas when the run had
-/// `vector_shade=1` (see [`assert_shade`]). Returns the symbols present.
+/// Check the vegetation areas of a `vegetation_areas` table (those without a
+/// `category`): Polygons whose rings are closed, and properties that are only a
+/// vegetation `isom_code`, plus the greenshade index on green areas when the run had
+/// `vector_shade=1` (see [`assert_shade`]). Returns the codes present.
 fn assert_vegetation_features(path: &Path, vector_shade: bool) -> BTreeSet<String> {
     let map = greenshade_isom();
-    let mut symbols = BTreeSet::new();
-    for f in feature_collection(path) {
+    let mut codes = BTreeSet::new();
+    let features = feature_collection(path)
+        .into_iter()
+        .filter(|f| f["properties"].get("category").is_none());
+    for f in features {
         assert_eq!(f["geometry"]["type"], "Polygon", "{}: {f}", path.display());
         for ring in f["geometry"]["coordinates"].as_array().unwrap() {
             let ring = ring.as_array().unwrap();
@@ -223,7 +261,7 @@ fn assert_vegetation_features(path: &Path, vector_shade: bool) -> BTreeSet<Strin
         }
         let p = f["properties"].as_object().unwrap();
         assert!(
-            p.keys().all(|k| k == "symbol" || k == "shade"),
+            p.keys().all(|k| k == "isom_code" || k == "shade"),
             "{}: {f}",
             path.display()
         );
@@ -232,48 +270,57 @@ fn assert_vegetation_features(path: &Path, vector_shade: bool) -> BTreeSet<Strin
         } else {
             assert!(p.get("shade").is_none(), "{}: {f}", path.display());
         }
-        let symbol = p["symbol"].as_str().unwrap();
+        let code = p["isom_code"].as_str().unwrap();
         assert!(
-            ["403", "406", "407", "408", "410"].contains(&symbol),
+            ["403.000", "406.000", "407.000", "408.000", "410.000"].contains(&code),
             "{}: {f}",
             path.display()
         );
-        symbols.insert(symbol.to_string());
+        codes.insert(code.to_string());
     }
-    symbols
+    codes
 }
 
-/// Check a terrain GeoJSON file: every feature has the expected geometry type and a
-/// symbol from `allowed`. Returns the features.
+/// Check a terrain table: every feature has the expected geometry type and a code from
+/// `allowed`. Returns the features.
 fn assert_terrain_features(path: &Path, geometry: &str, allowed: &[&str]) -> Vec<Value> {
     let features = feature_collection(path);
     for f in &features {
         assert_eq!(f["geometry"]["type"], geometry, "{}: {f}", path.display());
-        let symbol = f["properties"]["symbol"].as_str().unwrap_or_default();
-        assert!(allowed.contains(&symbol), "{}: {f}", path.display());
+        let code = f["properties"]["isom_code"].as_str().unwrap_or_default();
+        assert!(allowed.contains(&code), "{}: {f}", path.display());
     }
     features
 }
 
-fn symbols(features: &[Value]) -> BTreeSet<String> {
+fn codes(features: &[Value]) -> BTreeSet<String> {
     features
         .iter()
-        .map(|f| f["properties"]["symbol"].as_str().unwrap().to_string())
+        .map(|f| f["properties"]["isom_code"].as_str().unwrap().to_string())
         .collect()
 }
 
-/// Check the terrain GeoJSON a tile's temp folder holds with vector_vege=1: contours,
+fn table_path(folder: &Path, table: IsomTable) -> PathBuf {
+    folder.join(geojson::file_name(table))
+}
+
+/// Check the terrain tables a tile's temp folder holds with vector_vege=1: contours with
 /// the renderer's form lines, knoll points and cliffs.
 fn assert_terrain_outputs(tile: &Path) {
     let contours = assert_terrain_features(
-        &tile.join(geojson::CONTOURS.file_name()),
+        &table_path(tile, IsomTable::Contours),
         "LineString",
-        &["101", "102", "103"],
+        &["101.000", "101.001", "102.000", "103.000"],
     );
-    let found = symbols(&contours);
-    assert!(found.contains("101") && found.contains("102"), "{found:?}");
+    let found = codes(&contours);
+    for code in ["101.000", "102.000", "103.000"] {
+        assert!(found.contains(code), "{found:?}");
+    }
+    // contours carry their elevation; the form lines, the renderer's selection of the
+    // half-interval contours, have none, and the half-interval contours are left out
     for f in &contours {
-        assert!(f["properties"]["elevation"].is_number(), "{f}");
+        let form_line = f["properties"]["isom_code"] == "103.000";
+        assert_eq!(f["properties"]["elevation"].is_number(), !form_line, "{f}");
     }
     // the regression tile has depressions; the flag is only ever true
     assert!(
@@ -286,35 +333,30 @@ fn assert_terrain_outputs(tile: &Path) {
         d.is_null() || *d == true
     }));
 
-    let formlines = assert_terrain_features(
-        &tile.join(geojson::FORMLINES.file_name()),
-        "LineString",
-        &["103"],
-    );
-    assert!(
-        formlines
-            .iter()
-            .all(|f| f["properties"].get("elevation").is_none())
-    );
-
     let knolls = assert_terrain_features(
-        &tile.join(geojson::DOTKNOLLS.file_name()),
+        &table_path(tile, IsomTable::KnollsPoints),
         "Point",
-        &["109", "111"],
+        &["109.000", "111.000"],
     );
-    assert_eq!(symbols(&knolls), ["109", "111"].map(String::from).into());
+    assert_eq!(
+        codes(&knolls),
+        ["109.000", "111.000"].map(String::from).into()
+    );
 
     let cliffs = assert_terrain_features(
-        &tile.join(geojson::CLIFFS.file_name()),
+        &table_path(tile, IsomTable::Cliffs),
         "LineString",
-        &["201", "202"],
+        &["201.000", "202.000"],
     );
     // the regression tile has both cliff kinds
-    assert_eq!(symbols(&cliffs), ["201", "202"].map(String::from).into());
+    assert_eq!(
+        codes(&cliffs),
+        ["201.000", "202.000"].map(String::from).into()
+    );
 }
 
 /// Single job on the regression tile, as in the regression workflow's single run: the
-/// terrain and vegetation GeoJSON land in temp/, the green areas without `shade`
+/// terrain and vegetation tables land in temp/, the green areas without `shade`
 /// (vector_shade=0).
 #[test]
 #[ignore]
@@ -323,11 +365,13 @@ fn single_job_writes_terrain_geojson() {
 
     let temp = dir.join("temp");
     assert_terrain_outputs(&temp);
-    let green = assert_vegetation_features(&temp.join(geojson::VEGETATION.file_name()), false);
-    assert!(green.contains("406"), "{green:?}");
+    let vegetation = table_path(&temp, IsomTable::VegetationAreas);
+    let green = assert_vegetation_features(&vegetation, false);
+    assert!(green.contains("406.000"), "{green:?}");
 
-    // the four terrain outputs, vegetation, open land and undergrowth
-    assert_eq!(assert_schema_conformance(&dir), 7);
+    // contours, knolls_points, cliffs and vegetation_areas; no OSM tables without a
+    // vectorconf
+    assert_eq!(assert_schema_conformance(&dir), 4);
 }
 
 /// Run the single job on the regression tile in a fresh run directory `name`, with
@@ -353,21 +397,33 @@ fn batch_with_osm_vectorconf() {
 
     let tile = dir.join("temp_test_file_dir");
 
-    let has = |features: &[Value], symbol: &str, category: &str| {
-        features
-            .iter()
-            .any(|f| f["properties"]["symbol"] == symbol && f["properties"]["category"] == category)
+    // osm.txt rules, each feature in the table of its code: primary roads are wide
+    // roads and paths small footpaths (paths), buildings and fences are manmade, lakes
+    // water
+    let osm: Vec<(IsomTable, Value)> = [IsomTable::Paths, IsomTable::Manmade, IsomTable::Water]
+        .into_iter()
+        .flat_map(|t| {
+            osm_features(&table_path(&tile, t))
+                .into_iter()
+                .map(move |f| (t, f))
+        })
+        .collect();
+    let has = |geometry: &str, code: &str, category: &str| {
+        osm.iter().any(|(_, f)| {
+            f["geometry"]["type"] == geometry
+                && f["properties"]["isom_code"] == code
+                && f["properties"]["category"] == category
+        })
     };
-
-    let lines = assert_osm_features(&tile.join(geojson::OSM_LINES.file_name()), "LineString");
-    // osm.txt rules in ISOM 2017-2: primary roads are wide roads, paths small footpaths
-    assert!(has(&lines, "502", "road-path"));
-    assert!(has(&lines, "506", "road-path"));
-
-    let areas = assert_osm_features(&tile.join(geojson::OSM_AREAS.file_name()), "Polygon");
-    assert!(has(&areas, "521", "building"));
-    assert!(has(&areas, "301", "water"));
-    for f in &areas {
+    assert!(has("LineString", "502.000", "road-path"));
+    assert!(has("LineString", "506.000", "road-path"));
+    assert!(has("LineString", "516.000", "barrier"));
+    assert!(has("Polygon", "521.000", "building"));
+    assert!(has("Polygon", "301.000", "water"));
+    for (_, f) in osm
+        .iter()
+        .filter(|(_, f)| f["geometry"]["type"] == "Polygon")
+    {
         let rings = f["geometry"]["coordinates"].as_array().unwrap();
         assert!(!rings.is_empty(), "{f}");
         assert!(
@@ -378,27 +434,30 @@ fn batch_with_osm_vectorconf() {
 
     // vegetation: the default vector_greenshade_isom maps the greenshades to 406/408/410,
     // open land is 403, undergrowth 407; only the green areas carry a shade
-    let green = assert_vegetation_features(&tile.join(geojson::VEGETATION.file_name()), true);
+    let vegetation =
+        assert_vegetation_features(&table_path(&tile, IsomTable::VegetationAreas), true);
     assert!(
-        green.is_subset(&["406", "408", "410"].map(String::from).into()),
-        "{green:?}"
+        vegetation.is_subset(
+            &["403.000", "406.000", "407.000", "408.000", "410.000"]
+                .map(String::from)
+                .into()
+        ),
+        "{vegetation:?}"
     );
-    assert!(green.contains("406"), "{green:?}");
-    let open_land = assert_vegetation_features(&tile.join(geojson::OPEN_LAND.file_name()), false);
-    assert_eq!(open_land, ["403".to_string()].into());
-    let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()), false);
-    assert_eq!(ug, ["407".to_string()].into());
+    for code in ["403.000", "406.000", "407.000"] {
+        assert!(vegetation.contains(code), "{vegetation:?}");
+    }
 
     // the same areas as closed DXF polylines, one DXF layer per symbol code
     let dxf_path = tile.join("vegetation.dxf");
     assert!(dxf_path.exists(), "{} was not written", dxf_path.display());
     let dxf = std::fs::read_to_string(dxf_path).unwrap();
-    for symbol in green.iter().chain(&open_land).chain(&ug) {
+    for code in &vegetation {
         assert!(
             dxf.contains(&format!(
-                "POLYLINE\r\n 66\r\n1\r\n  8\r\n{symbol}\r\n 70\r\n1\r\n"
+                "POLYLINE\r\n 66\r\n1\r\n  8\r\n{code}\r\n 70\r\n1\r\n"
             )),
-            "no closed polyline on layer {symbol}"
+            "no closed polyline on layer {code}"
         );
     }
     assert!(tile.join("vegetation.dxf.bin").exists());
@@ -407,12 +466,9 @@ fn batch_with_osm_vectorconf() {
 
     assert_batch_merge(&dir.join("out"));
 
-    // every registry output in the thread's temp1/ and its savetempfolders copy, cropped
-    // and merged in out/, and output.geojson
-    assert_eq!(
-        assert_schema_conformance(&dir),
-        4 * geojson::GEOJSON_OUTPUTS.len() + 1
-    );
+    // every table in the thread's temp1/ and its savetempfolders copy, cropped, merged
+    // and combined in out/
+    assert_eq!(assert_schema_conformance(&dir), 5 * IsomTable::ALL.len());
 }
 
 /// Run the batch job of [`batch_with_osm_vectorconf`] in a fresh run directory `name`,
@@ -507,19 +563,22 @@ fn assert_crs(path: &Path) {
     );
 }
 
-/// Check the batch output folder after `batchmerge=1`: every GeoJSON output cropped per
-/// tile and merged, the combined export, and the merged rasters (not in the working
-/// directory).
+/// Check the batch output folder after `batchmerge=1`: every table cropped per tile,
+/// merged and combined, the combined DXF and CRT, and the merged rasters (not in the
+/// working directory).
 fn assert_batch_merge(out: &Path) {
-    for output in geojson::GEOJSON_OUTPUTS {
+    let mut combined = Vec::new();
+    for &table in IsomTable::ALL {
         for name in [
-            output.tile_file_name("test_file"),
-            output.merged_file_name(),
+            geojson::tile_file_name(table, "test_file"),
+            geojson::merged_file_name(table),
+            geojson::file_name(table),
         ] {
             let path = out.join(name);
             feature_collection(&path);
             assert_crs(&path);
         }
+        combined.extend(feature_collection(&table_path(out, table)));
     }
     // (merged_vege.png needs savetempfiles=1, which writes the tile vegetation rasters)
     for name in ["merged.png", "merged.pgw", "merged_depr.png"] {
@@ -533,20 +592,17 @@ fn assert_batch_merge(out: &Path) {
     for name in [geojson::COMBINED_DXF, geojson::COMBINED_CRT] {
         assert!(out.join(name).exists(), "{name} was not written");
     }
-    let combined_path = out.join(geojson::COMBINED_GEOJSON);
-    assert_crs(&combined_path);
-    let combined = feature_collection(&combined_path);
-    let found = symbols(&combined);
-    for symbol in [
-        "101", "102", "103", // contours, form lines
-        "109", "111", // knolls and small depressions
-        "201", "202", // cliffs
-        "403", "406", "407", // open land, vegetation, undergrowth
-        "502", "521", // OSM: wide road, building
+    let found = codes(&combined);
+    for code in [
+        "101.000", "102.000", "103.000", // contours, form lines
+        "109.000", "111.000", // knolls and small depressions
+        "201.000", "202.000", // cliffs
+        "403.000", "406.000", "407.000", // open land, vegetation, undergrowth
+        "502.000", "521.000", "516.000", // OSM: wide road, building, fence
     ] {
         assert!(
-            found.contains(symbol),
-            "no {symbol} in output.geojson: {found:?}"
+            found.contains(code),
+            "no {code} in the combined tables: {found:?}"
         );
     }
     // the green areas keep their shade through crop, merge and the combined export
@@ -568,14 +624,11 @@ fn assert_batch_merge(out: &Path) {
         );
     }
 
-    // one DXF layer per symbol code, each mapped to its OCAD symbol
+    // one DXF layer per symbol code, each mapped to the OCAD symbol of the same number
     let crt = std::fs::read_to_string(out.join(geojson::COMBINED_CRT)).unwrap();
     let dxf = std::fs::read_to_string(out.join(geojson::COMBINED_DXF)).unwrap();
-    for symbol in &found {
-        assert!(
-            crt.contains(&format!("{symbol}.000 {symbol}\n")),
-            "{symbol}"
-        );
-        assert!(dxf.contains(&format!("  8\r\n{symbol}\r\n")), "{symbol}");
+    for code in &found {
+        assert!(crt.contains(&format!("{code} {code}\n")), "{code}");
+        assert!(dxf.contains(&format!("  8\r\n{code}\r\n")), "{code}");
     }
 }

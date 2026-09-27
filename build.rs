@@ -8,7 +8,11 @@ fn main() {
     let schema: schemars::schema::RootSchema =
         serde_json::from_str(&content).expect("failed to parse schema");
 
-    let mut type_space = typify::TypeSpace::new(&typify::TypeSpaceSettings::default());
+    // `$defs/IsomCode` is the generated symbol table enum (src/isom.rs), so an OSM
+    // feature's code is checked against the table when it is read back.
+    let mut settings = typify::TypeSpaceSettings::default();
+    settings.with_replacement("IsomCode", "crate::isom::IsomCode", std::iter::empty());
+    let mut type_space = typify::TypeSpace::new(&settings);
     type_space
         .add_root_schema(schema)
         .expect("failed to generate types");

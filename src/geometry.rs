@@ -3,6 +3,8 @@
 //!
 //! These types also have helpers for exporting them to DXF format.
 
+use crate::isom::IsomCode;
+
 /// A 2D point
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point2 {
@@ -251,7 +253,7 @@ impl BinaryDxf {
             match geom {
                 Geometry::Points(points) => {
                     for (point, class) in points.points.iter().zip(&points.classification) {
-                        let Some(layer) = class.symbol_code() else {
+                        let Some(layer) = class.isom_code() else {
                             continue;
                         };
 
@@ -266,7 +268,7 @@ impl BinaryDxf {
                     for (polyline, class) in
                         polylines.polylines.iter().zip(&polylines.classification)
                     {
-                        let Some(layer) = class.symbol_code() else {
+                        let Some(layer) = class.isom_code() else {
                             continue;
                         };
                         // closed flag (70=1) on area rings so importers read them as areas
@@ -290,7 +292,7 @@ impl BinaryDxf {
                     for (polyline, (class, height)) in
                         polylines.polylines.iter().zip(&polylines.classification)
                     {
-                        let Some(layer) = class.symbol_code() else {
+                        let Some(layer) = class.isom_code() else {
                             continue;
                         };
 
@@ -373,34 +375,34 @@ impl Classification {
     /// ISOM 2017-2 symbol code this classification is drawn with; DXF output also uses
     /// it as the DXF layer name. None for [`Self::Knoll1010`], a knoll-detector artifact
     /// with no map symbol, which vector output skips.
-    pub fn symbol_code(&self) -> Option<&'static str> {
+    pub fn isom_code(&self) -> Option<IsomCode> {
         Some(match self {
-            Self::ContourSimple | Self::Contour | Self::Depression => "101",
-            Self::ContourIndex | Self::DepressionIndex => "102",
+            Self::ContourSimple | Self::Contour | Self::Depression => IsomCode::C101_000,
+            Self::ContourIndex | Self::DepressionIndex => IsomCode::C102_000,
             // intermediate (half-interval) contours are represented as form lines in ISOM
             Self::ContourIntermed
             | Self::ContourIndexIntermed
             | Self::DepressionIntermed
             | Self::DepressionIndexIntermed
             | Self::Formline
-            | Self::FormlineDepression => "103",
-            Self::Dotknoll | Self::UglyDotknoll => "109",
-            Self::Udepression | Self::UglyUdepression | Self::SmallDepression => "111",
-            Self::Cliff2 => "202",
-            Self::Cliff3 | Self::Cliff4 => "201",
-            // a tick that belongs to symbol 101; GeoJSON marks it `slope_line: true`
-            Self::SlopeLine => "101",
-            Self::Veg403 => "403",
-            Self::Veg406 => "406",
-            Self::Veg407 => "407",
-            Self::Veg408 => "408",
-            Self::Veg410 => "410",
+            | Self::FormlineDepression => IsomCode::C103_000,
+            Self::Dotknoll | Self::UglyDotknoll => IsomCode::C109_000,
+            Self::Udepression | Self::UglyUdepression | Self::SmallDepression => IsomCode::C111_000,
+            Self::Cliff2 => IsomCode::C202_000,
+            Self::Cliff3 | Self::Cliff4 => IsomCode::C201_000,
+            // a tick that belongs to symbol 101, drawn as its slope-line variant
+            Self::SlopeLine => IsomCode::C101_001,
+            Self::Veg403 => IsomCode::C403_000,
+            Self::Veg406 => IsomCode::C406_000,
+            Self::Veg407 => IsomCode::C407_000,
+            Self::Veg408 => IsomCode::C408_000,
+            Self::Veg410 => IsomCode::C410_000,
             Self::Knoll1010 => return None,
         })
     }
 
     /// Human-readable name of the symbol, telling depression lines apart from the
-    /// contours that share their symbol code. None where [`Self::symbol_code`] is None.
+    /// contours that share their symbol code. None where [`Self::isom_code`] is None.
     pub fn symbol_name(&self) -> Option<&'static str> {
         Some(match self {
             Self::ContourSimple | Self::Contour => "contour",
@@ -831,49 +833,73 @@ mod tests {
     }
 
     #[test]
-    fn symbol_code_is_isom_2017_2_for_every_classification() {
+    fn isom_code_is_isom_2017_2_for_every_classification() {
         use super::Classification::*;
         let expected = [
-            (ContourSimple, Some("101"), Some("contour")),
-            (Contour, Some("101"), Some("contour")),
-            (ContourIndex, Some("102"), Some("index contour")),
-            (ContourIntermed, Some("103"), Some("form line")),
-            (ContourIndexIntermed, Some("103"), Some("form line")),
-            (Depression, Some("101"), Some("depression contour")),
+            (ContourSimple, Some(IsomCode::C101_000), Some("contour")),
+            (Contour, Some(IsomCode::C101_000), Some("contour")),
+            (
+                ContourIndex,
+                Some(IsomCode::C102_000),
+                Some("index contour"),
+            ),
+            (ContourIntermed, Some(IsomCode::C103_000), Some("form line")),
+            (
+                ContourIndexIntermed,
+                Some(IsomCode::C103_000),
+                Some("form line"),
+            ),
+            (
+                Depression,
+                Some(IsomCode::C101_000),
+                Some("depression contour"),
+            ),
             (
                 DepressionIndex,
-                Some("102"),
+                Some(IsomCode::C102_000),
                 Some("depression index contour"),
             ),
             (
                 DepressionIntermed,
-                Some("103"),
+                Some(IsomCode::C103_000),
                 Some("depression form line"),
             ),
             (
                 DepressionIndexIntermed,
-                Some("103"),
+                Some(IsomCode::C103_000),
                 Some("depression form line"),
             ),
-            (Formline, Some("103"), Some("form line")),
+            (Formline, Some(IsomCode::C103_000), Some("form line")),
             (
                 FormlineDepression,
-                Some("103"),
+                Some(IsomCode::C103_000),
                 Some("depression form line"),
             ),
-            (Dotknoll, Some("109"), Some("knoll")),
-            (Udepression, Some("111"), Some("small depression")),
-            (UglyDotknoll, Some("109"), Some("knoll")),
-            (UglyUdepression, Some("111"), Some("small depression")),
+            (Dotknoll, Some(IsomCode::C109_000), Some("knoll")),
+            (
+                Udepression,
+                Some(IsomCode::C111_000),
+                Some("small depression"),
+            ),
+            (UglyDotknoll, Some(IsomCode::C109_000), Some("knoll")),
+            (
+                UglyUdepression,
+                Some(IsomCode::C111_000),
+                Some("small depression"),
+            ),
             (Knoll1010, None, None),
-            (Cliff2, Some("202"), Some("cliff")),
-            (Cliff3, Some("201"), Some("impassable cliff")),
-            (Cliff4, Some("201"), Some("impassable cliff")),
-            (SlopeLine, Some("101"), Some("slope line")),
-            (SmallDepression, Some("111"), Some("small depression")),
+            (Cliff2, Some(IsomCode::C202_000), Some("cliff")),
+            (Cliff3, Some(IsomCode::C201_000), Some("impassable cliff")),
+            (Cliff4, Some(IsomCode::C201_000), Some("impassable cliff")),
+            (SlopeLine, Some(IsomCode::C101_001), Some("slope line")),
+            (
+                SmallDepression,
+                Some(IsomCode::C111_000),
+                Some("small depression"),
+            ),
         ];
         for (c, code, name) in expected {
-            assert_eq!(c.symbol_code(), code, "{c:?}");
+            assert_eq!(c.isom_code(), code, "{c:?}");
             assert_eq!(c.symbol_name(), name, "{c:?}");
         }
     }
@@ -900,7 +926,7 @@ mod tests {
         dxf.to_dxf(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.matches("POLYLINE").count(), 1);
-        assert!(text.contains("  8\r\n102\r\n"));
+        assert!(text.contains("  8\r\n102.000\r\n"));
         assert!(!text.contains("1010"));
     }
 
@@ -919,8 +945,8 @@ mod tests {
         let mut out = Vec::new();
         dxf.to_dxf(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
-        assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n406\r\n 70\r\n1\r\n  0\r\n"));
-        assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n101\r\n  0\r\n"));
+        assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n406.000\r\n 70\r\n1\r\n  0\r\n"));
+        assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n101.000\r\n  0\r\n"));
     }
 
     /// `.dxf.bin` stores a classification as its variant index: new variants go at the

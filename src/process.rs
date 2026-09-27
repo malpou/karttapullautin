@@ -22,6 +22,7 @@ use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::XyzInternalWriter;
 use crate::io::xyz::XyzRecord;
+use crate::isom::IsomTable;
 use crate::knolls;
 use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, WorldFile};
 use crate::merge;
@@ -563,14 +564,15 @@ pub fn process_tile(
         // The .dxf.bin files leave this folder only when savetempfiles is on, so the
         // terrain reaches vector output as GeoJSON written next to its source.
         if config.vector_vege {
-            for (source, output) in [
-                ("out2.dxf.bin", geojson::CONTOURS),
-                ("dotknolls.dxf.bin", geojson::DOTKNOLLS),
+            for (input, source) in [
+                ("out2.dxf.bin", geojson::Source::Contours),
+                ("dotknolls.dxf.bin", geojson::Source::Knolls),
             ] {
-                geojson::bindxf_to_geojson(
+                geojson::bindxf_to_tables(
                     fs,
-                    &[tmpfolder.join(source)],
-                    &tmpfolder.join(output.file_name()),
+                    &[tmpfolder.join(input)],
+                    tmpfolder,
+                    source,
                     config.epsg,
                 )
                 .unwrap();
@@ -590,10 +592,11 @@ pub fn process_tile(
         cliffs::makecliffs(fs, config, tmpfolder, tile).unwrap();
 
         if config.vector_vege {
-            geojson::bindxf_to_geojson(
+            geojson::bindxf_to_tables(
                 fs,
                 &[tmpfolder.join("c2g.dxf.bin"), tmpfolder.join("c3g.dxf.bin")],
-                &tmpfolder.join(geojson::CLIFFS.file_name()),
+                tmpfolder,
+                geojson::Source::Cliffs,
                 config.epsg,
             )
             .unwrap();
@@ -1008,15 +1011,15 @@ pub fn batch_process(
             )
             .unwrap();
         }
-        // the vector outputs (vector_vege=1, or a vectorconf with shapefiles), cropped
-        // to the tile like the rasters
-        for output in geojson::GEOJSON_OUTPUTS {
-            let path = tmpfolder.join(output.file_name());
+        // the tables (vector_vege=1, or a vectorconf with shapefiles), cropped to the
+        // tile like the rasters
+        for &table in IsomTable::ALL {
+            let path = tmpfolder.join(geojson::file_name(table));
             if fs.exists(&path) {
                 geojson::crop_geojson(
                     fs,
                     &path,
-                    &Path::new(batchoutfolder).join(output.tile_file_name(laz)),
+                    &Path::new(batchoutfolder).join(geojson::tile_file_name(table, laz)),
                     &file_to_process.header.bounds,
                 )
                 .unwrap();

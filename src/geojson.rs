@@ -1,5 +1,6 @@
 //! GeoJSON output for vector features (contours, cliffs, knolls, vector-mapped
-//! shapefile features, vegetation areas), plus the serialization contract generated from the JSON Schema.
+//! shapefile features, vegetation areas), one file per table of the isom-maplibre symbol
+//! table (ADR 0006), plus the serialization contract generated from the JSON Schema.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufReader, BufWriter, Write};
@@ -10,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::geometry::{BinaryDxf, Classification, Geometry, Point2};
 use crate::io::fs::FileSystem;
+use crate::isom::{IsomCode, IsomTable};
 use crate::plan::Rect;
 use geojson_types::{FeatureGeometryType, FeatureProperties};
 
@@ -23,105 +25,77 @@ pub mod geojson_types {
     include!(concat!(env!("OUT_DIR"), "/geojson_types.rs"));
 }
 
-/// One GeoJSON vector output: its file-name suffix and whether it is also
-/// carried by `merged.dxf.bin` (and thus skipped from the merged-GeoJSON route
-/// in `export_combined` when that file exists).
-///
-/// Add new outputs here. Set `skip_when_merged_bin: true` if the feature also
-/// rides `merged.dxf.bin`.
-pub struct GeoJsonOutput {
-    pub name: &'static str,
-    pub skip_when_merged_bin: bool,
+/// File name of a table's GeoJSON: `<table>.geojson`. Per tile in its temp folder, and
+/// the combined export's publication of the whole batch in the batch output folder.
+pub fn file_name(table: IsomTable) -> String {
+    format!("{}.geojson", table.as_str())
 }
 
-impl GeoJsonOutput {
-    /// File name of this output in a temp folder: `<name>.geojson`.
-    pub fn file_name(&self) -> String {
-        format!("{}.geojson", self.name)
-    }
+/// File name of one tile's cropped table in the batch output folder:
+/// `<tile>_<table>.geojson`.
+pub fn tile_file_name(table: IsomTable, tile: &str) -> String {
+    format!("{tile}_{}", file_name(table))
+}
 
-    /// File name of one tile's cropped output in the batch output folder:
-    /// `<tile>_<name>.geojson`.
-    pub fn tile_file_name(&self, tile: &str) -> String {
-        format!("{tile}_{}", self.file_name())
-    }
-
-    /// File name of the batch merge of every tile's output: `merged_<name>.geojson`.
-    pub fn merged_file_name(&self) -> String {
-        self.tile_file_name(MERGED_PREFIX)
-    }
+/// File name of the batch merge of every tile's table: `merged_<table>.geojson`.
+pub fn merged_file_name(table: IsomTable) -> String {
+    tile_file_name(table, MERGED_PREFIX)
 }
 
 /// Prefix of the batch merge outputs in the batch output folder. Files carrying it are
 /// merge outputs, never merge inputs.
 pub const MERGED_PREFIX: &str = "merged";
 
-/// The combined export's outputs in the batch output folder: every merged vector output
-/// in one GeoJSON file and one DXF file, and the OCAD cross reference table that maps the
-/// DXF layers (symbol codes) to OCAD symbols.
-pub const COMBINED_GEOJSON: &str = "output.geojson";
+/// The combined export's DXF of every merged vector output in the batch output folder,
+/// and the OCAD cross reference table that maps its DXF layers (symbol codes) to OCAD
+/// symbols. Its GeoJSON is one [`file_name`] per table.
 pub const COMBINED_DXF: &str = "output.dxf";
 pub const COMBINED_CRT: &str = "output.ocdCrt";
 
-/// Contours (101, 102, and the depression and slope-line variants), from `out2.dxf.bin`.
-pub const CONTOURS: GeoJsonOutput = GeoJsonOutput {
-    name: "contours",
-    skip_when_merged_bin: true,
-};
-/// The renderer's form lines (103), from `formlines.dxf.bin`.
-pub const FORMLINES: GeoJsonOutput = GeoJsonOutput {
-    name: "formlines",
-    skip_when_merged_bin: true,
-};
-/// Knoll and small depression points (109, 111), from `dotknolls.dxf.bin`. Not skipped:
-/// `merged.dxf.bin` carries them too, but its points are never read, so this file is
-/// their only source.
-pub const DOTKNOLLS: GeoJsonOutput = GeoJsonOutput {
-    name: "dotknolls",
-    skip_when_merged_bin: false,
-};
-/// Cliffs (201, 202), from `c2g.dxf.bin` and `c3g.dxf.bin` in one file.
-pub const CLIFFS: GeoJsonOutput = GeoJsonOutput {
-    name: "cliffs",
-    skip_when_merged_bin: true,
-};
-/// Vegetation areas traced from the greenshade grid.
-pub const VEGETATION: GeoJsonOutput = GeoJsonOutput {
-    name: "vegetation",
-    skip_when_merged_bin: false,
-};
-/// Open land areas (ISOM 403).
-pub const OPEN_LAND: GeoJsonOutput = GeoJsonOutput {
-    name: "yellow",
-    skip_when_merged_bin: false,
-};
-/// Undergrowth areas.
-pub const UNDERGROWTH: GeoJsonOutput = GeoJsonOutput {
-    name: "undergrowth",
-    skip_when_merged_bin: false,
-};
-/// Shapefile lines matched by a vector mapping rule.
-pub const OSM_LINES: GeoJsonOutput = GeoJsonOutput {
-    name: "osm_lines",
-    skip_when_merged_bin: false,
-};
-/// Shapefile areas matched by a vector mapping rule.
-pub const OSM_AREAS: GeoJsonOutput = GeoJsonOutput {
-    name: "osm_areas",
-    skip_when_merged_bin: false,
-};
+/// Whether the batch `merged.dxf.bin` also carries a table, so that the combined export
+/// takes the table from there when it exists: contours, form lines and cliffs. Not the
+/// knolls: `merged.dxf.bin` carries them too, but its points are read only without the
+/// merged knolls table.
+fn in_merged_bin(table: IsomTable) -> bool {
+    matches!(table, IsomTable::Contours | IsomTable::Cliffs)
+}
 
-pub const GEOJSON_OUTPUTS: &[GeoJsonOutput] = &[
-    CONTOURS,
-    FORMLINES,
-    DOTKNOLLS,
-    CLIFFS,
-    VEGETATION,
-    OPEN_LAND,
-    UNDERGROWTH,
-    OSM_LINES,
-    OSM_AREAS,
-];
+/// The stage a vector feature comes from, told apart by its properties. A table can take
+/// features from several stages (contours and form lines in `contours`, the vegetation
+/// grids and a vector mapping in `vegetation_areas`), so each stage replaces only its own
+/// features there; see [`write_tables`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// Contours, index contours and slope lines, from `out2.dxf.bin`.
+    Contours,
+    /// The renderer's form lines (103.000), from `formlines.dxf.bin`.
+    FormLines,
+    /// Knoll and small depression points (109.000, 111.000), from `dotknolls.dxf.bin`.
+    Knolls,
+    /// Cliffs (201.000, 202.000), from `c2g.dxf.bin` and `c3g.dxf.bin`.
+    Cliffs,
+    /// Green shades, open land and undergrowth traced from the vegetation grids.
+    Vegetation,
+    /// Shapefile features matched by a vector mapping rule.
+    VectorMapping,
+}
+
+impl Source {
+    /// Whether a feature with these properties comes from this stage.
+    fn owns(self, props: &FeatureProperties) -> bool {
+        use FeatureProperties as P;
+        use geojson_types::ContourPropertiesIsomCode::X103000;
+        match (self, props) {
+            (Self::Contours, P::ContourProperties(p)) => p.isom_code != X103000,
+            (Self::FormLines, P::ContourProperties(p)) => p.isom_code == X103000,
+            (Self::Knolls, P::KnollProperties(_))
+            | (Self::Cliffs, P::CliffProperties(_))
+            | (Self::Vegetation, P::VegetationProperties(_))
+            | (Self::VectorMapping, P::OsmProperties(_)) => true,
+            _ => false,
+        }
+    }
+}
 
 /// Legacy GeoJSON `crs` member for a projected EPSG code. RFC 7946 dropped `crs`, but
 /// GIS tools still read it, and without it projected coordinates load misplaced.
@@ -147,42 +121,55 @@ fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Vec<Value> {
         .collect()
 }
 
-/// Typed GeoJSON properties for a terrain classification: the schema class (contour
-/// family, knoll and small depression, or cliff) that owns its symbol code.
-/// `elevation` is kept only for the contour family. None for a classification without
-/// a symbol code (the knoll-detector artifact), which is left out of the output.
+/// Typed GeoJSON properties for a terrain classification: the schema class of its
+/// code's table (contours, knolls and small depressions, or cliffs). `elevation` is kept
+/// only for contours. None for a classification the vector output leaves out: the
+/// knoll-detector artifact, which has no symbol code, and the half-interval contours,
+/// which the style would draw as form lines; the form lines are the renderer's
+/// selection of them ([`Source::FormLines`]).
 fn terrain_properties(
     c: Classification,
     elevation: Option<f64>,
 ) -> Option<geojson_types::FeatureProperties> {
     use geojson_types::{CliffProperties, ContourProperties, KnollProperties};
 
-    let code = c.symbol_code()?;
+    if c.is_intermed() {
+        return None;
+    }
+    let code = c.isom_code()?;
     let symbol_name = c.symbol_name().map(String::from);
     let flag = |set: bool| set.then_some(true);
-    // each arm lists exactly its schema enum, so the parse cannot fail
-    Some(match code {
-        "101" | "102" | "103" => ContourProperties {
-            symbol: code.parse().unwrap(),
+    Some(match code.table() {
+        IsomTable::Contours => ContourProperties {
+            isom_code: class_code(code),
             symbol_name,
             elevation,
             depression: flag(c.is_depression_line()),
-            slope_line: flag(c == Classification::SlopeLine),
         }
         .into(),
-        "109" | "111" => KnollProperties {
-            symbol: code.parse().unwrap(),
+        IsomTable::KnollsPoints => KnollProperties {
+            isom_code: class_code(code),
             symbol_name,
             ugly: flag(c.is_ugly()),
         }
         .into(),
-        "201" | "202" => CliffProperties {
-            symbol: code.parse().unwrap(),
+        IsomTable::Cliffs => CliffProperties {
+            isom_code: class_code(code),
             symbol_name,
         }
         .into(),
-        _ => unreachable!("symbol code {code} has no terrain schema class"),
+        table => unreachable!(
+            "{code} is in {}, which has no terrain class",
+            table.as_str()
+        ),
     })
+}
+
+/// A code as the schema class of its table types it; every code KP emits is listed there.
+fn class_code<T: std::str::FromStr>(code: IsomCode) -> T {
+    code.as_str()
+        .parse()
+        .unwrap_or_else(|_| panic!("the schema class of {code}'s table does not list it"))
 }
 
 fn feature(
@@ -216,12 +203,12 @@ fn terrain_feature(
 /// Typed GeoJSON properties of a shapefile record matched by a vector mapping rule:
 /// its symbol code, its category (the mapping's name), and `upper_level` only when set.
 fn osm_properties(
-    symbol: &str,
+    isom_code: IsomCode,
     category: &str,
     upper_level: bool,
 ) -> geojson_types::FeatureProperties {
     geojson_types::OsmProperties {
-        symbol: symbol.to_string(),
+        isom_code,
         category: category.to_string(),
         upper_level: upper_level.then_some(true),
     }
@@ -230,7 +217,7 @@ fn osm_properties(
 
 /// LineString feature for one part of a shapefile polyline matched by a vector mapping rule.
 pub fn osm_line(
-    symbol: &str,
+    isom_code: IsomCode,
     category: &str,
     upper_level: bool,
     line: &[[f64; 2]],
@@ -238,14 +225,14 @@ pub fn osm_line(
     feature(
         FeatureGeometryType::LineString,
         coords_line(line.iter().copied()),
-        osm_properties(symbol, category, upper_level),
+        osm_properties(isom_code, category, upper_level),
     )
 }
 
 /// Polygon feature (exterior ring, then holes) for a shapefile polygon matched by a
 /// vector mapping rule.
 pub fn osm_area(
-    symbol: &str,
+    isom_code: IsomCode,
     category: &str,
     upper_level: bool,
     rings: &[Vec<[f64; 2]>],
@@ -256,7 +243,7 @@ pub fn osm_area(
             .iter()
             .map(|ring| Value::Array(coords_line(ring.iter().copied())))
             .collect(),
-        osm_properties(symbol, category, upper_level),
+        osm_properties(isom_code, category, upper_level),
     )
 }
 
@@ -264,7 +251,7 @@ pub fn osm_area(
 /// greenshade index as `shade` when given. Rings are open (first vertex not repeated);
 /// GeoJSON rings are closed here.
 pub fn vegetation_area(
-    symbol: geojson_types::VegetationPropertiesSymbol,
+    isom_code: geojson_types::VegetationPropertiesIsomCode,
     shade: Option<std::num::NonZeroU64>,
     rings: &[Vec<Point2>],
 ) -> geojson_types::Feature {
@@ -277,12 +264,24 @@ pub fn vegetation_area(
                 Value::Array(coords_line(closed.map(|p| [p.x, p.y])))
             })
             .collect(),
-        geojson_types::VegetationProperties { symbol, shade }.into(),
+        geojson_types::VegetationProperties { isom_code, shade }.into(),
     )
 }
 
-/// Write features as one GeoJSON FeatureCollection (with the legacy `crs` member when
-/// an EPSG code is given).
+/// The symbol code a feature is drawn with.
+fn isom_code(props: &FeatureProperties) -> IsomCode {
+    let code = match props {
+        FeatureProperties::ContourProperties(p) => p.isom_code.to_string(),
+        FeatureProperties::KnollProperties(p) => p.isom_code.to_string(),
+        FeatureProperties::CliffProperties(p) => p.isom_code.to_string(),
+        FeatureProperties::VegetationProperties(p) => p.isom_code.to_string(),
+        FeatureProperties::OsmProperties(p) => return p.isom_code,
+    };
+    code.parse()
+        .unwrap_or_else(|_| panic!("the schema lists {code}, which the symbol table does not"))
+}
+
+/// Write one FeatureCollection (with the legacy `crs` member when an EPSG code is given).
 pub fn write_feature_collection(
     fs: &impl FileSystem,
     output: &std::path::Path,
@@ -298,6 +297,42 @@ pub fn write_feature_collection(
             type_: json!("FeatureCollection"),
         },
     )
+}
+
+/// Write the features of one stage into the tables in `folder`, each feature to the
+/// table of its symbol code. A table keeps the features of the other stages and loses
+/// what `source` wrote there before, so a stage that runs again replaces its features
+/// instead of adding to them. A table file is created only when it gets a feature.
+pub fn write_tables(
+    fs: &impl FileSystem,
+    folder: &Path,
+    source: Source,
+    features: Vec<geojson_types::Feature>,
+    epsg: Option<u32>,
+) -> anyhow::Result<()> {
+    let mut by_table: HashMap<IsomTable, Vec<geojson_types::Feature>> = HashMap::new();
+    for f in features {
+        debug_assert!(source.owns(&f.properties), "{source:?} wrote {f:?}");
+        by_table
+            .entry(isom_code(&f.properties).table())
+            .or_default()
+            .push(f);
+    }
+    for &table in IsomTable::ALL {
+        let new = by_table.remove(&table).unwrap_or_default();
+        let path = folder.join(file_name(table));
+        let mut features = if fs.exists(&path) {
+            read_collection(fs, &path)?.features
+        } else if new.is_empty() {
+            continue;
+        } else {
+            Vec::new()
+        };
+        features.retain(|f| !source.owns(&f.properties));
+        features.extend(new);
+        write_feature_collection(fs, &path, features, epsg)?;
+    }
+    Ok(())
 }
 
 fn write_collection(
@@ -319,16 +354,18 @@ fn read_collection(
     Ok(serde_json::from_reader(BufReader::new(fs.open(path)?))?)
 }
 
-/// Convert one or more binary DXF files (contours, cliffs, knolls...) into a single
-/// GeoJSON FeatureCollection. Polylines become LineStrings and points become Points,
-/// each with the properties of its classification (see [`terrain_properties`]).
+/// Write the terrain of one or more binary DXF files (contours, cliffs, knolls...) from
+/// `source` into the tables in `folder` (see [`write_tables`]). Polylines become
+/// LineStrings and points become Points, each with the properties of its classification
+/// (see [`terrain_properties`]).
 ///
 /// Property schema: see `schema/geojson.schema.json` ($defs/ContourProperties,
 /// KnollProperties, CliffProperties).
-pub fn bindxf_to_geojson(
+pub fn bindxf_to_tables(
     fs: &impl FileSystem,
     inputs: &[std::path::PathBuf],
-    output: &std::path::Path,
+    folder: &Path,
+    source: Source,
     epsg: Option<u32>,
 ) -> anyhow::Result<()> {
     let mut features = Vec::new();
@@ -357,7 +394,7 @@ pub fn bindxf_to_geojson(
             }
         }
     }
-    write_feature_collection(fs, output, features, epsg)
+    write_tables(fs, folder, source, features, epsg)
 }
 
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -470,17 +507,18 @@ fn break_at_knolls(pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> 
     parts
 }
 
-/// True for the contour family (101 contour, 102 index, 103 form line): the symbols the
-/// ISOM contour rules above apply to.
-fn is_contour_family(symbol: &str) -> bool {
-    matches!(symbol, "101" | "102" | "103")
+/// True for the contour family (101 contour and its slope line, 102 index, 103 form
+/// line): the symbols the ISOM contour rules above apply to.
+fn is_contour_family(code: IsomCode) -> bool {
+    use IsomCode::*;
+    matches!(code, C101_000 | C101_001 | C102_000 | C103_000)
 }
 
 /// Apply the ISOM contour rules to one published line: generalise detail below what the
 /// symbol can carry, then break where a knoll symbol needs room. Anything that is not a
 /// contour passes through as a single piece, untouched.
-fn conform_contour(symbol: &str, pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
-    if !is_contour_family(symbol) {
+fn conform_contour(code: IsomCode, pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+    if !is_contour_family(code) {
         return vec![pts.to_vec()];
     }
     break_at_knolls(&generalise_contour(pts), knolls)
@@ -491,7 +529,7 @@ fn conform_contour(symbol: &str, pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<V
 const POINT_MIN_SPACING_M: f64 = 12.0;
 
 /// The knoll and small depression point symbols that survive to the map: the Point
-/// features of a dot knolls GeoJSON file (see [`DOTKNOLLS`]) through a greedy spacing
+/// features of a `knolls_points` table through a greedy spacing
 /// filter ranked by certainty, so the detector's definite symbols win over the `ugly`
 /// ones when two candidates are closer than the minimum. A missing file has none.
 pub(crate) fn published_knolls(
@@ -534,20 +572,9 @@ fn space_knolls(
     kept
 }
 
-// Batch mode: each tile's GeoJSON is cropped to the tile into the batch output folder,
-// the tiles are merged per output, and the combined export publishes every merged
-// output as one GeoJSON file and one DXF file.
-
-/// The symbol code a feature is drawn with.
-fn symbol(props: &FeatureProperties) -> String {
-    match props {
-        FeatureProperties::ContourProperties(p) => p.symbol.to_string(),
-        FeatureProperties::KnollProperties(p) => p.symbol.to_string(),
-        FeatureProperties::CliffProperties(p) => p.symbol.to_string(),
-        FeatureProperties::VegetationProperties(p) => p.symbol.to_string(),
-        FeatureProperties::OsmProperties(p) => p.symbol.clone(),
-    }
-}
+// Batch mode: each tile's tables are cropped to the tile into the batch output folder,
+// the tiles are merged per table, and the combined export publishes every merged table
+// under its own name, and all of them as one DXF file.
 
 /// The vertices of one line or ring (`[[x, y], ...]`).
 fn line_points(coords: &[Value]) -> Vec<[f64; 2]> {
@@ -747,13 +774,13 @@ pub fn crop_geojson(
     write_collection(fs, output, &collection)
 }
 
-/// Merge the per-tile `<tile>_<name>.geojson` files in the batch output folder into
-/// `merged_<name>.geojson`, for every output in [`GEOJSON_OUTPUTS`]. Tiles are taken in
-/// file name order; the first tile's `crs` is carried over.
+/// Merge the per-tile `<tile>_<table>.geojson` files in the batch output folder into
+/// `merged_<table>.geojson`, for every table. Tiles are taken in file name order; the
+/// first tile's `crs` is carried over.
 pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &Path) -> anyhow::Result<()> {
-    for output in GEOJSON_OUTPUTS {
-        let suffix = output.tile_file_name("");
-        let merged_name = output.merged_file_name();
+    for &table in IsomTable::ALL {
+        let suffix = tile_file_name(table, "");
+        let merged_name = merged_file_name(table);
         let mut files: Vec<_> = fs
             .list(batchoutfolder)?
             .into_iter()
@@ -764,7 +791,7 @@ pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &Path) -> anyhow::Res
             })
             .collect();
         if files.is_empty() {
-            info!("No files found for suffix {}, skipping...", output.name);
+            info!("No files found for table {}, skipping...", table.as_str());
             continue;
         }
         files.sort();
@@ -780,11 +807,12 @@ pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &Path) -> anyhow::Res
 
 /// Symbols whose geometry is organic and gets Bezier curves in the combined DXF (and the
 /// same curve, sampled, in the combined GeoJSON). Roads and buildings stay straight.
-fn curve_symbol(symbol: &str) -> bool {
-    is_contour_family(symbol)
+fn curve_symbol(code: IsomCode) -> bool {
+    use IsomCode::*;
+    is_contour_family(code)
         || matches!(
-            symbol,
-            "201" | "202" | "306" | "403" | "406" | "407" | "408" | "410"
+            code,
+            C201_000 | C202_000 | C306_000 | C403_000 | C406_000 | C407_000 | C408_000 | C410_000
         )
 }
 
@@ -842,8 +870,8 @@ fn fit_bezier(pts: &[[f64; 2]], closed: bool) -> Option<Vec<[f64; 2]>> {
 /// The polyline a GeoJSON feature gets for a curve symbol: the same fitted Bezier the
 /// DXF SPLINE uses, densely sampled (GeoJSON has no curve geometry). Other symbols and
 /// too-short lines pass through unchanged.
-fn curve_points(symbol: &str, pts: &[[f64; 2]], closed: bool) -> Vec<[f64; 2]> {
-    if !(curve_symbol(symbol) && pts.len() > 3) {
+fn curve_points(code: IsomCode, pts: &[[f64; 2]], closed: bool) -> Vec<[f64; 2]> {
+    if !(curve_symbol(code) && pts.len() > 3) {
         return pts.to_vec();
     }
     let Some(ctrl) = fit_bezier(pts, closed) else {
@@ -872,17 +900,17 @@ fn curve_points(symbol: &str, pts: &[[f64; 2]], closed: bool) -> Vec<[f64; 2]> {
 /// against the knolls, since fitting a curve through a broken end bows it back over the
 /// very symbol the break was made for (measured: 2.95 m from a symbol of 3 m radius).
 fn published_pieces(
-    symbol: &str,
+    code: IsomCode,
     pts: &[[f64; 2]],
     closed: bool,
     knolls: &[[f64; 2]],
 ) -> Vec<Vec<[f64; 2]>> {
-    conform_contour(symbol, pts, knolls)
+    conform_contour(code, pts, knolls)
         .into_iter()
         .flat_map(|piece| {
             let still_closed = closed && piece.first() == piece.last();
-            let sampled = curve_points(symbol, &piece, still_closed);
-            if is_contour_family(symbol) {
+            let sampled = curve_points(code, &piece, still_closed);
+            if is_contour_family(code) {
                 break_at_knolls(&sampled, knolls)
             } else {
                 vec![sampled]
@@ -893,8 +921,8 @@ fn published_pieces(
 
 /// One Chaikin pass takes the segment jitter out of a contour-family line before the
 /// ISOM rules and the curve fit; other symbols pass through.
-fn smoothed(symbol: &str, pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    if !(is_contour_family(symbol) && pts.len() > 3) {
+fn smoothed(code: IsomCode, pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if !(is_contour_family(code) && pts.len() > 3) {
         return pts.to_vec();
     }
     let as_p2: Vec<Point2> = pts.iter().map(|q| Point2::new(q[0], q[1])).collect();
@@ -1018,13 +1046,6 @@ fn chain_cliff_dashes(mids: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
     chains
 }
 
-/// OCAD symbol number for a DXF layer (a symbol code) in the cross reference table:
-/// `NNN.000`. None for a layer that is not a plain symbol number.
-fn crt_symbol(symbol: &str) -> Option<String> {
-    (!symbol.is_empty() && symbol.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| format!("{symbol}.000"))
-}
-
 /// Write one SPLINE entity from the fitted piecewise cubic Bezier (see [`fit_bezier`]).
 fn dxf_spline(out: &mut String, layer: &str, pts: &[[f64; 2]], closed: bool) {
     use std::fmt::Write as _;
@@ -1076,11 +1097,11 @@ fn dxf_polyline(out: &mut String, layer: &str, pts: &[[f64; 2]], closed: bool, e
 }
 
 /// The combined export being assembled: DXF entities (layer = symbol code), GeoJSON
-/// features, the layers used and the extent.
+/// features per table, the layers used and the extent.
 struct Combined {
     dxf: String,
-    features: Vec<geojson_types::Feature>,
-    layers: BTreeSet<String>,
+    tables: HashMap<IsomTable, Vec<geojson_types::Feature>>,
+    layers: BTreeSet<IsomCode>,
     min: [f64; 2],
     max: [f64; 2],
 }
@@ -1089,7 +1110,7 @@ impl Combined {
     fn new() -> Self {
         Self {
             dxf: String::new(),
-            features: Vec::new(),
+            tables: HashMap::new(),
             layers: BTreeSet::new(),
             min: [f64::MAX; 2],
             max: [f64::MIN; 2],
@@ -1105,98 +1126,112 @@ impl Combined {
         }
     }
 
+    /// One GeoJSON feature, to the table of its symbol code.
+    fn feature(
+        &mut self,
+        geometry: FeatureGeometryType,
+        coordinates: Vec<Value>,
+        props: FeatureProperties,
+    ) {
+        let table = isom_code(&props).table();
+        self.tables
+            .entry(table)
+            .or_default()
+            .push(feature(geometry, coordinates, props));
+    }
+
     /// One DXF entity: SPLINE for curve symbols, POLYLINE otherwise.
-    fn dxf_entity(&mut self, symbol: &str, pts: &[[f64; 2]], closed: bool, elev: Option<f64>) {
+    fn dxf_entity(&mut self, code: IsomCode, pts: &[[f64; 2]], closed: bool, elev: Option<f64>) {
         self.grow(pts);
-        if curve_symbol(symbol) && pts.len() > 3 {
-            dxf_spline(&mut self.dxf, symbol, pts, closed);
+        if curve_symbol(code) && pts.len() > 3 {
+            dxf_spline(&mut self.dxf, code.as_str(), pts, closed);
         } else {
-            dxf_polyline(&mut self.dxf, symbol, pts, closed, elev);
+            dxf_polyline(&mut self.dxf, code.as_str(), pts, closed, elev);
         }
-        self.layers.insert(symbol.to_string());
+        self.layers.insert(code);
     }
 
     /// A line through the ISOM rules: each published piece becomes a DXF entity and a
     /// LineString feature with the line's properties. A line that ends where it starts
     /// (a contour loop) stays closed until a knoll breaks it.
     fn line(&mut self, pts: &[[f64; 2]], props: &FeatureProperties, knolls: &[[f64; 2]]) {
-        let symbol = symbol(props);
+        let code = isom_code(props);
         let elevation = match props {
             FeatureProperties::ContourProperties(p) => p.elevation,
             _ => None,
         };
-        let pts = smoothed(&symbol, pts);
+        let pts = smoothed(code, pts);
         let closed = pts.len() > 3 && pts.first() == pts.last();
-        for piece in published_pieces(&symbol, &pts, closed, knolls) {
+        for piece in published_pieces(code, &pts, closed, knolls) {
             let closed = closed && piece.first() == piece.last();
-            self.dxf_entity(&symbol, &piece, closed, elevation);
-            self.features.push(feature(
+            self.dxf_entity(code, &piece, closed, elevation);
+            self.feature(
                 FeatureGeometryType::LineString,
                 coords_line(piece),
                 props.clone(),
-            ));
+            );
         }
     }
 
     /// An area: each ring (curve-sampled for curve symbols) a closed DXF entity, all of
     /// them one Polygon feature.
     fn polygon(&mut self, rings: &[Vec<[f64; 2]>], props: FeatureProperties, knolls: &[[f64; 2]]) {
-        let symbol = symbol(&props);
+        let code = isom_code(&props);
         let mut coords = Vec::new();
         for ring in rings {
-            for piece in published_pieces(&symbol, ring, true, knolls) {
-                self.dxf_entity(&symbol, &piece, true, None);
+            for piece in published_pieces(code, ring, true, knolls) {
+                self.dxf_entity(code, &piece, true, None);
                 coords.push(Value::Array(coords_line(piece)));
             }
         }
         if !coords.is_empty() {
-            self.features
-                .push(feature(FeatureGeometryType::Polygon, coords, props));
+            self.feature(FeatureGeometryType::Polygon, coords, props);
         }
     }
 
     fn point(&mut self, p: [f64; 2], props: FeatureProperties) {
         use std::fmt::Write as _;
-        let symbol = symbol(&props);
+        let code = isom_code(&props);
         self.grow(&[p]);
         let _ = write!(
             self.dxf,
-            "POINT\r\n  8\r\n{symbol}\r\n 10\r\n{}\r\n 20\r\n{}\r\n 50\r\n0\r\n  0\r\n",
+            "POINT\r\n  8\r\n{code}\r\n 10\r\n{}\r\n 20\r\n{}\r\n 50\r\n0\r\n  0\r\n",
             p[0], p[1]
         );
-        self.features.push(feature(
+        self.feature(
             FeatureGeometryType::Point,
             vec![json!(r2(p[0])), json!(r2(p[1]))],
             props,
-        ));
-        self.layers.insert(symbol);
+        );
+        self.layers.insert(code);
     }
 
     /// A cliff line chained from dashes: a DXF entity and the sampled curve as a
     /// LineString feature.
     fn cliff(&mut self, chain: &[[f64; 2]], props: FeatureProperties) {
-        let symbol = symbol(&props);
-        self.dxf_entity(&symbol, chain, false, None);
-        self.features.push(feature(
+        let code = isom_code(&props);
+        self.dxf_entity(code, chain, false, None);
+        self.feature(
             FeatureGeometryType::LineString,
-            coords_line(curve_points(&symbol, chain, false)),
+            coords_line(curve_points(code, chain, false)),
             props,
-        ));
+        );
     }
 }
 
-/// Combine every merged vector output in the batch output folder into [`COMBINED_GEOJSON`]
-/// and [`COMBINED_DXF`] (layer names = symbol codes), plus [`COMBINED_CRT`], the cross
-/// reference table for OCAD's "Import DXF" layer-to-symbol conversion.
+/// Combine every merged table in the batch output folder into one GeoJSON file per
+/// table ([`file_name`], every table, empty ones included, so none is left over from an
+/// earlier run) and [`COMBINED_DXF`] (layer names = symbol codes), plus [`COMBINED_CRT`],
+/// the cross reference table for OCAD's "Import DXF" layer-to-symbol conversion.
 ///
 /// Sources: `merged_bin` (the batch `merged.dxf.bin`, which exists when the tiles kept
-/// their `.dxf.bin` files, `savetempfiles=1`) for the outputs flagged
-/// `skip_when_merged_bin`, and the `merged_<name>.geojson` files for every other output
-/// (and for all of them when `merged_bin` is missing). On the way:
+/// their `.dxf.bin` files, `savetempfiles=1`) for the tables it carries (see
+/// [`in_merged_bin`]), and the `merged_<table>.geojson` files for every other table (and
+/// for all of them when `merged_bin` is missing). On the way:
 /// - knoll and small depression points: spacing-filtered by [`published_knolls`];
 /// - contours and form lines: one Chaikin pass, ISOM generalisation, broken around the
-///   published knolls, and the half-interval contours left out (as `merged.dxf.bin`
-///   leaves them out; 103 is the renderer's form lines);
+///   published knolls (`merged.dxf.bin` leaves the half-interval contours out, as the
+///   tables do);
 /// - cliffs: KP's per-cell dashes chained into cliff lines, too-short faces dropped;
 /// - curve symbols get Bezier SPLINEs in the DXF and the same curve, sampled, in the
 ///   GeoJSON.
@@ -1208,7 +1243,7 @@ pub fn export_combined(
     merged_bin: &Path,
     epsg: Option<u32>,
 ) -> anyhow::Result<()> {
-    use geojson_types::{ContourPropertiesSymbol, FeatureProperties as P};
+    use geojson_types::FeatureProperties as P;
 
     let have_merged_bin = fs.exists(merged_bin);
     let mut bin_lines: Vec<(Vec<[f64; 2]>, Classification, Option<f64>)> = Vec::new();
@@ -1238,11 +1273,11 @@ pub fn export_combined(
     }
 
     // The point symbols are settled first: ISOM makes the contours give way to them.
-    // The merged dot knolls GeoJSON is their source; merged.dxf.bin carries the same
-    // points and stands in only without it (vector_vege=0).
-    let dotknolls = batchoutfolder.join(DOTKNOLLS.merged_file_name());
-    let knolls = if fs.exists(&dotknolls) {
-        published_knolls(fs, &dotknolls)?
+    // The merged knolls table is their source; merged.dxf.bin carries the same points
+    // and stands in only without it (vector_vege=0).
+    let knolls_table = batchoutfolder.join(merged_file_name(IsomTable::KnollsPoints));
+    let knolls = if fs.exists(&knolls_table) {
+        published_knolls(fs, &knolls_table)?
     } else {
         space_knolls(bin_knolls)
     };
@@ -1255,7 +1290,7 @@ pub fn export_combined(
         if let (Some(a), Some(b)) = (pts.first(), pts.last()) {
             let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
             cliffs
-                .entry(props.symbol)
+                .entry(props.isom_code)
                 .or_insert_with(|| (props, Vec::new()))
                 .1
                 .push(mid);
@@ -1270,20 +1305,14 @@ pub fn export_combined(
         }
     }
 
-    for output in GEOJSON_OUTPUTS {
-        if output.skip_when_merged_bin && have_merged_bin {
+    for &table in IsomTable::ALL {
+        if in_merged_bin(table) && have_merged_bin {
             continue; // taken from merged.dxf.bin above
         }
-        let path = batchoutfolder.join(output.merged_file_name());
+        let path = batchoutfolder.join(merged_file_name(table));
         if !fs.exists(&path) {
             continue;
         }
-        // the half-interval contours: ISOM has no symbol for them, and merged.dxf.bin
-        // leaves them out too (103 is the renderer's form lines, from FORMLINES)
-        let half_interval = |p: &P| {
-            output.name == CONTOURS.name
-                && matches!(p, P::ContourProperties(c) if c.symbol == ContourPropertiesSymbol::X103)
-        };
         for f in read_collection(fs, &path)?.features {
             let coords = &f.geometry.coordinates;
             match (f.geometry.type_, f.properties) {
@@ -1292,7 +1321,6 @@ pub fn export_combined(
                 (FeatureGeometryType::LineString, P::CliffProperties(p)) => {
                     add_dash(p, &line_points(coords))
                 }
-                (FeatureGeometryType::LineString, props) if half_interval(&props) => {}
                 (FeatureGeometryType::LineString, props) => {
                     out.line(&line_points(coords), &props, &knoll_pts)
                 }
@@ -1318,12 +1346,10 @@ pub fn export_combined(
         return Ok(());
     }
 
-    write_feature_collection(
-        fs,
-        &batchoutfolder.join(COMBINED_GEOJSON),
-        out.features,
-        epsg,
-    )?;
+    for &table in IsomTable::ALL {
+        let features = out.tables.remove(&table).unwrap_or_default();
+        write_feature_collection(fs, &batchoutfolder.join(file_name(table)), features, epsg)?;
+    }
 
     // $ACADVER is required for SPLINE entities
     let ([xmin, ymin], [xmax, ymax]) = (out.min, out.max);
@@ -1336,12 +1362,11 @@ pub fn export_combined(
     w.write_all(b"ENDSEC\r\n  0\r\nEOF\r\n")?;
     w.flush()?;
 
-    // OCAD cross reference table: "SYMBOL LAYERNAME" per DXF layer
+    // OCAD cross reference table: "SYMBOL LAYERNAME" per DXF layer; the layer is the
+    // symbol code, which is also the OCAD symbol number
     let mut crt = BufWriter::new(fs.create(batchoutfolder.join(COMBINED_CRT))?);
-    for layer in &out.layers {
-        if let Some(symbol) = crt_symbol(layer) {
-            writeln!(crt, "{symbol} {layer}")?;
-        }
+    for code in &out.layers {
+        writeln!(crt, "{code} {code}")?;
     }
     crt.flush()?;
     Ok(())
@@ -1353,57 +1378,16 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     #[test]
-    fn geojson_outputs_no_duplicate_names() {
-        let mut names: Vec<&str> = GEOJSON_OUTPUTS.iter().map(|o| o.name).collect();
-        names.sort();
-        assert!(
-            names.windows(2).all(|w| w[0] != w[1]),
-            "duplicate output names: {names:?}"
+    fn table_file_names() {
+        assert_eq!(file_name(IsomTable::KnollsPoints), "knolls_points.geojson");
+        assert_eq!(
+            tile_file_name(IsomTable::Contours, "tile"),
+            "tile_contours.geojson"
         );
-    }
-
-    #[test]
-    fn bindxf_to_geojson_single_path_produces_valid_collection() {
-        use crate::geometry::{BinaryDxf, Bounds, Classification, Geometry, Point2, Polylines};
-        use crate::io::fs::FileSystem;
-        use std::path::PathBuf;
-
-        let fs = crate::io::fs::memory::MemoryFileSystem::new();
-
-        // one 2-point polyline classified as a Contour (symbol "101")
-        let mut pls = Polylines::new();
-        pls.push(
-            vec![Point2::new(0.0, 0.0), Point2::new(100.0, 100.0)],
-            Classification::Contour,
+        assert_eq!(
+            merged_file_name(IsomTable::VegetationAreas),
+            "merged_vegetation_areas.geojson"
         );
-        // the knoll-detector artifact has no symbol code and is left out
-        pls.push(
-            vec![Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)],
-            Classification::Knoll1010,
-        );
-        let dxf = BinaryDxf::new(
-            Bounds::new(0.0, 100.0, 0.0, 100.0),
-            vec![Geometry::Polylines2(pls)],
-        );
-
-        // serialize into the memory FS
-        dxf.to_writer(&mut fs.create("test.dxf.bin").unwrap())
-            .unwrap();
-
-        bindxf_to_geojson(
-            &fs,
-            &[PathBuf::from("test.dxf.bin")],
-            std::path::Path::new("out.geojson"),
-            None,
-        )
-        .unwrap();
-
-        let val: Value = serde_json::from_reader(fs.open("out.geojson").unwrap()).unwrap();
-        assert_eq!(val["type"], "FeatureCollection");
-        let feats = val["features"].as_array().unwrap();
-        assert_eq!(feats.len(), 1);
-        assert_eq!(feats[0]["geometry"]["type"], "LineString");
-        assert_eq!(feats[0]["properties"]["symbol"], "101");
     }
 
     /// Write `geometry` as a binary DXF at `path` in the memory file system.
@@ -1414,13 +1398,14 @@ mod tests {
             .unwrap();
     }
 
-    fn read_features(fs: &impl FileSystem, path: &str) -> Vec<Value> {
-        let val: Value = serde_json::from_reader(fs.open(path).unwrap()).unwrap();
+    fn read_features(fs: &impl FileSystem, table: IsomTable) -> Vec<Value> {
+        let val: Value = serde_json::from_reader(fs.open(file_name(table)).unwrap()).unwrap();
+        assert_eq!(val["type"], "FeatureCollection");
         val["features"].as_array().unwrap().clone()
     }
 
     #[test]
-    fn bindxf_to_geojson_maps_each_geometry_type() {
+    fn bindxf_to_tables_maps_each_geometry_type() {
         use crate::geometry::{Point3, Points, Polylines};
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
 
@@ -1429,45 +1414,55 @@ mod tests {
             vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
             (Classification::ContourIndex, 45.0),
         );
-        let mut formlines = Polylines::new();
-        formlines.push(
+        // a half-interval contour: the style would draw it as a form line, so it is left out
+        contours.push(
+            vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
+            (Classification::ContourIntermed, 42.5),
+        );
+        let mut slope_lines = Polylines::new();
+        slope_lines.push(
             vec![Point2::new(0.0, 0.0), Point2::new(2.0, 2.0)],
-            Classification::Formline,
+            Classification::SlopeLine,
+        );
+        // the knoll-detector artifact has no symbol code and is left out
+        slope_lines.push(
+            vec![Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)],
+            Classification::Knoll1010,
         );
         let mut knolls = Points::new();
         knolls.push(Point2::new(5.004, 6.0), Classification::Dotknoll);
-        write_bin(
-            &fs,
-            "in.dxf.bin",
-            vec![contours.into(), formlines.into(), knolls.into()],
-        );
+        write_bin(&fs, "in.dxf.bin", vec![contours.into(), slope_lines.into()]);
+        write_bin(&fs, "knolls.dxf.bin", vec![knolls.into()]);
 
-        bindxf_to_geojson(
-            &fs,
-            &[PathBuf::from("in.dxf.bin")],
-            Path::new("out.geojson"),
-            None,
-        )
-        .unwrap();
-        let feats = read_features(&fs, "out.geojson");
-        assert_eq!(feats.len(), 3);
-
+        let folder = Path::new("");
+        for (input, source) in [
+            ("in.dxf.bin", Source::Contours),
+            ("knolls.dxf.bin", Source::Knolls),
+        ] {
+            bindxf_to_tables(&fs, &[PathBuf::from(input)], folder, source, None).unwrap();
+        }
+        let contours = read_features(&fs, IsomTable::Contours);
+        assert_eq!(contours.len(), 2);
         // a 3D polyline is a LineString that keeps its elevation
-        assert_eq!(feats[0]["geometry"]["type"], "LineString");
-        assert_eq!(feats[0]["properties"]["symbol"], "102");
-        assert_eq!(feats[0]["properties"]["elevation"], 45.0);
+        assert_eq!(contours[0]["geometry"]["type"], "LineString");
+        assert_eq!(contours[0]["properties"]["isom_code"], "102.000");
+        assert_eq!(contours[0]["properties"]["elevation"], 45.0);
         // a 2D polyline has none
-        assert_eq!(feats[1]["geometry"]["type"], "LineString");
-        assert_eq!(feats[1]["properties"]["symbol"], "103");
-        assert!(feats[1]["properties"].get("elevation").is_none());
-        // a point is a Point
-        assert_eq!(feats[2]["geometry"]["type"], "Point");
-        assert_eq!(feats[2]["geometry"]["coordinates"], json!([5.0, 6.0]));
-        assert_eq!(feats[2]["properties"]["symbol"], "109");
+        assert_eq!(contours[1]["geometry"]["type"], "LineString");
+        assert_eq!(contours[1]["properties"]["isom_code"], "101.001");
+        assert!(contours[1]["properties"].get("elevation").is_none());
+        // a point is a Point, in its own table
+        let knolls = read_features(&fs, IsomTable::KnollsPoints);
+        assert_eq!(knolls.len(), 1);
+        assert_eq!(knolls[0]["geometry"]["type"], "Point");
+        assert_eq!(knolls[0]["geometry"]["coordinates"], json!([5.0, 6.0]));
+        assert_eq!(knolls[0]["properties"]["isom_code"], "109.000");
+        // no table file for a table nothing was written to
+        assert!(!fs.exists(file_name(IsomTable::Cliffs)));
     }
 
     #[test]
-    fn bindxf_to_geojson_combines_both_cliff_files() {
+    fn bindxf_to_tables_combines_both_cliff_files() {
         use crate::geometry::Polylines;
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         for (path, class) in [
@@ -1479,18 +1474,58 @@ mod tests {
             write_bin(&fs, path, vec![cliffs.into()]);
         }
 
-        bindxf_to_geojson(
+        bindxf_to_tables(
             &fs,
             &[PathBuf::from("c2g.dxf.bin"), PathBuf::from("c3g.dxf.bin")],
-            Path::new(&CLIFFS.file_name()),
+            Path::new(""),
+            Source::Cliffs,
             None,
         )
         .unwrap();
-        let symbols: Vec<Value> = read_features(&fs, &CLIFFS.file_name())
+        let codes: Vec<Value> = read_features(&fs, IsomTable::Cliffs)
             .iter()
-            .map(|f| f["properties"]["symbol"].clone())
+            .map(|f| f["properties"]["isom_code"].clone())
             .collect();
-        assert_eq!(symbols, [json!("202"), json!("201")]);
+        assert_eq!(codes, [json!("202.000"), json!("201.000")]);
+    }
+
+    /// Two stages share the contours table: each run of a stage replaces its own
+    /// features there and keeps the other's.
+    #[test]
+    fn write_tables_replaces_only_the_sources_own_features() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let folder = Path::new("");
+        let line = |c, x: f64| terrain_line(c, &[[x, 0.0], [x, 1.0]]);
+        let write = |source, features| write_tables(&fs, folder, source, features, None).unwrap();
+        write(Source::Contours, vec![line(Classification::Contour, 1.0)]);
+        write(Source::FormLines, vec![line(Classification::Formline, 2.0)]);
+        write(Source::FormLines, vec![line(Classification::Formline, 3.0)]);
+        write(
+            Source::VectorMapping,
+            vec![osm_area(
+                IsomCode::C401_000,
+                "farm",
+                false,
+                &[vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]],
+            )],
+        );
+        write(
+            Source::Contours,
+            vec![line(Classification::ContourIndex, 4.0)],
+        );
+
+        let summary: Vec<(Value, f64)> = read_features(&fs, IsomTable::Contours)
+            .iter()
+            .map(|f| {
+                let x = f["geometry"]["coordinates"][0][0].as_f64().unwrap();
+                (f["properties"]["isom_code"].clone(), x)
+            })
+            .collect();
+        assert_eq!(summary, [(json!("103.000"), 3.0), (json!("102.000"), 4.0)]);
+        // the mapped open land went to its own table
+        let farm = read_features(&fs, IsomTable::VegetationAreas);
+        assert_eq!(farm[0]["properties"]["isom_code"], "401.000");
+        assert_eq!(farm[0]["properties"]["category"], "farm");
     }
 
     /// A wobble that leaves and returns inside the ISOM minimum mouth is not a bend the
@@ -1552,17 +1587,18 @@ mod tests {
     fn conform_contour_breaks_only_the_contour_family() {
         let pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
         let knolls = [[10.0, 1.0], [30.0, -1.0]];
-        for symbol in ["101", "102", "103"] {
-            assert_eq!(conform_contour(symbol, &pts, &knolls).len(), 3, "{symbol}");
+        use IsomCode::*;
+        for code in [C101_000, C101_001, C102_000, C103_000] {
+            assert_eq!(conform_contour(code, &pts, &knolls).len(), 3, "{code}");
         }
         // a cliff passes through whole, even next to a knoll
-        assert_eq!(conform_contour("201", &pts, &knolls), vec![pts.clone()]);
+        assert_eq!(conform_contour(C201_000, &pts, &knolls), vec![pts.clone()]);
     }
 
     #[test]
     fn published_knolls_prefers_definite_over_ugly() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let name = DOTKNOLLS.file_name();
+        let name = file_name(IsomTable::KnollsPoints);
         let path = Path::new(&name);
         assert!(published_knolls(&fs, path).unwrap().is_empty());
 
@@ -1606,11 +1642,11 @@ mod tests {
         let contour = props(Classification::Contour, Some(12.5));
         assert_eq!(
             contour,
-            json!({"symbol": "101", "symbol_name": "contour", "elevation": 12.5})
+            json!({"isom_code": "101.000", "symbol_name": "contour", "elevation": 12.5})
         );
 
         let depression = props(Classification::Depression, Some(12.5));
-        assert_eq!(depression["symbol"], "101");
+        assert_eq!(depression["isom_code"], "101.000");
         assert_eq!(depression["symbol_name"], "depression contour");
         assert_eq!(depression["depression"], true);
         assert_eq!(
@@ -1618,29 +1654,31 @@ mod tests {
             true
         );
 
-        let slope_line = props(Classification::SlopeLine, Some(12.5));
-        assert_eq!(slope_line["symbol"], "101");
-        assert_eq!(slope_line["slope_line"], true);
-        assert!(slope_line.get("depression").is_none());
+        // the slope line is 101's variant code, not a flag
+        assert_eq!(
+            props(Classification::SlopeLine, Some(12.5)),
+            json!({"isom_code": "101.001", "symbol_name": "slope line", "elevation": 12.5})
+        );
 
         assert_eq!(
             props(Classification::Dotknoll, None),
-            json!({"symbol": "109", "symbol_name": "knoll"})
+            json!({"isom_code": "109.000", "symbol_name": "knoll"})
         );
         let ugly = props(Classification::UglyUdepression, None);
-        assert_eq!(ugly["symbol"], "111");
+        assert_eq!(ugly["isom_code"], "111.000");
         assert_eq!(ugly["ugly"], true);
 
         // knoll and cliff classes carry no elevation, even from a 3D polyline
         assert_eq!(
             props(Classification::SmallDepression, Some(3.0)),
-            json!({"symbol": "111", "symbol_name": "small depression"})
+            json!({"isom_code": "111.000", "symbol_name": "small depression"})
         );
         assert_eq!(
             props(Classification::Cliff4, None),
-            json!({"symbol": "201", "symbol_name": "impassable cliff"})
+            json!({"isom_code": "201.000", "symbol_name": "impassable cliff"})
         );
         assert!(terrain_properties(Classification::Knoll1010, None).is_none());
+        assert!(terrain_properties(Classification::DepressionIndexIntermed, Some(1.0)).is_none());
     }
 
     #[test]
@@ -1662,9 +1700,9 @@ mod tests {
     }
 
     #[test]
-    fn osm_features_carry_symbol_category_and_upper_level() {
+    fn osm_features_carry_isom_code_category_and_upper_level() {
         let road = serde_json::to_value(osm_line(
-            "502",
+            IsomCode::C502_000,
             "road-path",
             false,
             &[[1.0, 2.0], [3.004, 4.0]],
@@ -1677,20 +1715,30 @@ mod tests {
         );
         assert_eq!(
             road["properties"],
-            json!({"symbol": "502", "category": "road-path"})
+            json!({"isom_code": "502.000", "category": "road-path"})
         );
 
-        // the T suffix reaches vector output as a flag; the symbol stays a plain number
-        let bridge =
-            serde_json::to_value(osm_line("502", "road-path", true, &[[0.0, 0.0]])).unwrap();
+        // the T suffix reaches vector output as a flag; the code stays the symbol's
+        let bridge = serde_json::to_value(osm_line(
+            IsomCode::C502_000,
+            "road-path",
+            true,
+            &[[0.0, 0.0]],
+        ))
+        .unwrap();
         assert_eq!(
             bridge["properties"],
-            json!({"symbol": "502", "category": "road-path", "upper_level": true})
+            json!({"isom_code": "502.000", "category": "road-path", "upper_level": true})
         );
 
         let ring = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]];
-        let lake =
-            serde_json::to_value(osm_area("301", "water", false, &[ring.clone(), ring])).unwrap();
+        let lake = serde_json::to_value(osm_area(
+            IsomCode::C301_000,
+            "water",
+            false,
+            &[ring.clone(), ring],
+        ))
+        .unwrap();
         assert_eq!(lake["geometry"]["type"], "Polygon");
         assert_eq!(lake["geometry"]["coordinates"].as_array().unwrap().len(), 2);
         assert!(matches!(
@@ -1698,21 +1746,29 @@ mod tests {
                 .unwrap(),
             geojson_types::FeatureProperties::OsmProperties(_)
         ));
+
+        // reading back holds the code to the symbol table
+        let mut unknown = lake["properties"].clone();
+        unknown["isom_code"] = json!("518.000");
+        assert!(serde_json::from_value::<geojson_types::FeatureProperties>(unknown).is_err());
     }
 
     #[test]
-    fn write_feature_collection_writes_osm_features() {
+    fn write_tables_writes_osm_features_to_their_code_s_table() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let features = vec![osm_line("506", "path", false, &[[0.0, 0.0], [1.0, 1.0]])];
-        let name = OSM_LINES.file_name();
-        let out = std::path::Path::new(&name);
-        write_feature_collection(&fs, out, features, None).unwrap();
+        let line = [[0.0, 0.0], [1.0, 1.0]];
+        let features = vec![
+            osm_line(IsomCode::C506_000, "path", false, &line),
+            osm_line(IsomCode::C516_000, "barrier", false, &line),
+        ];
+        write_tables(&fs, Path::new(""), Source::VectorMapping, features, None).unwrap();
 
-        let val: Value = serde_json::from_reader(fs.open(out).unwrap()).unwrap();
-        assert_eq!(val["type"], "FeatureCollection");
+        let val: Value = serde_json::from_reader(fs.open("paths.geojson").unwrap()).unwrap();
         assert!(val.get("crs").is_none());
-        assert_eq!(val["features"][0]["properties"]["symbol"], "506");
+        assert_eq!(val["features"][0]["properties"]["isom_code"], "506.000");
         assert_eq!(val["features"][0]["properties"]["category"], "path");
+        let manmade = read_features(&fs, IsomTable::Manmade);
+        assert_eq!(manmade[0]["properties"]["isom_code"], "516.000");
     }
 
     #[test]
@@ -1727,15 +1783,14 @@ mod tests {
     #[test]
     fn generated_types_roundtrip_to_featurecollection_json() {
         use geojson_types::{
-            ContourProperties, ContourPropertiesSymbol, Feature, FeatureGeometry,
+            ContourProperties, ContourPropertiesIsomCode, Feature, FeatureGeometry,
             FeatureGeometryType, FeatureProperties, GeoJsonOutput,
         };
 
         let contour = ContourProperties {
             depression: None,
             elevation: None,
-            slope_line: None,
-            symbol: ContourPropertiesSymbol::X101,
+            isom_code: ContourPropertiesIsomCode::X101000,
             symbol_name: None,
         };
         let feature = Feature {
@@ -1756,7 +1811,7 @@ mod tests {
         assert_eq!(json["type"], "FeatureCollection");
         assert!(json["features"].is_array());
         assert_eq!(json["features"][0]["type"], "Feature");
-        assert_eq!(json["features"][0]["properties"]["symbol"], "101");
+        assert_eq!(json["features"][0]["properties"]["isom_code"], "101.000");
         assert!(json["features"][0]["properties"].get("layer").is_none());
     }
 
@@ -1830,7 +1885,7 @@ mod tests {
             // entirely outside
             terrain_line(Classification::Cliff2, &[[20.0, 20.0], [30.0, 30.0]]),
             vegetation_area(
-                geojson_types::VegetationPropertiesSymbol::X406,
+                geojson_types::VegetationPropertiesIsomCode::X406000,
                 std::num::NonZeroU64::new(2),
                 &[square(5.0, 5.0, 10.0)],
             ),
@@ -1853,7 +1908,7 @@ mod tests {
         let out = read(&fs, out);
         let crs = out.crs.expect("the input's crs is carried over");
         assert_eq!(crs.properties.name, "urn:ogc:def:crs:EPSG::25832");
-        let summary: Vec<(FeatureGeometryType, String, Vec<[f64; 2]>)> = out
+        let summary: Vec<(FeatureGeometryType, IsomCode, Vec<[f64; 2]>)> = out
             .features
             .iter()
             .map(|f| {
@@ -1865,18 +1920,19 @@ mod tests {
                     }
                     FeatureGeometryType::LineString => line_points(c),
                 };
-                (f.geometry.type_, symbol(&f.properties), pts)
+                (f.geometry.type_, isom_code(&f.properties), pts)
             })
             .collect();
         use FeatureGeometryType::*;
+        use IsomCode::*;
         assert_eq!(
             summary,
             [
-                (LineString, "101".into(), vec![[0.0, 5.0], [10.0, 5.0]]),
-                (LineString, "101".into(), vec![[10.0, 8.0], [0.0, 8.0]]),
+                (LineString, C101_000, vec![[0.0, 5.0], [10.0, 5.0]]),
+                (LineString, C101_000, vec![[10.0, 8.0], [0.0, 8.0]]),
                 (
                     Polygon,
-                    "406".into(),
+                    C406_000,
                     vec![
                         [5.0, 10.0],
                         [5.0, 5.0],
@@ -1885,7 +1941,7 @@ mod tests {
                         [5.0, 10.0]
                     ]
                 ),
-                (Point, "109".into(), vec![[2.0, 2.0]]),
+                (Point, C109_000, vec![[2.0, 2.0]]),
             ]
         );
         let FeatureProperties::VegetationProperties(veg) = &out.features[2].properties else {
@@ -1899,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_geojson_concatenates_the_tiles_of_each_output() {
+    fn merge_geojson_concatenates_the_tiles_of_each_table() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
@@ -1908,16 +1964,22 @@ mod tests {
         };
         let contour = |x: f64| terrain_line(Classification::Contour, &[[x, 0.0], [x, 1.0]]);
         // listed out of order; the merge takes the tiles in file name order
-        write(CONTOURS.tile_file_name("b"), vec![contour(3.0)], Some(3067));
+        let contours = IsomTable::Contours;
         write(
-            CONTOURS.tile_file_name("a"),
+            tile_file_name(contours, "b"),
+            vec![contour(3.0)],
+            Some(3067),
+        );
+        write(
+            tile_file_name(contours, "a"),
             vec![contour(1.0), contour(2.0)],
             Some(3067),
         );
-        // a previous merge in the folder is not read back
-        write(CONTOURS.merged_file_name(), vec![contour(9.0)], None);
+        // a previous merge or combined export in the folder is not read back
+        write(merged_file_name(contours), vec![contour(9.0)], None);
+        write(file_name(contours), vec![contour(8.0)], None);
         write(
-            CLIFFS.tile_file_name("a"),
+            tile_file_name(IsomTable::Cliffs, "a"),
             vec![terrain_line(
                 Classification::Cliff3,
                 &[[0.0, 0.0], [3.0, 0.0]],
@@ -1927,7 +1989,7 @@ mod tests {
 
         merge_geojson(&fs, out).unwrap();
 
-        let merged = read(&fs, &out.join(CONTOURS.merged_file_name()));
+        let merged = read(&fs, &out.join(merged_file_name(contours)));
         assert_eq!(
             merged.crs.unwrap().properties.name,
             "urn:ogc:def:crs:EPSG::3067"
@@ -1939,20 +2001,12 @@ mod tests {
             .collect();
         assert_eq!(xs, [1.0, 2.0, 3.0]);
         assert_eq!(
-            read(&fs, &out.join(CLIFFS.merged_file_name()))
+            read(&fs, &out.join(merged_file_name(IsomTable::Cliffs)))
                 .features
                 .len(),
             1
         );
-        assert!(!fs.exists(out.join(VEGETATION.merged_file_name())));
-    }
-
-    #[test]
-    fn crt_symbol_maps_symbol_codes_to_ocad_numbers() {
-        assert_eq!(crt_symbol("101").as_deref(), Some("101.000"));
-        assert_eq!(crt_symbol("521").as_deref(), Some("521.000"));
-        assert_eq!(crt_symbol("502T"), None);
-        assert_eq!(crt_symbol(""), None);
+        assert!(!fs.exists(out.join(merged_file_name(IsomTable::VegetationAreas))));
     }
 
     #[test]
@@ -1961,12 +2015,12 @@ mod tests {
         let pts: Vec<[f64; 2]> = (0..10)
             .map(|i| [i as f64 * 10.0, if i % 2 == 0 { 0.0 } else { 8.0 }])
             .collect();
-        let out = curve_points("101", &pts, false);
+        let out = curve_points(IsomCode::C101_000, &pts, false);
         assert!(out.len() > pts.len(), "curve symbol must be densified");
         assert_eq!(out.first(), pts.first());
         assert_eq!(out.last(), pts.last());
         // a building is not a curve symbol and passes through untouched
-        assert_eq!(curve_points("521", &pts, false), pts);
+        assert_eq!(curve_points(IsomCode::C521_000, &pts, false), pts);
         // closed ring stays closed
         let ring = [
             [0.0, 0.0],
@@ -1975,7 +2029,7 @@ mod tests {
             [0.0, 30.0],
             [0.0, 0.0],
         ];
-        let out = curve_points("406", &ring, true);
+        let out = curve_points(IsomCode::C406_000, &ring, true);
         assert_eq!(out.first(), out.last(), "ring must stay closed");
     }
 
@@ -1999,32 +2053,29 @@ mod tests {
         assert!(chain_cliff_dashes(&[[100.0, 100.0]]).is_empty());
     }
 
-    /// A batch output folder holding one merged file per terrain output, a vegetation
-    /// area and an OSM line: a straight 101 contour along y=0 through a knoll at (50, 0),
-    /// a half-interval contour, a form line, and 202 cliff dashes along y=200.
+    /// A batch output folder holding the merged tables: a straight 101 contour along y=0
+    /// through a knoll at (50, 0) and a form line along y=40 in `contours`, 202 cliff
+    /// dashes along y=200, a vegetation area, and an OSM road in `paths`.
     fn merged_outputs(fs: &impl FileSystem, out: &Path) {
         fs.create_dir_all(out).unwrap();
-        let write = |o: &GeoJsonOutput, features| {
-            write_feature_collection(fs, &out.join(o.merged_file_name()), features, None).unwrap();
+        let write = |table, features| {
+            write_feature_collection(fs, &out.join(merged_file_name(table)), features, None)
+                .unwrap();
         };
         let along = |y: f64| (0..=100).map(|x| [x as f64, y]).collect::<Vec<_>>();
         write(
-            &CONTOURS,
+            IsomTable::Contours,
             vec![
                 terrain_line(Classification::Contour, &along(0.0)),
-                terrain_line(Classification::ContourIntermed, &along(20.0)),
+                terrain_line(Classification::Formline, &along(40.0)),
             ],
         );
         write(
-            &FORMLINES,
-            vec![terrain_line(Classification::Formline, &along(40.0))],
-        );
-        write(
-            &DOTKNOLLS,
+            IsomTable::KnollsPoints,
             vec![terrain_point(Classification::Dotknoll, [50.0, 0.0])],
         );
         write(
-            &CLIFFS,
+            IsomTable::Cliffs,
             (0..12)
                 .map(|i| {
                     let x = i as f64 * 2.5;
@@ -2033,17 +2084,17 @@ mod tests {
                 .collect(),
         );
         write(
-            &VEGETATION,
+            IsomTable::VegetationAreas,
             vec![vegetation_area(
-                geojson_types::VegetationPropertiesSymbol::X406,
+                geojson_types::VegetationPropertiesIsomCode::X406000,
                 std::num::NonZeroU64::new(2),
                 &[square(0.0, 300.0, 30.0)],
             )],
         );
         write(
-            &OSM_LINES,
+            IsomTable::Paths,
             vec![osm_line(
-                "502",
+                IsomCode::C502_000,
                 "road-path",
                 false,
                 &[[0.0, 400.0], [100.0, 400.0]],
@@ -2051,8 +2102,22 @@ mod tests {
         );
     }
 
+    /// The combined export's features, each with the table file it was read from. Every
+    /// table has a file.
+    fn read_combined(fs: &impl FileSystem, out: &Path) -> Vec<(IsomTable, geojson_types::Feature)> {
+        IsomTable::ALL
+            .iter()
+            .flat_map(|&table| {
+                read(fs, &out.join(file_name(table)))
+                    .features
+                    .into_iter()
+                    .map(move |f| (table, f))
+            })
+            .collect()
+    }
+
     #[test]
-    fn export_combined_publishes_every_merged_output_conformed() {
+    fn export_combined_publishes_every_merged_table_conformed() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         merged_outputs(&fs, out);
@@ -2065,59 +2130,70 @@ mod tests {
         )
         .unwrap();
 
-        let combined = read(&fs, &out.join(COMBINED_GEOJSON));
+        let contours = read(&fs, &out.join(file_name(IsomTable::Contours)));
         assert_eq!(
-            combined.crs.unwrap().properties.name,
+            contours.crs.unwrap().properties.name,
             "urn:ogc:def:crs:EPSG::25832"
         );
-        let mut by_symbol: BTreeMap<String, Vec<&geojson_types::Feature>> = BTreeMap::new();
-        for f in &combined.features {
-            by_symbol.entry(symbol(&f.properties)).or_default().push(f);
+        let combined = read_combined(&fs, out);
+        let mut by_code: BTreeMap<IsomCode, Vec<&geojson_types::Feature>> = BTreeMap::new();
+        for (table, f) in &combined {
+            let code = isom_code(&f.properties);
+            assert_eq!(code.table(), *table, "{code} published to the wrong table");
+            by_code.entry(code).or_default().push(f);
         }
-        let counts: Vec<(&str, usize)> = by_symbol
-            .iter()
-            .map(|(s, f)| (s.as_str(), f.len()))
-            .collect();
-        // the contour broken around the knoll into two lines; the half-interval contour
-        // left out, the form line kept; the dashes chained into one cliff line
+        let counts: Vec<(&str, usize)> =
+            by_code.iter().map(|(c, f)| (c.as_str(), f.len())).collect();
+        // the contour broken around the knoll into two lines, the form line kept; the
+        // dashes chained into one cliff line
         assert_eq!(
             counts,
             [
-                ("101", 2),
-                ("103", 1),
-                ("109", 1),
-                ("202", 1),
-                ("406", 1),
-                ("502", 1)
+                ("101.000", 2),
+                ("103.000", 1),
+                ("109.000", 1),
+                ("202.000", 1),
+                ("406.000", 1),
+                ("502.000", 1)
             ]
         );
-        for f in &by_symbol["101"] {
+        use IsomCode::*;
+        for f in &by_code[&C101_000] {
             let pts = line_points(&f.geometry.coordinates);
             assert!(pts.iter().all(|p| dist(*p, [50.0, 0.0]) >= KNOLL_CLEAR_M));
         }
         assert_eq!(
-            line_points(&by_symbol["103"][0].geometry.coordinates)[0][1],
+            line_points(&by_code[&C103_000][0].geometry.coordinates)[0][1],
             40.0
         );
-        assert_eq!(
-            by_symbol["406"][0].geometry.type_,
-            FeatureGeometryType::Polygon
-        );
-        let FeatureProperties::VegetationProperties(veg) = &by_symbol["406"][0].properties else {
-            panic!("not vegetation: {:?}", by_symbol["406"][0].properties);
+        let veg = by_code[&C406_000][0];
+        assert_eq!(veg.geometry.type_, FeatureGeometryType::Polygon);
+        let FeatureProperties::VegetationProperties(props) = &veg.properties else {
+            panic!("not vegetation: {:?}", veg.properties);
         };
-        assert_eq!(veg.shade.map(u64::from), Some(2), "the shade is published");
+        assert_eq!(
+            props.shade.map(u64::from),
+            Some(2),
+            "the shade is published"
+        );
+        // a table nothing was published to is still written, empty
+        assert!(
+            read(&fs, &out.join(file_name(IsomTable::Water)))
+                .features
+                .is_empty()
+        );
 
         let dxf = String::from_utf8(read_bytes(&fs, &out.join(COMBINED_DXF))).unwrap();
         assert!(dxf.contains("$ACADVER"));
-        assert!(dxf.contains("POINT\r\n  8\r\n109\r\n"));
-        assert!(dxf.contains("  8\r\n101\r\n"));
-        assert!(dxf.contains("SPLINE\r\n  8\r\n406\r\n"));
-        assert!(dxf.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n502\r\n"));
+        assert!(dxf.contains("POINT\r\n  8\r\n109.000\r\n"));
+        assert!(dxf.contains("  8\r\n101.000\r\n"));
+        assert!(dxf.contains("SPLINE\r\n  8\r\n406.000\r\n"));
+        assert!(dxf.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n502.000\r\n"));
         let crt = String::from_utf8(read_bytes(&fs, &out.join(COMBINED_CRT))).unwrap();
         assert_eq!(
             crt,
-            "101.000 101\n103.000 103\n109.000 109\n202.000 202\n406.000 406\n502.000 502\n"
+            "101.000 101.000\n103.000 103.000\n109.000 109.000\n202.000 202.000\n\
+             406.000 406.000\n502.000 502.000\n"
         );
     }
 
@@ -2128,7 +2204,7 @@ mod tests {
     }
 
     #[test]
-    fn export_combined_takes_skipped_outputs_from_merged_bin() {
+    fn export_combined_takes_contours_and_cliffs_from_merged_bin() {
         use crate::geometry::{Bounds, Point3, Polylines};
 
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
@@ -2160,23 +2236,25 @@ mod tests {
 
         export_combined(&fs, out, bin, None).unwrap();
 
-        let combined = read(&fs, &out.join(COMBINED_GEOJSON));
-        assert!(combined.crs.is_none());
-        let symbols: BTreeSet<String> = combined
-            .features
+        let combined = read_combined(&fs, out);
+        assert!(
+            read(&fs, &out.join(file_name(IsomTable::Contours)))
+                .crs
+                .is_none()
+        );
+        let codes: BTreeSet<&str> = combined
             .iter()
-            .map(|f| symbol(&f.properties))
+            .map(|(_, f)| isom_code(&f.properties).as_str())
             .collect();
-        // contours, form lines and cliffs (skip_when_merged_bin) come from the bin only;
-        // the dot knolls, vegetation and OSM outputs from their merged GeoJSON
+        // contours, form lines and cliffs (in_merged_bin) come from the bin only; the
+        // knolls, vegetation and OSM tables from their merged GeoJSON
         assert_eq!(
-            symbols,
-            ["102", "109", "201", "406", "502"].map(String::from).into()
+            codes,
+            ["102.000", "109.000", "201.000", "406.000", "502.000"].into()
         );
         let index = combined
-            .features
             .iter()
-            .find_map(|f| match &f.properties {
+            .find_map(|(_, f)| match &f.properties {
                 FeatureProperties::ContourProperties(p) => Some(p),
                 _ => None,
             })
@@ -2218,17 +2296,15 @@ mod tests {
 
         export_combined(&fs, out, bin, None).unwrap();
 
-        let combined = read(&fs, &out.join(COMBINED_GEOJSON));
+        let combined = read_combined(&fs, out);
         let lines: Vec<Vec<[f64; 2]>> = combined
-            .features
             .iter()
-            .filter(|f| f.geometry.type_ == FeatureGeometryType::LineString)
-            .map(|f| line_points(&f.geometry.coordinates))
+            .filter(|(_, f)| f.geometry.type_ == FeatureGeometryType::LineString)
+            .map(|(_, f)| line_points(&f.geometry.coordinates))
             .collect();
         let points = combined
-            .features
             .iter()
-            .filter(|f| symbol(&f.properties) == "109")
+            .filter(|(_, f)| isom_code(&f.properties) == IsomCode::C109_000)
             .count();
         assert_eq!(points, 1);
         // the straight contour broken in two around the knoll, the loop kept closed
@@ -2243,7 +2319,9 @@ mod tests {
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
         export_combined(&fs, out, Path::new(crate::merge::MERGED_DXF_BIN), None).unwrap();
-        assert!(!fs.exists(out.join(COMBINED_GEOJSON)));
+        for &table in IsomTable::ALL {
+            assert!(!fs.exists(out.join(file_name(table))));
+        }
         assert!(!fs.exists(out.join(COMBINED_DXF)));
     }
 }

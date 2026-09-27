@@ -947,13 +947,14 @@ pub fn draw_curves(
             out_formlines.to_dxf(&mut fs.create(tmpfolder.join("formlines.dxf"))?)?;
         }
 
-        // As for contours (process_tile): symbol 103 in vector output is this selected
-        // set, not the half-interval contours, whether or not savetempfiles is on.
+        // As for contours (process_tile): 103.000 in the contours table is this
+        // selected set, not the half-interval contours, whether or not savetempfiles is on.
         if config.vector_vege {
-            crate::geojson::bindxf_to_geojson(
+            crate::geojson::bindxf_to_tables(
                 fs,
                 &[tmpfolder.join("formlines.dxf.bin")],
-                &tmpfolder.join(crate::geojson::FORMLINES.file_name()),
+                tmpfolder,
+                crate::geojson::Source::FormLines,
                 config.epsg,
             )?;
         }
