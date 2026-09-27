@@ -4,7 +4,9 @@ use std::error::Error;
 use std::path::Path;
 
 use crate::config::Config;
-use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
+use crate::geometry::{
+    BinaryDxf, Bounds, Classification, Contour, Point2, Point3, Polylines, join_polylines,
+};
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::{LasClass, XyzInternalReader};
@@ -235,7 +237,36 @@ fn heightmap_grid_index(v: f64, vmin: f64, scale: f64, n: usize) -> usize {
     idx.min(n.saturating_sub(1))
 }
 
-/// Creates contour lines from a heightmap.
+/// Snap `h` to the nearest multiple of `interval`. The tracer steps its level by adding
+/// `interval`, which drifts in the last digits; this gives the exact level it stands for.
+fn snap_level(h: f64, interval: f64) -> f64 {
+    (h / interval + 0.5).floor() * interval
+}
+
+/// Join the lines of a contour file written by [`heightmap2contours`] end to end (see
+/// [`join_polylines`]). Returns one [`Contour`] per input line, in input order: a joined
+/// line keeps the level of the slot it grew from, and absorbed and dropped lines come
+/// back with an empty `line`.
+pub fn join_contours(
+    lines: &Polylines<Point3, (Classification, f64)>,
+    max_vertices: usize,
+) -> Vec<Contour> {
+    let mut flat = Polylines::<Point2, f64>::with_capacity(lines.len());
+    for (line, &(_, level_m)) in lines.iter() {
+        flat.push(
+            line.iter().map(|p| Point2::new(p.x, p.y)).collect(),
+            level_m,
+        );
+    }
+    join_polylines(&flat, max_vertices)
+        .into_iter()
+        .zip(flat.iter())
+        .map(|(line, (_, &level_m))| Contour { level_m, line })
+        .collect()
+}
+
+/// Creates contour lines from a heightmap and writes them as [`Polylines3`](crate::geometry::Geometry::Polylines3)
+/// with each line's traced level as its height and every vertex's z.
 pub fn heightmap2contours(
     fs: &impl FileSystem,
     tmpfolder: &Path,
@@ -245,7 +276,7 @@ pub fn heightmap2contours(
     output_dxf: bool,
 ) -> Result<(), Box<dyn Error>> {
     info!("Generating curves...");
-    let polylines = grid2contours(&heightmap.grid, cinterval);
+    let contours = grid2contours(&heightmap.grid, cinterval);
 
     let xmin = heightmap.xoffset;
     let ymin = heightmap.yoffset;
@@ -253,30 +284,29 @@ pub fn heightmap2contours(
     let ymax = heightmap.maxy();
     let size = heightmap.scale;
 
-    // convert the polylines to our internal binary dxf format,
+    // convert the contours to our internal binary dxf format,
     // including some thinning of the lines
     let mut lines = Polylines::new();
-    for polyline in polylines.into_iter() {
+    for Contour { level_m, line } in contours.into_iter() {
         lines.push(
-            polyline
-                .iter()
+            line.iter()
                 .enumerate()
-                .filter_map(|(i, (x, y))| {
+                .filter_map(|(i, p)| {
                     // original logic for some kind of "thinning" of the lines
                     let ii = i + 1;
-                    let ldata = polyline.len() - 1;
+                    let ldata = line.len() - 1;
                     if ii > 5 && ii < ldata - 5 && ldata > 12 && ii % 2 == 0 {
                         return None; // skip this point
                     }
 
                     // scale the points to world coordinates
-                    let x: f64 = x * size + xmin;
-                    let y: f64 = y * size + ymin;
+                    let x: f64 = p.x * size + xmin;
+                    let y: f64 = p.y * size + ymin;
 
-                    Some(Point2 { x, y })
+                    Some(Point3::new(x, y, level_m))
                 })
                 .collect::<Vec<_>>(),
-            Classification::ContourSimple,
+            (Classification::ContourSimple, level_m),
         );
     }
     let dxf = BinaryDxf::new(Bounds::new(xmin, xmax, ymin, ymax), vec![lines.into()]);
@@ -297,11 +327,10 @@ pub fn heightmap2contours(
 }
 
 /// Inner function to generate contours from a heightmap.
-/// Returns a vector of polylines, each represented as a vector of (x, y) tuples in
-/// grid-coordinates.
-/// For now the returned polylines are not annotated with their height.
+/// Returns one [`Contour`] per traced line, in grid coordinates, carrying the level it was
+/// traced at (the first multiple of `cinterval` above the minimum, plus `cinterval` per step).
 /// Note: this will Clone the provided `heightmap`.
-pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f64)>> {
+pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Contour> {
     // clone the heightmap so that we can perform the correction below
     let mut avg_alt = heightmap.clone();
 
@@ -339,7 +368,7 @@ pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f6
     // we start at the first level that is above hmin (anything below that will just have empty contours)
     let mut level: f64 = (hmin / v).ceil() * v;
 
-    let mut polylines = Vec::<Vec<(f64, f64)>>::new();
+    let mut contours = Vec::<Contour>::new();
 
     loop {
         if level >= hmax {
@@ -500,14 +529,14 @@ pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f6
 
         for k in obj.iter() {
             if curves.contains_key(k) {
-                let mut polyline = Vec::<(f64, f64)>::new();
+                let mut polyline = Vec::<Point2>::new();
                 let (x, y, _) = *k;
-                polyline.push((x as f64 / 100.0, y as f64 / 100.0));
+                polyline.push(Point2::new(x as f64 / 100.0, y as f64 / 100.0));
 
                 let mut res = (x, y);
 
                 let (x, y) = *curves.get(k).unwrap();
-                polyline.push((x as f64 / 100.0, y as f64 / 100.0));
+                polyline.push(Point2::new(x as f64 / 100.0, y as f64 / 100.0));
                 curves.remove(k);
 
                 let mut head = (x, y);
@@ -523,7 +552,7 @@ pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f6
                         res = head;
 
                         let (x, y) = *curves.get(&(head.0, head.1, 1)).unwrap();
-                        polyline.push((x as f64 / 100.0, y as f64 / 100.0));
+                        polyline.push(Point2::new(x as f64 / 100.0, y as f64 / 100.0));
                         curves.remove(&(head.0, head.1, 1));
 
                         head = (x, y);
@@ -537,7 +566,7 @@ pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f6
                         res = head;
 
                         let (x, y) = *curves.get(&(head.0, head.1, 2)).unwrap();
-                        polyline.push((x as f64 / 100.0, y as f64 / 100.0));
+                        polyline.push(Point2::new(x as f64 / 100.0, y as f64 / 100.0));
                         curves.remove(&(head.0, head.1, 2));
 
                         head = (x, y);
@@ -548,7 +577,10 @@ pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f6
                             curves.remove(&(head.0, head.1, 2));
                         }
                     } else {
-                        polylines.push(polyline);
+                        contours.push(Contour {
+                            level_m: snap_level(level, v),
+                            line: polyline,
+                        });
                         break;
                     }
                 }
@@ -557,7 +589,7 @@ pub fn grid2contours(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Vec<(f64, f6
         level += v;
     }
 
-    polylines
+    contours
 }
 
 fn check_obj_in(
@@ -634,7 +666,11 @@ mod tests {
             1,
             "Expected one contour for a single contour line"
         );
-        assert_eq!(contours[0].len(), 7, "Expected contour to have 4 points");
+        assert_eq!(
+            contours[0].line.len(),
+            7,
+            "Expected contour to have 4 points"
+        );
     }
 
     #[test]
@@ -648,6 +684,310 @@ mod tests {
             1,
             "Expected one contour for a single contour line"
         );
-        assert_eq!(contours[0].len(), 7, "Expected contour to have 4 points");
+        assert_eq!(
+            contours[0].line.len(),
+            7,
+            "Expected contour to have 4 points"
+        );
+    }
+
+    use super::*;
+    use crate::io::fs::memory::MemoryFileSystem;
+
+    fn grid(w: usize, h: usize, f: impl Fn(f64, f64) -> f64) -> Vec2D<f64> {
+        let mut g = Vec2D::new(w, h, 0.0);
+        for i in 0..w {
+            for j in 0..h {
+                g[(i, j)] = f(i as f64, j as f64);
+            }
+        }
+        g
+    }
+
+    /// A cone: `peak - distance to (c, c)`.
+    fn cone(c: f64, peak: f64) -> impl Fn(f64, f64) -> f64 {
+        move |x, y| peak - ((x - c).powi(2) + (y - c).powi(2)).sqrt()
+    }
+
+    /// Trace `grid` into a contour file with [`heightmap2contours`] and read it back.
+    fn contour_file(
+        grid: Vec2D<f64>,
+        offset: (f64, f64),
+        scale: f64,
+        cinterval: f64,
+    ) -> Polylines<Point3, (Classification, f64)> {
+        let fs = MemoryFileSystem::new();
+        let hmap = HeightMap {
+            xoffset: offset.0,
+            yoffset: offset.1,
+            scale,
+            grid,
+        };
+        heightmap2contours(&fs, Path::new(""), cinterval, &hmap, "c.dxf.bin", false).unwrap();
+        let dxf = BinaryDxf::from_reader(&mut fs.open("c.dxf.bin").unwrap()).unwrap();
+        match dxf.take_geometry().swap_remove(0) {
+            crate::geometry::Geometry::Polylines3(lines) => lines,
+            _ => panic!("contour files hold Polylines3"),
+        }
+    }
+
+    /// The smoothjoin level lookup this branch deleted: interpolate the heightmap at the
+    /// first vertex (from a third of the way in) that lies exactly on a grid line. NaN when
+    /// no vertex does.
+    fn old_smoothjoin_level(
+        line: &[Point2],
+        xyz: &Vec2D<f64>,
+        (xstart, ystart, size): (f64, f64, f64),
+        interval: f64,
+    ) -> f64 {
+        let n = line.len();
+        let mut m = ((((n - 1) as f64) / 3.0).floor() as isize - 1).max(0) as usize;
+        while m < n {
+            let (xm, ym) = (line[m].x, line[m].y);
+            if (xm - xstart) / size == ((xm - xstart) / size).floor() {
+                let xx = ((xm - xstart) / size) as usize;
+                let yy = ((ym - ystart) / size) as usize;
+                let h1 = xyz[(xx, yy)];
+                if yy < xyz.height() - 1 {
+                    let h2 = xyz[(xx, yy + 1)];
+                    let h3 = h1 * (yy as f64 + 1.0 - (ym - ystart) / size)
+                        + h2 * ((ym - ystart) / size - yy as f64);
+                    return (h3 / interval + 0.5).floor() * interval;
+                }
+                return (h1 / interval + 0.5).floor() * interval;
+            } else if m < n - 1 && (ym - ystart) / size == ((ym - ystart) / size).floor() {
+                let xx = ((xm - xstart) / size) as usize;
+                let yy = ((ym - ystart) / size) as usize;
+                let h1 = xyz[(xx, yy)];
+                if xx < xyz.width() - 1 {
+                    let h2 = xyz[(xx + 1, yy)];
+                    let h3 = h1 * (xx as f64 + 1.0 - (xm - xstart) / size)
+                        + h2 * ((xm - xstart) / size - xx as f64);
+                    return (h3 / interval + 0.5).floor() * interval;
+                }
+                return (h1 / interval + 0.5).floor() * interval;
+            }
+            m += 1;
+        }
+        f64::NAN
+    }
+
+    /// The knolldetector level lookup this branch deleted, on a closed ring: the first
+    /// vertex on a vertical grid line wins, else the last on a horizontal one. 0.0 when
+    /// no vertex is on a grid line.
+    fn old_knoll_level(
+        line: &[Point2],
+        xyz: &Vec2D<f64>,
+        (xstart, ystart, size): (f64, f64, f64),
+        interval: f64,
+    ) -> f64 {
+        let n = line.len();
+        let mut l = line.to_vec();
+        l.push(line[0]);
+        let mut m = ((n as f64 / 3.0).floor() - 1.0).max(0.0) as usize;
+        let mut h = 0.0;
+        while m < l.len() {
+            let xo = (l[m].x - xstart) / size;
+            let yo = (l[m].y - ystart) / size;
+            let at = |x: usize, y: usize| xyz.get((x, y)).copied().unwrap_or(0.0);
+            if xo == xo.floor() {
+                let (x, y) = (xo.floor() as usize, yo.floor() as usize);
+                h = at(x, y) * (yo.floor() + 1.0 - yo) + at(x, y + 1) * (yo - yo.floor());
+                return (h / interval + 0.5).floor() * interval;
+            } else if m < n - 3 && yo == yo.floor() {
+                let (x, y) = (xo.floor() as usize, yo.floor() as usize);
+                h = at(x, y) * (xo.floor() + 1.0 - xo) + at(x + 1, y) * (xo - xo.floor());
+                h = (h / interval + 0.5).floor() * interval;
+            }
+            m += 1;
+        }
+        h
+    }
+
+    fn closed(line: &[Point2]) -> bool {
+        line.len() > 1 && line.first() == line.last()
+    }
+
+    #[test]
+    fn cone_gives_nested_closed_rings_at_their_levels() {
+        // peak 9.5 at (10, 10); rings of level 0..=9 have radius 9.5 - level <= 9.5 and
+        // stay inside the 21 x 21 grid, lower levels hit the border
+        let contours = grid2contours(&grid(21, 21, cone(10.0, 9.5)), 1.0);
+        for level in 0..=9 {
+            let level = level as f64;
+            let rings: Vec<_> = contours.iter().filter(|c| c.level_m == level).collect();
+            assert_eq!(rings.len(), 1, "one ring at level {level}");
+            let ring = &rings[0].line;
+            assert!(closed(ring), "the ring at level {level} is closed");
+            for p in ring {
+                let r = ((p.x - 10.0).powi(2) + (p.y - 10.0).powi(2)).sqrt();
+                assert!(
+                    (r - (9.5 - level)).abs() < 0.25,
+                    "vertex {p:?} of level {level} at radius {r}"
+                );
+            }
+        }
+        // every contour sits at one of the traced levels
+        assert!(contours.iter().all(|c| c.level_m == c.level_m.round()));
+        // levels are exact multiples even where stepping by the interval drifts
+        let contours = grid2contours(&grid(21, 21, cone(10.0, 9.5)), 0.3);
+        assert!(
+            contours
+                .iter()
+                .all(|c| c.level_m == (c.level_m / 0.3).round() * 0.3)
+        );
+    }
+
+    #[test]
+    fn tilted_plane_gives_one_line_per_level_at_its_level() {
+        let contours = grid2contours(&grid(12, 6, |x, _| 0.5 * x + 0.1), 1.0);
+        let levels: Vec<f64> = contours.iter().map(|c| c.level_m).collect();
+        assert_eq!(levels, [1.0, 2.0, 3.0, 4.0, 5.0]);
+        for c in &contours {
+            assert!(!closed(&c.line));
+            for p in &c.line {
+                assert!(
+                    (0.5 * p.x + 0.1 - c.level_m).abs() < 0.06,
+                    "vertex {p:?} of level {}",
+                    c.level_m
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contour_file_carries_the_traced_level() {
+        let lines = contour_file(grid(12, 6, |x, _| 0.5 * x + 0.1), (100.0, 200.0), 2.0, 1.0);
+        let levels: Vec<f64> = lines.iter().map(|(_, &(_, h))| h).collect();
+        assert_eq!(levels, [1.0, 2.0, 3.0, 4.0, 5.0]);
+        for (line, &(class, h)) in lines.iter() {
+            assert_eq!(class, Classification::ContourSimple);
+            assert!(line.iter().all(|p| p.z == h));
+        }
+    }
+
+    #[test]
+    fn joining_keeps_the_level_of_the_slot_it_grew_from() {
+        let mut lines = Polylines::new();
+        let seg = |a: (f64, f64), b: (f64, f64), h| {
+            vec![Point3::new(a.0, a.1, h), Point3::new(b.0, b.1, h)]
+        };
+        let c = Classification::ContourSimple;
+        lines.push(seg((5.0, 5.0), (6.0, 5.0), 4.0), (c, 4.0));
+        lines.push(seg((0.0, 0.0), (1.0, 0.0), 3.0), (c, 3.0));
+        lines.push(seg((1.0, 0.0), (2.0, 0.0), 3.0), (c, 3.0));
+        let joined = join_contours(&lines, usize::MAX);
+        assert_eq!(joined.len(), 3);
+        assert_eq!(joined[0].level_m, 4.0);
+        assert_eq!(joined[0].line.len(), 2);
+        assert_eq!(joined[1].level_m, 3.0);
+        assert_eq!(
+            joined[1].line,
+            [(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)].map(|(x, y)| Point2::new(x, y))
+        );
+        assert!(joined[2].line.is_empty());
+    }
+
+    /// Where the deleted lookups found a level, the snapped traced level is the same value.
+    #[test]
+    fn snapped_level_matches_the_deleted_lookups() {
+        // a tilted cone: closed rings near the top, open lines at the border
+        let surface = |x: f64, y: f64| cone(15.0, 30.0)(x, y) + 0.3 * x;
+        let g = grid(31, 31, surface);
+        let frame = (1000.0, 2000.0, 1.0);
+
+        // smoothjoin: out.dxf.bin at the half interval, joined without a vertex limit
+        let interval = 1.25;
+        let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
+        let mut found = 0;
+        for c in join_contours(&file, usize::MAX) {
+            if c.line.len() < 3 {
+                continue;
+            }
+            let old = old_smoothjoin_level(&c.line, &g, frame, interval);
+            if !old.is_nan() {
+                assert_eq!(old, c.level_m);
+                found += 1;
+            }
+        }
+        assert!(found > 10, "the old lookup found {found} levels");
+
+        // knolldetector: contours03.dxf.bin at 0.3 m, closed rings of up to 121 vertices
+        let interval = 0.3;
+        let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
+        let mut found = 0;
+        for c in join_contours(&file, 201) {
+            if c.line.len() < 3 || c.line.len() > 121 || !closed(&c.line) {
+                continue;
+            }
+            let old = old_knoll_level(&c.line, &g, frame, interval);
+            if old != 0.0 {
+                assert_eq!(old, c.level_m);
+                found += 1;
+            }
+        }
+        assert!(found > 10, "the old lookup found {found} levels");
+    }
+
+    /// At scalefactor 1.3 (cell size and half interval not binary fractions) the old
+    /// lookup's exact on-grid test can miss every vertex and return NaN; the traced level
+    /// is always there.
+    #[test]
+    fn level_is_known_where_the_old_lookup_gave_nan() {
+        let scalefactor = 1.3;
+        let interval = 2.5 / 2.0 * scalefactor;
+        let frame = (1000.1, 2000.3, 2.0 * scalefactor);
+        let g = grid(31, 31, |x, y| cone(15.0, 30.0)(x, y) + 0.3 * x);
+        let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
+        let mut nan = 0;
+        for c in join_contours(&file, usize::MAX) {
+            if c.line.len() < 3 {
+                continue;
+            }
+            let h = c.level_m;
+            assert!(h.is_finite());
+            // every vertex lies at the level (grid coordinates back from world metres)
+            for p in &c.line {
+                let (x, y) = ((p.x - frame.0) / frame.2, (p.y - frame.1) / frame.2);
+                let z = cone(15.0, 30.0)(x, y) + 0.3 * x;
+                assert!((z - h).abs() < 0.5, "vertex {p:?} at {z}, level {h}");
+            }
+            if old_smoothjoin_level(&c.line, &g, frame, interval).is_nan() {
+                nan += 1;
+            }
+        }
+        assert!(nan > 0, "the old lookup found every level");
+    }
+
+    /// The knolldetector counterpart: with a 0.52 m cell at map coordinates its exact
+    /// on-grid test misses every vertex of some closed rings, which got level 0; the
+    /// traced level is right.
+    #[test]
+    fn level_is_known_where_the_old_knoll_lookup_gave_zero() {
+        let interval = 0.3 * 1.3;
+        let frame = (385000.0, 6712000.0, 0.52);
+        let surface = |x: f64, y: f64| cone(15.0, 30.0)(x, y) + 0.3 * x;
+        let g = grid(31, 31, surface);
+        let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
+        let mut zero = 0;
+        for c in join_contours(&file, 201) {
+            if c.line.len() < 3 || c.line.len() > 121 || !closed(&c.line) {
+                continue;
+            }
+            assert!(c.level_m > 0.0);
+            for p in &c.line {
+                let (x, y) = ((p.x - frame.0) / frame.2, (p.y - frame.1) / frame.2);
+                let z = surface(x, y);
+                assert!(
+                    (z - c.level_m).abs() < 0.5,
+                    "vertex {p:?} at {z}, level {}",
+                    c.level_m
+                );
+            }
+            if old_knoll_level(&c.line, &g, frame, interval) == 0.0 {
+                zero += 1;
+            }
+        }
+        assert!(zero > 0, "the old lookup found every level");
     }
 }

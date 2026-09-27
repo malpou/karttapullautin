@@ -7,8 +7,9 @@ use std::error::Error;
 use std::path::Path;
 
 use crate::config::Config;
+use crate::contours::join_contours;
 use crate::geometry::{
-    BinaryDxf, Bounds, Classification, Geometry, Point2, Points, Polylines, Ring, join_polylines,
+    BinaryDxf, Bounds, Classification, Geometry, Point2, Points, Polylines, Ring,
 };
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
@@ -148,8 +149,6 @@ pub fn knolldetector(
 
     let contours_ratio = contour_interval / 5.0 * scalefactor;
 
-    let interval = 0.3 * scalefactor;
-
     let heightmap_in = tmpfolder.join("xyz_03.hmap");
     let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
 
@@ -164,23 +163,25 @@ pub fn knolldetector(
     let ymax = (hmap.grid.height() - 1) as u64;
 
     let data = BinaryDxf::from_reader(&mut fs.open(tmpfolder.join("contours03.dxf.bin"))?)?;
-    let Geometry::Polylines2(lines) = data.take_geometry().swap_remove(0) else {
-        anyhow::bail!("contours03.dxf.bin should contain polylines");
+    let Geometry::Polylines3(lines) = data.take_geometry().swap_remove(0) else {
+        anyhow::bail!(
+            "contours03.dxf.bin holds no 3D contour lines: it is a stale temp file from another build; re-run the full pipeline"
+        );
     };
 
     let detected_bounds = Bounds::new(xmin as f64, xmax as f64, ymin as f64, ymax as f64);
     let mut detected_lines = Polylines::<Point2, Classification>::new();
 
     // TODO; might need to lower to 200
-    let joined = join_polylines(&lines, 201);
+    let joined = join_contours(&lines, 201);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
     let mut el_x: Vec<Vec<f64>> = joined
         .iter()
-        .map(|l| l.iter().map(|p| p.x).collect())
+        .map(|c| c.line.iter().map(|p| p.x).collect())
         .collect();
     let mut el_y: Vec<Vec<f64>> = joined
         .iter()
-        .map(|l| l.iter().map(|p| p.y).collect())
+        .map(|c| c.line.iter().map(|p| p.y).collect())
         .collect();
 
     let mut elevation: HashMap<u64, f64> = HashMap::default();
@@ -224,47 +225,7 @@ pub fn knolldetector(
                 let taily = *el_y[l].first().unwrap();
                 let mut yl = el_y[l].to_vec();
                 yl.push(taily);
-                let mut mm = ((el_x_len as f64 / 3.0).floor() - 1.0) as i32;
-                if mm < 0 {
-                    mm = 0;
-                }
-                let mut m = mm as usize;
-                let mut h = 0.0;
-                while m < xl.len() {
-                    let xm = xl[m];
-                    let ym = yl[m];
-                    let xo = (xm - xstart) / size;
-                    let yo = (ym - ystart) / size;
-                    if xo == xo.floor() {
-                        let h1 = hmap
-                            .grid
-                            .get((xo.floor() as usize, yo.floor() as usize))
-                            .copied()
-                            .unwrap_or(0.0);
-                        let h2 = hmap
-                            .grid
-                            .get((xo.floor() as usize, yo.floor() as usize + 1))
-                            .copied()
-                            .unwrap_or(0.0);
-                        h = h1 * (yo.floor() + 1.0 - yo) + h2 * (yo - yo.floor());
-                        h = (h / interval + 0.5).floor() * interval;
-                        break;
-                    } else if m < (el_x_len - 3) && yo == yo.floor() {
-                        let h1 = hmap
-                            .grid
-                            .get((xo.floor() as usize, yo.floor() as usize))
-                            .copied()
-                            .unwrap_or(0.0);
-                        let h2 = hmap
-                            .grid
-                            .get((xo.floor() as usize + 1, yo.floor() as usize))
-                            .copied()
-                            .unwrap_or(0.0);
-                        h = h1 * (xo.floor() + 1.0 - xo) + h2 * (xo - xo.floor());
-                        h = (h / interval + 0.5).floor() * interval;
-                    }
-                    m += 1;
-                }
+                let h = joined[l].level_m;
                 elevation.insert(l as u64, h);
 
                 let mut mm = ((el_x_len as f64 / 3.0).floor() - 1.0) as i32;

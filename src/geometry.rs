@@ -158,6 +158,18 @@ impl<P, C> IntoIterator for Polylines<P, C> {
     }
 }
 
+/// One contour line and the level it was traced at, so no consumer re-derives the level
+/// from the line's position on the heightmap.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Contour {
+    /// The level the line was traced at, in metres: an exact multiple of the interval
+    /// it was traced with.
+    pub level_m: f64,
+    /// The vertices; a closed ring repeats its first vertex at the end. The coordinates
+    /// are the producer's: grid cells from the tracer, world metres from a contour file.
+    pub line: Vec<Point2>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum Geometry {
     Points(Points),
@@ -594,7 +606,9 @@ pub fn signed_area(ring: &[Point2]) -> f64 {
 ///
 /// Lines with `len() >= max_vertices` are emptied and never joined (`usize::MAX` = no limit).
 /// Returns one `Vec<Point2>` per input slot, same length and order: absorbed donors and
-/// dropped lines come back empty so callers keep indexing by input position.
+/// dropped lines come back empty so callers keep indexing by input position. A joined line
+/// grows from the slot it is returned in, so that slot's class (a contour's level, say)
+/// belongs to it.
 ///
 /// Each quantized endpoint registers up to two lines: the first to reach it in `heads1`, the
 /// last in `heads2`. A missing entry means "no line", so every slot, 0 included, can be a

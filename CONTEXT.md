@@ -25,6 +25,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Local relief**: Height range within a small window around a cell. _Avoid_: steepness, slope
 **Contour interval**: Vertical spacing of full contours on the finished map.
 **Contour**: A line of equal height at a multiple of the contour interval (ISOM 101).
+**Level**: The height a contour is traced at, carried with the line from the tracer on (`Contour::level_m`) rather than read back off the ground model. _Avoid_: height, elevation (the GeoJSON property)
 **Index contour**: Every fifth contour, drawn heavier (ISOM 102).
 **Form line**: A half-interval line kept only where contours alone under-describe the ground (ISOM 103). _Avoid_: intermed, formline (as a mode number)
 **Depression**: A closed contour whose inside is lower than the line.

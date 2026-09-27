@@ -5,8 +5,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
+use crate::contours::join_contours;
 use crate::geometry::{
-    BinaryDxf, Classification, Geometry, Point2, Point3, Points, Polylines, Ring, join_polylines,
+    BinaryDxf, Classification, Geometry, Point2, Point3, Points, Polylines, Ring,
 };
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
@@ -517,8 +518,10 @@ pub fn smoothjoin(
         BinaryDxf::from_reader(&mut fs.open(input)?).expect("Unable to read out.dxf.bin");
 
     let input_bounds = input_dxf.bounds().clone(); // store the bounds for usage in the output
-    let Geometry::Polylines2(input_lines) = input_dxf.take_geometry().swap_remove(0) else {
-        return Err(anyhow::anyhow!("out.dxf.bin does not contain polylines").into());
+    let Geometry::Polylines3(input_lines) = input_dxf.take_geometry().swap_remove(0) else {
+        return Err(anyhow::anyhow!(
+            "out.dxf.bin holds no 3D contour lines: it is a stale temp file from another build; re-run the full pipeline"
+        ).into());
     };
 
     let mut out2_lines = Polylines::<Point3, (Classification, f64)>::new();
@@ -531,15 +534,15 @@ pub fn smoothjoin(
     let knollhead_output = tmpfolder.join("knollheads.txt");
     let mut knollhead_fp = fs.create(knollhead_output).expect("Unable to create file");
 
-    let joined = join_polylines(&input_lines, usize::MAX);
+    let joined = join_contours(&input_lines, usize::MAX);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
     let mut el_x: Vec<Vec<f64>> = joined
         .iter()
-        .map(|l| l.iter().map(|p| p.x).collect())
+        .map(|c| c.line.iter().map(|p| p.x).collect())
         .collect();
     let mut el_y: Vec<Vec<f64>> = joined
         .iter()
-        .map(|l| l.iter().map(|p| p.y).collect())
+        .map(|c| c.line.iter().map(|p| p.y).collect())
         .collect();
     for l in 0..input_lines.len() {
         let mut el_x_len = el_x[l].len();
@@ -550,49 +553,7 @@ pub fn smoothjoin(
                 skip = true;
                 el_x[l].clear();
             }
-            let mut h = f64::NAN;
-            if !skip {
-                let mut mm: isize = (((el_x_len - 1) as f64) / 3.0).floor() as isize - 1;
-                if mm < 0 {
-                    mm = 0;
-                }
-                let mut m = mm as usize;
-                while m < el_x_len {
-                    let xm = el_x[l][m];
-                    let ym = el_y[l][m];
-                    if (xm - xstart) / size == ((xm - xstart) / size).floor() {
-                        let xx = ((xm - xstart) / size) as usize;
-                        let yy = ((ym - ystart) / size) as usize;
-                        let h1 = xyz[(xx, yy)];
-                        if yy < xyz.height() - 1 {
-                            let h2 = xyz[(xx, yy + 1)];
-                            let h3 = h1 * (yy as f64 + 1.0 - (ym - ystart) / size)
-                                + h2 * ((ym - ystart) / size - yy as f64);
-                            h = (h3 / interval + 0.5).floor() * interval;
-                        } else {
-                            h = (h1 / interval + 0.5).floor() * interval;
-                        }
-                        break;
-                    } else if m < el_x_len - 1
-                        && (ym - ystart) / size == ((ym - ystart) / size).floor()
-                    {
-                        let xx = ((xm - xstart) / size) as usize;
-                        let yy = ((ym - ystart) / size) as usize;
-                        let h1 = xyz[(xx, yy)];
-                        if xx < xyz.width() - 1 {
-                            let h2 = xyz[(xx + 1, yy)];
-                            let h3 = h1 * (xx as f64 + 1.0 - (xm - xstart) / size)
-                                + h2 * ((xm - xstart) / size - xx as f64);
-                            h = (h3 / interval + 0.5).floor() * interval;
-                        } else {
-                            h = (h1 / interval + 0.5).floor() * interval;
-                        }
-                        break;
-                    } else {
-                        m += 1;
-                    }
-                }
-            }
+            let h = joined[l].level_m;
             if !skip
                 && el_x_len < depression_length
                 && el_x[l].first() == el_x[l].last()
