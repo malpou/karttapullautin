@@ -5,7 +5,6 @@ use imageproc::rect::Rect;
 use log::info;
 use std::error::Error;
 use std::f32::consts::SQRT_2;
-use std::io::Write;
 use std::path::Path;
 
 use crate::config::{Config, Zone};
@@ -693,22 +692,17 @@ pub fn makevege(
     let mut writer = fs
         .create(tmpfolder.join("undergrowth.pgw"))
         .expect("cannot create pgw file");
-    // Stays hand-written: the pixel sizes are f32 reciprocals and the rotation lines are the
-    // literal text "0.0", which WorldFile::write would print differently (ticket 18).
-    write!(
-        &mut writer,
-        "{}\r\n0.0\r\n0.0\r\n{}\r\n{}\r\n{}\r\n",
-        1.0 / tmpfactor,
-        -1.0 / tmpfactor,
-        xmin,
-        ymax,
-    )
-    .expect("Cannot write pgw file");
+    // the pixel pitch the raster is drawn with: the reciprocal of the f32 factor
+    WorldFile::north_up(1.0 / f64::from(tmpfactor), xmin, ymax)
+        .write(&mut writer)
+        .expect("Cannot write pgw file");
 
     let mut writer = fs
         .create(tmpfolder.join("vegetation.pgw"))
         .expect("cannot create pgw file");
-    WorldFile::write_unit_resolution(&mut writer, xmin, ymax).expect("Cannot write pgw file");
+    WorldFile::north_up(1.0, xmin, ymax)
+        .write(&mut writer)
+        .expect("Cannot write pgw file");
 
     if config.vector_vege {
         // per block*step cell: 1 where undergrowth is drawn (same test as the raster)

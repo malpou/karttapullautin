@@ -15,8 +15,6 @@ use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use log::info;
 use std::error::Error;
 use std::f64::consts::PI;
-use std::io::BufRead;
-use std::io::Write;
 use std::path::Path;
 
 pub fn render(
@@ -36,9 +34,9 @@ pub fn render(
 
     // Draw vegetation ----------
     let tfw_in = tmpfolder.join("vegetation.pgw");
-    let w = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
-    let x0 = w.x_origin;
-    let y0 = w.y_origin;
+    let vege_frame = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
+    let x0 = vege_frame.x_origin;
+    let y0 = vege_frame.y_origin;
 
     let mut img_reader = image::ImageReader::new(
         fs.open(tmpfolder.join("vegetation.png"))
@@ -241,29 +239,12 @@ pub fn render(
     )
     .expect("could not write image");
 
-    let file_in = tmpfolder.join("vegetation.pgw");
     let mut pgw_file_out = fs
         .create(format!("{filename}.pgw"))
         .expect("Unable to create file");
-
-    // Copies vegetation.pgw as text, scaling only lines 0 and 3; the other lines keep their
-    // original bytes, so this cannot go through WorldFile::write yet (ticket 18).
-    if let Ok(lines) = fs.open(file_in) {
-        for (i, line) in lines.lines().enumerate() {
-            let ip = line.unwrap_or(String::new());
-            let x: f64 = ip.parse::<f64>().unwrap();
-            if i == 0 || i == 3 {
-                write!(
-                    &mut pgw_file_out,
-                    "{}\r\n",
-                    x / DPI * GROUND_METRES_PER_INCH * scalefactor
-                )
-                .expect("Unable to write to file");
-            } else {
-                write!(&mut pgw_file_out, "{ip}\r\n").expect("Unable to write to file");
-            }
-        }
-    }
+    map_world_file(&vege_frame, scalefactor)
+        .write(&mut pgw_file_out)
+        .expect("Unable to write to file");
     crate::crs::write_raster_crs(fs, format!("{filename}.png"), config.epsg)?;
     info!("Done");
     Ok(())
@@ -355,7 +336,7 @@ fn draw_cliffs(
 /// its length: this drops specks, not real knolls.
 ///
 /// `x`/`y` arrive in render pixels (600 dpi, 1:10,000, divided by `scalefactor`), so the
-/// inverse of that transform converts back to metres — the same one `formiline_points`
+/// inverse of that transform converts back to metres — the same one `pixel_to_ground`
 /// uses when it writes ground coordinates.
 fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], scalefactor: f64) -> bool {
     const MIN_GROUND_M: f64 = 16.5;
@@ -600,12 +581,9 @@ pub fn draw_curves(
                     help[i] = false;
                     help2[i] = true;
                     help3[i] = false;
-                    let xx = (((x[i] / DPI * GROUND_METRES_PER_INCH * scalefactor + x0) - xstart)
-                        / size)
-                        .floor() as usize;
-                    let yy = (((-y[i] / DPI * GROUND_METRES_PER_INCH * scalefactor + y0) - ystart)
-                        / size)
-                        .floor() as usize;
+                    let ground = pixel_to_ground(x[i], y[i], x0, y0, scalefactor);
+                    let xx = ((ground.x - xstart) / size).floor() as usize;
+                    let yy = ((ground.y - ystart) / size).floor() as usize;
 
                     // make sure indices are within bounds for the grid lookups
                     if xx >= xyz.width() - 1 || yy >= xyz.height() - 1 || xx < 1 || yy < 1 {
@@ -817,11 +795,7 @@ pub fn draw_curves(
                 }
                 if curvew != 1.5 || formline == 0.0 || help2[i] || smallringtest {
                     if should_generate_formlines && curvew == 1.5 {
-                        formiline_points.push(Point2::new(
-                            x[i] / DPI * GROUND_METRES_PER_INCH * scalefactor + x0,
-                            // Operand order differs from the line above on purpose: changing it changes rounding (ticket 18).
-                            -y[i] / DPI * scalefactor * GROUND_METRES_PER_INCH + y0,
-                        ));
+                        formiline_points.push(pixel_to_ground(x[i], y[i], x0, y0, scalefactor));
                     }
 
                     if draw_image {
@@ -964,6 +938,26 @@ pub fn draw_curves(
     Ok(())
 }
 
+/// The rendered map's world file: `vegetation.pgw`'s frame (one pixel per ground metre) with
+/// the map's pixel size.
+fn map_world_file(vege_frame: &WorldFile, scalefactor: f64) -> WorldFile {
+    WorldFile {
+        pixel_size_x: vege_frame.pixel_size_x / DPI * GROUND_METRES_PER_INCH * scalefactor,
+        pixel_size_y: vege_frame.pixel_size_y / DPI * GROUND_METRES_PER_INCH * scalefactor,
+        ..vege_frame.clone()
+    }
+}
+
+/// Inverse of the draw transform `((x - x0), (y0 - y)) * DPI / GROUND_METRES_PER_INCH /
+/// scalefactor`: a map-pixel position back to ground coordinates, one operator order for both
+/// axes.
+fn pixel_to_ground(x: f64, y: f64, x0: f64, y0: f64, scalefactor: f64) -> Point2 {
+    Point2::new(
+        x / DPI * GROUND_METRES_PER_INCH * scalefactor + x0,
+        -y / DPI * GROUND_METRES_PER_INCH * scalefactor + y0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::closed_ring_below_isom_minimum;
@@ -1003,5 +997,43 @@ mod tests {
         let halved: Vec<f64> = x.iter().map(|v| v / 2.0).collect();
         let halved_y: Vec<f64> = y.iter().map(|v| v / 2.0).collect();
         assert!(!closed_ring_below_isom_minimum(&halved, &halved_y, 2.0));
+    }
+
+    #[test]
+    fn map_world_file_scales_pixel_sizes_and_keeps_the_origin() {
+        use super::map_world_file;
+        use crate::mapframe::WorldFile;
+        let vege = WorldFile::north_up(1.0, 123456.5, 7891011.5);
+        let map = map_world_file(&vege, 1.0);
+        assert_eq!(map.pixel_size_x, 1.0 / 600.0 * 254.0);
+        assert_eq!(map.pixel_size_y, -1.0 / 600.0 * 254.0);
+        assert_eq!((map.rotation_x, map.rotation_y), (0.0, 0.0));
+        assert_eq!((map.x_origin, map.y_origin), (123456.5, 7891011.5));
+        assert_eq!(
+            map_world_file(&vege, 2.0).pixel_size_x,
+            2.0 * map.pixel_size_x
+        );
+    }
+
+    #[test]
+    fn pixel_to_ground_inverts_the_draw_transform_on_both_axes() {
+        use super::pixel_to_ground;
+        use crate::mapframe::{DPI, GROUND_METRES_PER_INCH};
+        let (x0, y0) = (500000.0, 6700000.0);
+        for scalefactor in [0.5, 0.7, 1.0, 1.3, 2.0] {
+            for (gx, gy) in [
+                (500123.4, 6699876.6),
+                (500001.1, 6699999.3),
+                (500777.7, 6699321.9),
+            ] {
+                let px = (gx - x0) * DPI / GROUND_METRES_PER_INCH / scalefactor;
+                let py = (y0 - gy) * DPI / GROUND_METRES_PER_INCH / scalefactor;
+                let p = pixel_to_ground(px, py, x0, y0, scalefactor);
+                assert!((p.x - gx).abs() < 1e-6 && (p.y - gy).abs() < 1e-6, "{p:?}");
+                // one operator order: the same pixel offset gives the same ground offset
+                let q = pixel_to_ground(px, px, 0.0, 0.0, scalefactor);
+                assert_eq!(q.y.to_bits(), (-q.x).to_bits());
+            }
+        }
     }
 }

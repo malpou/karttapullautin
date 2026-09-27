@@ -887,7 +887,8 @@ pub fn batch_process(
                 let mut pgw_file_out = fs
                     .create(format!("{batchoutfolder}/{laz}_vege.pgw"))
                     .expect("Unable to create file");
-                WorldFile::write_unit_resolution(&mut pgw_file_out, minx + 0.5, maxy - 0.5)
+                WorldFile::north_up(1.0, minx + 0.5, maxy - 0.5)
+                    .write(&mut pgw_file_out)
                     .expect("Unable to write to file");
 
                 drop(pgw_file_out);

@@ -1,0 +1,5090 @@
+{
+  "baseline_only": [],
+  "candidate_only": [],
+  "files": {
+    "batch/out/merged.jgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/out/merged.jpg": {
+      "baseline_bytes": 13193907,
+      "candidate_bytes": 13193907,
+      "identical": true
+    },
+    "batch/out/merged.jpg.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/out/merged.pgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/out/merged.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/out/merged_depr.jgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/out/merged_depr.jpg": {
+      "baseline_bytes": 13355974,
+      "candidate_bytes": 13355974,
+      "identical": true
+    },
+    "batch/out/merged_depr.jpg.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/out/merged_depr.pgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/out/merged_depr.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/out/output.dxf": {
+      "baseline_bytes": 18038644,
+      "candidate_bytes": 18038644,
+      "identical": true
+    },
+    "batch/out/output.ocdCrt": {
+      "baseline_bytes": 352,
+      "candidate_bytes": 352,
+      "identical": true
+    },
+    "batch/out/test_file.pgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/out/test_file.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/out/test_file_depr.pgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/out/test_file_depr.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/pullautus1.pgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/pullautus1.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/pullautus_depr1.pgw": {
+      "baseline_bytes": 87,
+      "candidate_bytes": 87,
+      "identical": true
+    },
+    "batch/pullautus_depr1.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "batch/temp1.xyz.bin": {
+      "baseline_bytes": 171145236,
+      "candidate_bytes": 171145236,
+      "identical": true
+    },
+    "batch/temp1/c2g.dxf": {
+      "baseline_bytes": 783325,
+      "candidate_bytes": 783325,
+      "identical": true
+    },
+    "batch/temp1/c2g.dxf.bin": {
+      "baseline_bytes": 133458,
+      "candidate_bytes": 133458,
+      "identical": true
+    },
+    "batch/temp1/c3g.dxf": {
+      "baseline_bytes": 9297031,
+      "candidate_bytes": 9297031,
+      "identical": true
+    },
+    "batch/temp1/c3g.dxf.bin": {
+      "baseline_bytes": 1589440,
+      "candidate_bytes": 1589440,
+      "identical": true
+    },
+    "batch/temp1/contours03.dxf": {
+      "baseline_bytes": 142742149,
+      "candidate_bytes": 142742149,
+      "identical": true
+    },
+    "batch/temp1/contours03.dxf.bin": {
+      "baseline_bytes": 38721616,
+      "candidate_bytes": 38721616,
+      "identical": true
+    },
+    "batch/temp1/depressions.txt": {
+      "baseline_bytes": 373289,
+      "candidate_bytes": 373289,
+      "identical": true
+    },
+    "batch/temp1/detected.dxf": {
+      "baseline_bytes": 158,
+      "candidate_bytes": 158,
+      "identical": true
+    },
+    "batch/temp1/detected.dxf.bin": {
+      "baseline_bytes": 678408,
+      "candidate_bytes": 678408,
+      "identical": true
+    },
+    "batch/temp1/dotknolls.bin": {
+      "baseline_bytes": 17428,
+      "candidate_bytes": 17428,
+      "identical": true
+    },
+    "batch/temp1/dotknolls.dxf": {
+      "baseline_bytes": 80658,
+      "candidate_bytes": 80658,
+      "identical": true
+    },
+    "batch/temp1/dotknolls.dxf.bin": {
+      "baseline_bytes": 17467,
+      "candidate_bytes": 17467,
+      "identical": true
+    },
+    "batch/temp1/formlines.dxf": {
+      "baseline_bytes": 5467608,
+      "candidate_bytes": 5467608,
+      "identical": true
+    },
+    "batch/temp1/formlines.dxf.bin": {
+      "baseline_bytes": 1160540,
+      "candidate_bytes": 1160540,
+      "identical": true
+    },
+    "batch/temp1/knollheads.txt": {
+      "baseline_bytes": 37150,
+      "candidate_bytes": 37150,
+      "identical": true
+    },
+    "batch/temp1/out.dxf": {
+      "baseline_bytes": 15867803,
+      "candidate_bytes": 15867803,
+      "identical": true
+    },
+    "batch/temp1/out.dxf.bin": {
+      "baseline_bytes": 4341132,
+      "candidate_bytes": 4341132,
+      "identical": true
+    },
+    "batch/temp1/out2.dxf": {
+      "baseline_bytes": 18040832,
+      "candidate_bytes": 18040832,
+      "identical": true
+    },
+    "batch/temp1/out2.dxf.bin": {
+      "baseline_bytes": 5081778,
+      "candidate_bytes": 5081778,
+      "identical": true
+    },
+    "batch/temp1/pins.bin": {
+      "baseline_bytes": 751281,
+      "candidate_bytes": 751281,
+      "identical": true
+    },
+    "batch/temp1/undergrowth.pgw": {
+      "baseline_bytes": 52,
+      "candidate_bytes": 66,
+      "identical": false
+    },
+    "batch/temp1/vegetation.dxf": {
+      "baseline_bytes": 7632201,
+      "candidate_bytes": 7632201,
+      "identical": true
+    },
+    "batch/temp1/vegetation.dxf.bin": {
+      "baseline_bytes": 2072792,
+      "candidate_bytes": 2072792,
+      "identical": true
+    },
+    "batch/temp1/vegetation.pgw": {
+      "baseline_bytes": 38,
+      "candidate_bytes": 30,
+      "identical": false
+    },
+    "batch/temp1/xyz2.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "batch/temp1/xyz_03.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "batch/temp1/xyz_knolls.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "batch/temp1/xyztemp.xyz.bin": {
+      "baseline_bytes": 171145236,
+      "candidate_bytes": 171145236,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/c2g.dxf": {
+      "baseline_bytes": 783325,
+      "candidate_bytes": 783325,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/c2g.dxf.bin": {
+      "baseline_bytes": 133458,
+      "candidate_bytes": 133458,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/c3g.dxf": {
+      "baseline_bytes": 9297031,
+      "candidate_bytes": 9297031,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/c3g.dxf.bin": {
+      "baseline_bytes": 1589440,
+      "candidate_bytes": 1589440,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/contours03.dxf": {
+      "baseline_bytes": 142742149,
+      "candidate_bytes": 142742149,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/contours03.dxf.bin": {
+      "baseline_bytes": 38721616,
+      "candidate_bytes": 38721616,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/depressions.txt": {
+      "baseline_bytes": 373289,
+      "candidate_bytes": 373289,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/detected.dxf": {
+      "baseline_bytes": 158,
+      "candidate_bytes": 158,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/detected.dxf.bin": {
+      "baseline_bytes": 678408,
+      "candidate_bytes": 678408,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/dotknolls.bin": {
+      "baseline_bytes": 17428,
+      "candidate_bytes": 17428,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/dotknolls.dxf": {
+      "baseline_bytes": 80658,
+      "candidate_bytes": 80658,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/dotknolls.dxf.bin": {
+      "baseline_bytes": 17467,
+      "candidate_bytes": 17467,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/formlines.dxf": {
+      "baseline_bytes": 5467608,
+      "candidate_bytes": 5467608,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/formlines.dxf.bin": {
+      "baseline_bytes": 1160540,
+      "candidate_bytes": 1160540,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/knollheads.txt": {
+      "baseline_bytes": 37150,
+      "candidate_bytes": 37150,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/out.dxf": {
+      "baseline_bytes": 15867803,
+      "candidate_bytes": 15867803,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/out.dxf.bin": {
+      "baseline_bytes": 4341132,
+      "candidate_bytes": 4341132,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/out2.dxf": {
+      "baseline_bytes": 18040832,
+      "candidate_bytes": 18040832,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/out2.dxf.bin": {
+      "baseline_bytes": 5081778,
+      "candidate_bytes": 5081778,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/pins.bin": {
+      "baseline_bytes": 751281,
+      "candidate_bytes": 751281,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/undergrowth.pgw": {
+      "baseline_bytes": 52,
+      "candidate_bytes": 66,
+      "identical": false
+    },
+    "batch/temp_test_file_dir/vegetation.dxf": {
+      "baseline_bytes": 7632201,
+      "candidate_bytes": 7632201,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/vegetation.dxf.bin": {
+      "baseline_bytes": 2072792,
+      "candidate_bytes": 2072792,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/vegetation.pgw": {
+      "baseline_bytes": 38,
+      "candidate_bytes": 30,
+      "identical": false
+    },
+    "batch/temp_test_file_dir/xyz2.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/xyz_03.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/xyz_knolls.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "batch/temp_test_file_dir/xyztemp.xyz.bin": {
+      "baseline_bytes": 171145236,
+      "candidate_bytes": 171145236,
+      "identical": true
+    },
+    "single/pullautus.pgw": {
+      "baseline_bytes": 70,
+      "candidate_bytes": 66,
+      "identical": false
+    },
+    "single/pullautus.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "single/pullautus_depr.pgw": {
+      "baseline_bytes": 70,
+      "candidate_bytes": 66,
+      "identical": false
+    },
+    "single/pullautus_depr.png.aux.xml": {
+      "baseline_bytes": 50,
+      "candidate_bytes": 50,
+      "identical": true
+    },
+    "single/temp/c2g.dxf": {
+      "baseline_bytes": 783325,
+      "candidate_bytes": 783325,
+      "identical": true
+    },
+    "single/temp/c2g.dxf.bin": {
+      "baseline_bytes": 133458,
+      "candidate_bytes": 133458,
+      "identical": true
+    },
+    "single/temp/c3g.dxf": {
+      "baseline_bytes": 9297031,
+      "candidate_bytes": 9297031,
+      "identical": true
+    },
+    "single/temp/c3g.dxf.bin": {
+      "baseline_bytes": 1589440,
+      "candidate_bytes": 1589440,
+      "identical": true
+    },
+    "single/temp/contours03.dxf": {
+      "baseline_bytes": 142742149,
+      "candidate_bytes": 142742149,
+      "identical": true
+    },
+    "single/temp/contours03.dxf.bin": {
+      "baseline_bytes": 38721616,
+      "candidate_bytes": 38721616,
+      "identical": true
+    },
+    "single/temp/depressions.txt": {
+      "baseline_bytes": 373289,
+      "candidate_bytes": 373289,
+      "identical": true
+    },
+    "single/temp/detected.dxf": {
+      "baseline_bytes": 158,
+      "candidate_bytes": 158,
+      "identical": true
+    },
+    "single/temp/detected.dxf.bin": {
+      "baseline_bytes": 678408,
+      "candidate_bytes": 678408,
+      "identical": true
+    },
+    "single/temp/dotknolls.bin": {
+      "baseline_bytes": 17428,
+      "candidate_bytes": 17428,
+      "identical": true
+    },
+    "single/temp/dotknolls.dxf": {
+      "baseline_bytes": 80658,
+      "candidate_bytes": 80658,
+      "identical": true
+    },
+    "single/temp/dotknolls.dxf.bin": {
+      "baseline_bytes": 17467,
+      "candidate_bytes": 17467,
+      "identical": true
+    },
+    "single/temp/formlines.dxf": {
+      "baseline_bytes": 5467608,
+      "candidate_bytes": 5467608,
+      "identical": true
+    },
+    "single/temp/formlines.dxf.bin": {
+      "baseline_bytes": 1160540,
+      "candidate_bytes": 1160540,
+      "identical": true
+    },
+    "single/temp/knollheads.txt": {
+      "baseline_bytes": 37150,
+      "candidate_bytes": 37150,
+      "identical": true
+    },
+    "single/temp/out.dxf": {
+      "baseline_bytes": 15867803,
+      "candidate_bytes": 15867803,
+      "identical": true
+    },
+    "single/temp/out.dxf.bin": {
+      "baseline_bytes": 4341132,
+      "candidate_bytes": 4341132,
+      "identical": true
+    },
+    "single/temp/out2.dxf": {
+      "baseline_bytes": 18040832,
+      "candidate_bytes": 18040832,
+      "identical": true
+    },
+    "single/temp/out2.dxf.bin": {
+      "baseline_bytes": 5081778,
+      "candidate_bytes": 5081778,
+      "identical": true
+    },
+    "single/temp/pins.bin": {
+      "baseline_bytes": 751281,
+      "candidate_bytes": 751281,
+      "identical": true
+    },
+    "single/temp/undergrowth.pgw": {
+      "baseline_bytes": 52,
+      "candidate_bytes": 66,
+      "identical": false
+    },
+    "single/temp/vegetation.pgw": {
+      "baseline_bytes": 38,
+      "candidate_bytes": 30,
+      "identical": false
+    },
+    "single/temp/xyz2.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "single/temp/xyz_03.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "single/temp/xyz_knolls.hmap": {
+      "baseline_bytes": 18024048,
+      "candidate_bytes": 18024048,
+      "identical": true
+    },
+    "single/temp/xyztemp.xyz.bin": {
+      "baseline_bytes": 171145236,
+      "candidate_bytes": 171145236,
+      "identical": true
+    }
+  },
+  "rasters": {
+    "batch/out/merged.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3357274,
+          "candidate_px": 3357274,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44148,
+          "candidate_px": 44148,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 617871,
+          "candidate_px": 617871,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3419,
+          "candidate_px": 3419,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 936,
+          "candidate_px": 936,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 154727,
+          "candidate_px": 154727,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1333272,
+          "candidate_px": 1333272,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2106023,
+          "candidate_px": 2106023,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1178377,
+          "candidate_px": 1178377,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3448080,
+          "candidate_px": 3448080,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1520814,
+          "candidate_px": 1520814,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 1949811,
+          "candidate_px": 1949811,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1320279,
+          "candidate_px": 1320279,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 11047189,
+          "candidate_px": 11047189,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 22157524,
+          "candidate_px": 22157524,
+          "iou": 1.0
+        }
+      },
+      "height": 7088,
+      "width": 7088
+    },
+    "batch/out/merged_depr.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3357274,
+          "candidate_px": 3357274,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44148,
+          "candidate_px": 44148,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 617871,
+          "candidate_px": 617871,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3393,
+          "candidate_px": 3393,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 866,
+          "candidate_px": 866,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 153922,
+          "candidate_px": 153922,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1328898,
+          "candidate_px": 1328898,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2100661,
+          "candidate_px": 2100661,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1175389,
+          "candidate_px": 1175389,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3447990,
+          "candidate_px": 3447990,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1517541,
+          "candidate_px": 1517541,
+          "iou": 1.0
+        },
+        "#c800c8": {
+          "baseline_px": 91821,
+          "candidate_px": 91821,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 1945979,
+          "candidate_px": 1945979,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1320279,
+          "candidate_px": 1320279,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 11026863,
+          "candidate_px": 11026863,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 22106849,
+          "candidate_px": 22106849,
+          "iou": 1.0
+        }
+      },
+      "height": 7088,
+      "width": 7088
+    },
+    "batch/out/test_file.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3357274,
+          "candidate_px": 3357274,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44148,
+          "candidate_px": 44148,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 617871,
+          "candidate_px": 617871,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3419,
+          "candidate_px": 3419,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 936,
+          "candidate_px": 936,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 154727,
+          "candidate_px": 154727,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1333272,
+          "candidate_px": 1333272,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2106023,
+          "candidate_px": 2106023,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1178377,
+          "candidate_px": 1178377,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3448080,
+          "candidate_px": 3448080,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1520814,
+          "candidate_px": 1520814,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 1949811,
+          "candidate_px": 1949811,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1320279,
+          "candidate_px": 1320279,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 11047189,
+          "candidate_px": 11047189,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 22157524,
+          "candidate_px": 22157524,
+          "iou": 1.0
+        }
+      },
+      "height": 7088,
+      "width": 7088
+    },
+    "batch/out/test_file_depr.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3357274,
+          "candidate_px": 3357274,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44148,
+          "candidate_px": 44148,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 617871,
+          "candidate_px": 617871,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3393,
+          "candidate_px": 3393,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 866,
+          "candidate_px": 866,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 153922,
+          "candidate_px": 153922,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1328898,
+          "candidate_px": 1328898,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2100661,
+          "candidate_px": 2100661,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1175389,
+          "candidate_px": 1175389,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3447990,
+          "candidate_px": 3447990,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1517541,
+          "candidate_px": 1517541,
+          "iou": 1.0
+        },
+        "#c800c8": {
+          "baseline_px": 91821,
+          "candidate_px": 91821,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 1945979,
+          "candidate_px": 1945979,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1320279,
+          "candidate_px": 1320279,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 11026863,
+          "candidate_px": 11026863,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 22106849,
+          "candidate_px": 22106849,
+          "iou": 1.0
+        }
+      },
+      "height": 7088,
+      "width": 7088
+    },
+    "batch/pullautus1.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3357274,
+          "candidate_px": 3357274,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44148,
+          "candidate_px": 44148,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 617871,
+          "candidate_px": 617871,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3419,
+          "candidate_px": 3419,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 936,
+          "candidate_px": 936,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 154727,
+          "candidate_px": 154727,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1333272,
+          "candidate_px": 1333272,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2106023,
+          "candidate_px": 2106023,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1178377,
+          "candidate_px": 1178377,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3448080,
+          "candidate_px": 3448080,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1520814,
+          "candidate_px": 1520814,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 1949811,
+          "candidate_px": 1949811,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1320279,
+          "candidate_px": 1320279,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 11047189,
+          "candidate_px": 11047189,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 22157524,
+          "candidate_px": 22157524,
+          "iou": 1.0
+        }
+      },
+      "height": 7088,
+      "width": 7088
+    },
+    "batch/pullautus_depr1.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3357274,
+          "candidate_px": 3357274,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44148,
+          "candidate_px": 44148,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 617871,
+          "candidate_px": 617871,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3393,
+          "candidate_px": 3393,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 866,
+          "candidate_px": 866,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 153922,
+          "candidate_px": 153922,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1328898,
+          "candidate_px": 1328898,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2100661,
+          "candidate_px": 2100661,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1175389,
+          "candidate_px": 1175389,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3447990,
+          "candidate_px": 3447990,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1517541,
+          "candidate_px": 1517541,
+          "iou": 1.0
+        },
+        "#c800c8": {
+          "baseline_px": 91821,
+          "candidate_px": 91821,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 1945979,
+          "candidate_px": 1945979,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1320279,
+          "candidate_px": 1320279,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 11026863,
+          "candidate_px": 11026863,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 22106849,
+          "candidate_px": 22106849,
+          "iou": 1.0
+        }
+      },
+      "height": 7088,
+      "width": 7088
+    },
+    "batch/temp1/blueblack.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#ffffff": {
+          "baseline_px": 9018009,
+          "candidate_px": 9018009,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp1/c2.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3924,
+          "candidate_px": 3924,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 9008080,
+          "candidate_px": 9008080,
+          "iou": 1.0
+        }
+      },
+      "height": 3002,
+      "width": 3002
+    },
+    "batch/temp1/greens.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#50d150": {
+          "baseline_px": 472,
+          "candidate_px": 472,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 63404,
+          "candidate_px": 63404,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 271156,
+          "candidate_px": 271156,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 428086,
+          "candidate_px": 428086,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 244512,
+          "candidate_px": 244512,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 317598,
+          "candidate_px": 317598,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 412430,
+          "candidate_px": 412430,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 7280351,
+          "candidate_px": 7280351,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp1/high.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 2964238,
+          "candidate_px": 2964238,
+          "iou": 1.0
+        },
+        "#00000000": {
+          "baseline_px": 45416288,
+          "candidate_px": 45416288,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44298,
+          "candidate_px": 44298,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 619071,
+          "candidate_px": 619071,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1242736,
+          "candidate_px": 1242736,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 24018,
+          "candidate_px": 24018,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp1/low.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#00000000": {
+          "baseline_px": 50217045,
+          "candidate_px": 50217045,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 93604,
+          "candidate_px": 93604,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp1/undergrowth.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#407900": {
+          "baseline_px": 4342,
+          "candidate_px": 4342,
+          "iou": 1.0
+        },
+        "#ffffff00": {
+          "baseline_px": 50306307,
+          "candidate_px": 50306307,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp1/undergrowth_bit.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 50310649,
+          "candidate_px": 50310649,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp1/vegetation.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#50d150": {
+          "baseline_px": 472,
+          "candidate_px": 472,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 63368,
+          "candidate_px": 63368,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 271078,
+          "candidate_px": 271078,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 427758,
+          "candidate_px": 427758,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 244029,
+          "candidate_px": 244029,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 316481,
+          "candidate_px": 316481,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 408943,
+          "candidate_px": 408943,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 2570184,
+          "candidate_px": 2570184,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 4715696,
+          "candidate_px": 4715696,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp1/yellow.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#ffdba6": {
+          "baseline_px": 2570184,
+          "candidate_px": 2570184,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 6447825,
+          "candidate_px": 6447825,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp_test_file_dir/blueblack.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#ffffff": {
+          "baseline_px": 9018009,
+          "candidate_px": 9018009,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp_test_file_dir/c2.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3924,
+          "candidate_px": 3924,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 9008080,
+          "candidate_px": 9008080,
+          "iou": 1.0
+        }
+      },
+      "height": 3002,
+      "width": 3002
+    },
+    "batch/temp_test_file_dir/greens.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#50d150": {
+          "baseline_px": 472,
+          "candidate_px": 472,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 63404,
+          "candidate_px": 63404,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 271156,
+          "candidate_px": 271156,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 428086,
+          "candidate_px": 428086,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 244512,
+          "candidate_px": 244512,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 317598,
+          "candidate_px": 317598,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 412430,
+          "candidate_px": 412430,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 7280351,
+          "candidate_px": 7280351,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp_test_file_dir/high.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 2964238,
+          "candidate_px": 2964238,
+          "iou": 1.0
+        },
+        "#00000000": {
+          "baseline_px": 45416288,
+          "candidate_px": 45416288,
+          "iou": 1.0
+        },
+        "#000adc": {
+          "baseline_px": 44298,
+          "candidate_px": 44298,
+          "iou": 1.0
+        },
+        "#1dbeff": {
+          "baseline_px": 619071,
+          "candidate_px": 619071,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 1242736,
+          "candidate_px": 1242736,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 24018,
+          "candidate_px": 24018,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp_test_file_dir/low.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#00000000": {
+          "baseline_px": 50217045,
+          "candidate_px": 50217045,
+          "iou": 1.0
+        },
+        "#ff9650": {
+          "baseline_px": 93604,
+          "candidate_px": 93604,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp_test_file_dir/undergrowth.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#407900": {
+          "baseline_px": 4342,
+          "candidate_px": 4342,
+          "iou": 1.0
+        },
+        "#ffffff00": {
+          "baseline_px": 50306307,
+          "candidate_px": 50306307,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp_test_file_dir/undergrowth_bit.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 50310649,
+          "candidate_px": 50310649,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "batch/temp_test_file_dir/vegetation.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#50d150": {
+          "baseline_px": 472,
+          "candidate_px": 472,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 63368,
+          "candidate_px": 63368,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 271078,
+          "candidate_px": 271078,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 427758,
+          "candidate_px": 427758,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 244029,
+          "candidate_px": 244029,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 316481,
+          "candidate_px": 316481,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 408943,
+          "candidate_px": 408943,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 2570184,
+          "candidate_px": 2570184,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 4715696,
+          "candidate_px": 4715696,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "batch/temp_test_file_dir/yellow.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#ffdba6": {
+          "baseline_px": 2570184,
+          "candidate_px": 2570184,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 6447825,
+          "candidate_px": 6447825,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "single/pullautus.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 428648,
+          "candidate_px": 428648,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3914,
+          "candidate_px": 3914,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 2493,
+          "candidate_px": 2493,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 341266,
+          "candidate_px": 341266,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1408231,
+          "candidate_px": 1408231,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2181174,
+          "candidate_px": 2181174,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1227889,
+          "candidate_px": 1227889,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3659088,
+          "candidate_px": 3659088,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1585268,
+          "candidate_px": 1585268,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 2038929,
+          "candidate_px": 2038929,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 13439340,
+          "candidate_px": 13439340,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 23994409,
+          "candidate_px": 23994409,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "single/pullautus_depr.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 428648,
+          "candidate_px": 428648,
+          "iou": 1.0
+        },
+        "#407900": {
+          "baseline_px": 3888,
+          "candidate_px": 3888,
+          "iou": 1.0
+        },
+        "#50d150": {
+          "baseline_px": 2423,
+          "candidate_px": 2423,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 340447,
+          "candidate_px": 340447,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 1403606,
+          "candidate_px": 1403606,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 2175392,
+          "candidate_px": 2175392,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 1224558,
+          "candidate_px": 1224558,
+          "iou": 1.0
+        },
+        "#a6552b": {
+          "baseline_px": 3658998,
+          "candidate_px": 3658998,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 1581588,
+          "candidate_px": 1581588,
+          "iou": 1.0
+        },
+        "#c800c8": {
+          "baseline_px": 104536,
+          "candidate_px": 104536,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 2034439,
+          "candidate_px": 2034439,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 13413892,
+          "candidate_px": 13413892,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 23938234,
+          "candidate_px": 23938234,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "single/temp/blueblack.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#ffffff": {
+          "baseline_px": 9018009,
+          "candidate_px": 9018009,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "single/temp/c2.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 3924,
+          "candidate_px": 3924,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 9008080,
+          "candidate_px": 9008080,
+          "iou": 1.0
+        }
+      },
+      "height": 3002,
+      "width": 3002
+    },
+    "single/temp/greens.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#50d150": {
+          "baseline_px": 472,
+          "candidate_px": 472,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 63404,
+          "candidate_px": 63404,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 271156,
+          "candidate_px": 271156,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 428086,
+          "candidate_px": 428086,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 244512,
+          "candidate_px": 244512,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 317598,
+          "candidate_px": 317598,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 412430,
+          "candidate_px": 412430,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 7280351,
+          "candidate_px": 7280351,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "single/temp/undergrowth.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#407900": {
+          "baseline_px": 4342,
+          "candidate_px": 4342,
+          "iou": 1.0
+        },
+        "#ffffff00": {
+          "baseline_px": 50306307,
+          "candidate_px": 50306307,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "single/temp/undergrowth_bit.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#000000": {
+          "baseline_px": 50310649,
+          "candidate_px": 50310649,
+          "iou": 1.0
+        }
+      },
+      "height": 7093,
+      "width": 7093
+    },
+    "single/temp/vegetation.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#50d150": {
+          "baseline_px": 472,
+          "candidate_px": 472,
+          "iou": 1.0
+        },
+        "#64d964": {
+          "baseline_px": 63368,
+          "candidate_px": 63368,
+          "iou": 1.0
+        },
+        "#78e078": {
+          "baseline_px": 271078,
+          "candidate_px": 271078,
+          "iou": 1.0
+        },
+        "#8ce78c": {
+          "baseline_px": 427758,
+          "candidate_px": 427758,
+          "iou": 1.0
+        },
+        "#a0efa0": {
+          "baseline_px": 244029,
+          "candidate_px": 244029,
+          "iou": 1.0
+        },
+        "#b4f6b4": {
+          "baseline_px": 316481,
+          "candidate_px": 316481,
+          "iou": 1.0
+        },
+        "#c8fec8": {
+          "baseline_px": 408943,
+          "candidate_px": 408943,
+          "iou": 1.0
+        },
+        "#ffdba6": {
+          "baseline_px": 2570184,
+          "candidate_px": 2570184,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 4715696,
+          "candidate_px": 4715696,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    },
+    "single/temp/yellow.png": {
+      "changed_percent": 0.0,
+      "changed_pixels": 0,
+      "classes": {
+        "#ffdba6": {
+          "baseline_px": 2570184,
+          "candidate_px": 2570184,
+          "iou": 1.0
+        },
+        "#ffffff": {
+          "baseline_px": 6447825,
+          "candidate_px": 6447825,
+          "iou": 1.0
+        }
+      },
+      "height": 3003,
+      "width": 3003
+    }
+  },
+  "tolerance_m": 1.0,
+  "vectors": {
+    "batch/out/cliffs.geojson": {
+      "codes": {
+        "201.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 523,
+            "features": 162,
+            "length_m": 13304.621396,
+            "lines": 162,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 523,
+            "features": 162,
+            "length_m": 13304.621396,
+            "lines": 162,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "202.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 7,
+            "features": 63,
+            "length_m": 1101.340878,
+            "lines": 63,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 7,
+            "features": 63,
+            "length_m": 1101.340878,
+            "lines": 63,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/contours.geojson": {
+      "codes": {
+        "101.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 31,
+            "features": 924,
+            "length_m": 149003.11863,
+            "lines": 924,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 31,
+            "features": 924,
+            "length_m": 149003.11863,
+            "lines": 924,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "102.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 4,
+            "features": 184,
+            "length_m": 32078.29935,
+            "lines": 184,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 4,
+            "features": 184,
+            "length_m": 32078.29935,
+            "lines": 184,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "103.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 36,
+            "features": 650,
+            "length_m": 133237.030412,
+            "lines": 650,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 36,
+            "features": 650,
+            "length_m": 133237.030412,
+            "lines": 650,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/knolls_points.geojson": {
+      "codes": {
+        "109.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 540,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 540,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 540,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 540,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "111.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 299,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 299,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 299,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 299,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/manmade.geojson": {
+      "codes": {
+        "501.000": {
+          "baseline": {
+            "area_m2": 16378.770996,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 16378.770996,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "properties_unmatched": 0
+        },
+        "509.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 3439.567843,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 3439.567843,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "516.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "521.000": {
+          "baseline": {
+            "area_m2": 132433.308472,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 132433.308472,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_cliffs.geojson": {
+      "codes": {
+        "201.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 484078,
+            "features": 46747,
+            "length_m": 137388.974663,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 484078,
+            "features": 46747,
+            "length_m": 137388.974663,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "202.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11530.438481,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11530.438481,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_contours.geojson": {
+      "codes": {
+        "101.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160153.689345,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160153.689345,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "102.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34228.136197,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34228.136197,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "103.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 572,
+            "length_m": 141199.08452,
+            "lines": 572,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 572,
+            "length_m": 141199.08452,
+            "lines": 572,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_knolls_points.geojson": {
+      "codes": {
+        "109.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "111.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_manmade.geojson": {
+      "codes": {
+        "501.000": {
+          "baseline": {
+            "area_m2": 16378.770996,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 16378.770996,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "properties_unmatched": 0
+        },
+        "509.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 3439.567843,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 3439.567843,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "516.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "521.000": {
+          "baseline": {
+            "area_m2": 132433.308472,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 132433.308472,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_paths.geojson": {
+      "codes": {
+        "502.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 26527.618329,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 26527.618329,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "503.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 199,
+            "length_m": 25239.679126,
+            "lines": 199,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 199,
+            "length_m": 25239.679126,
+            "lines": 199,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "504.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 82,
+            "length_m": 21693.486034,
+            "lines": 82,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 82,
+            "length_m": 21693.486034,
+            "lines": 82,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "506.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 211,
+            "length_m": 35539.348791,
+            "lines": 211,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 211,
+            "length_m": 35539.348791,
+            "lines": 211,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_vegetation_areas.geojson": {
+      "codes": {
+        "403.000": {
+          "baseline": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "properties_unmatched": 0
+        },
+        "406.000": {
+          "baseline": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "properties_unmatched": 0
+        },
+        "407.000": {
+          "baseline": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "properties_unmatched": 0
+        },
+        "408.000": {
+          "baseline": {
+            "area_m2": 374401.409424,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 374401.409424,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "properties_unmatched": 0
+        },
+        "410.000": {
+          "baseline": {
+            "area_m2": 389618.574829,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 389618.574829,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/merged_water.geojson": {
+      "codes": {
+        "301.000": {
+          "baseline": {
+            "area_m2": 116853.71582,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 116853.71582,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "properties_unmatched": 0
+        },
+        "305.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 12,
+            "length_m": 3640.929973,
+            "lines": 12,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 12,
+            "length_m": 3640.929973,
+            "lines": 12,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/paths.geojson": {
+      "codes": {
+        "502.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 26527.618329,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 26527.618329,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "503.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 199,
+            "length_m": 25239.679126,
+            "lines": 199,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 199,
+            "length_m": 25239.679126,
+            "lines": 199,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "504.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 82,
+            "length_m": 21693.486034,
+            "lines": 82,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 82,
+            "length_m": 21693.486034,
+            "lines": 82,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "506.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 211,
+            "length_m": 35539.348791,
+            "lines": 211,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 211,
+            "length_m": 35539.348791,
+            "lines": 211,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_cliffs.geojson": {
+      "codes": {
+        "201.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 484078,
+            "features": 46747,
+            "length_m": 137388.974663,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 484078,
+            "features": 46747,
+            "length_m": 137388.974663,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "202.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11530.438481,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11530.438481,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_contours.geojson": {
+      "codes": {
+        "101.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160153.689345,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160153.689345,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "102.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34228.136197,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34228.136197,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "103.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 572,
+            "length_m": 141199.08452,
+            "lines": 572,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 572,
+            "length_m": 141199.08452,
+            "lines": 572,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_knolls_points.geojson": {
+      "codes": {
+        "109.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "111.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_manmade.geojson": {
+      "codes": {
+        "501.000": {
+          "baseline": {
+            "area_m2": 16378.770996,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 16378.770996,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "properties_unmatched": 0
+        },
+        "509.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 3439.567843,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 3439.567843,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "516.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "521.000": {
+          "baseline": {
+            "area_m2": 132433.308472,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 132433.308472,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_paths.geojson": {
+      "codes": {
+        "502.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 26527.618329,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 26527.618329,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "503.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 199,
+            "length_m": 25239.679126,
+            "lines": 199,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 199,
+            "length_m": 25239.679126,
+            "lines": 199,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "504.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 82,
+            "length_m": 21693.486034,
+            "lines": 82,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 82,
+            "length_m": 21693.486034,
+            "lines": 82,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "506.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 211,
+            "length_m": 35539.348791,
+            "lines": 211,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 211,
+            "length_m": 35539.348791,
+            "lines": 211,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_vegetation_areas.geojson": {
+      "codes": {
+        "403.000": {
+          "baseline": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "properties_unmatched": 0
+        },
+        "406.000": {
+          "baseline": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "properties_unmatched": 0
+        },
+        "407.000": {
+          "baseline": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "properties_unmatched": 0
+        },
+        "408.000": {
+          "baseline": {
+            "area_m2": 374401.409424,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 374401.409424,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "properties_unmatched": 0
+        },
+        "410.000": {
+          "baseline": {
+            "area_m2": 389618.574829,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 389618.574829,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/test_file_water.geojson": {
+      "codes": {
+        "301.000": {
+          "baseline": {
+            "area_m2": 116853.71582,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 116853.71582,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "properties_unmatched": 0
+        },
+        "305.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 12,
+            "length_m": 3640.929973,
+            "lines": 12,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 12,
+            "length_m": 3640.929973,
+            "lines": 12,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/vegetation_areas.geojson": {
+      "codes": {
+        "403.000": {
+          "baseline": {
+            "area_m2": 2415750.797607,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2415750.797607,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "properties_unmatched": 0
+        },
+        "406.000": {
+          "baseline": {
+            "area_m2": 42661.55957,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 42661.55957,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "properties_unmatched": 0
+        },
+        "407.000": {
+          "baseline": {
+            "area_m2": 2188.25647,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2188.25647,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "properties_unmatched": 0
+        },
+        "408.000": {
+          "baseline": {
+            "area_m2": 384745.656372,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 384745.656372,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "properties_unmatched": 0
+        },
+        "410.000": {
+          "baseline": {
+            "area_m2": 401321.821777,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 401321.821777,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/out/water.geojson": {
+      "codes": {
+        "301.000": {
+          "baseline": {
+            "area_m2": 116853.71582,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 116853.71582,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "properties_unmatched": 0
+        },
+        "305.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 12,
+            "length_m": 3640.929973,
+            "lines": 12,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 12,
+            "length_m": 3640.929973,
+            "lines": 12,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/cliffs.geojson": {
+      "codes": {
+        "201.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 484077,
+            "features": 46747,
+            "length_m": 137398.573842,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 484077,
+            "features": 46747,
+            "length_m": 137398.573842,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "202.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11531.610028,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11531.610028,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/contours.geojson": {
+      "codes": {
+        "101.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160161.89876,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160161.89876,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "102.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34229.598968,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34229.598968,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "103.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 573,
+            "length_m": 141203.859983,
+            "lines": 573,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 573,
+            "length_m": 141203.859983,
+            "lines": 573,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/knolls_points.geojson": {
+      "codes": {
+        "109.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "111.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/manmade.geojson": {
+      "codes": {
+        "501.000": {
+          "baseline": {
+            "area_m2": 17257.929932,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 17257.929932,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "properties_unmatched": 0
+        },
+        "509.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 22563.842932,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 22563.842932,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "516.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "521.000": {
+          "baseline": {
+            "area_m2": 133588.060059,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 133588.060059,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/paths.geojson": {
+      "codes": {
+        "502.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 40840.539245,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 40840.539245,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "503.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 198,
+            "length_m": 27513.426069,
+            "lines": 198,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 198,
+            "length_m": 27513.426069,
+            "lines": 198,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "504.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 79,
+            "length_m": 25660.968571,
+            "lines": 79,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 79,
+            "length_m": 25660.968571,
+            "lines": 79,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "506.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 210,
+            "length_m": 39916.355251,
+            "lines": 210,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 210,
+            "length_m": 39916.355251,
+            "lines": 210,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/vegetation_areas.geojson": {
+      "codes": {
+        "403.000": {
+          "baseline": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "properties_unmatched": 0
+        },
+        "406.000": {
+          "baseline": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "properties_unmatched": 0
+        },
+        "407.000": {
+          "baseline": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "properties_unmatched": 0
+        },
+        "408.000": {
+          "baseline": {
+            "area_m2": 374406.1875,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 374406.1875,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "properties_unmatched": 0
+        },
+        "410.000": {
+          "baseline": {
+            "area_m2": 389638.40625,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 389638.40625,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp1/water.geojson": {
+      "codes": {
+        "301.000": {
+          "baseline": {
+            "area_m2": 189113.525635,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 189113.525635,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "properties_unmatched": 0
+        },
+        "305.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 13,
+            "length_m": 31947.224089,
+            "lines": 13,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 13,
+            "length_m": 31947.224089,
+            "lines": 13,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/cliffs.geojson": {
+      "codes": {
+        "201.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 484077,
+            "features": 46747,
+            "length_m": 137398.573842,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 484077,
+            "features": 46747,
+            "length_m": 137398.573842,
+            "lines": 46747,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "202.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11531.610028,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2637,
+            "features": 3924,
+            "length_m": 11531.610028,
+            "lines": 3924,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/contours.geojson": {
+      "codes": {
+        "101.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160161.89876,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 5,
+            "features": 844,
+            "length_m": 160161.89876,
+            "lines": 844,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "102.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34229.598968,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 169,
+            "length_m": 34229.598968,
+            "lines": 169,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "103.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 573,
+            "length_m": 141203.859983,
+            "lines": 573,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 573,
+            "length_m": 141203.859983,
+            "lines": 573,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/knolls_points.geojson": {
+      "codes": {
+        "109.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 625,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 625,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "111.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 400,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 400,
+            "polygons": 0
+          },
+          "points": {
+            "hausdorff_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/manmade.geojson": {
+      "codes": {
+        "501.000": {
+          "baseline": {
+            "area_m2": 17257.929932,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 17257.929932,
+            "crossings": 0,
+            "features": 15,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 15
+          },
+          "properties_unmatched": 0
+        },
+        "509.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 22563.842932,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 2,
+            "features": 3,
+            "length_m": 22563.842932,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "516.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 3,
+            "length_m": 479.42243,
+            "lines": 3,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "521.000": {
+          "baseline": {
+            "area_m2": 133588.060059,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 133588.060059,
+            "crossings": 0,
+            "features": 315,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 315
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/paths.geojson": {
+      "codes": {
+        "502.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 40840.539245,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 6,
+            "features": 119,
+            "length_m": 40840.539245,
+            "lines": 119,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "503.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 198,
+            "length_m": 27513.426069,
+            "lines": 198,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 198,
+            "length_m": 27513.426069,
+            "lines": 198,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "504.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 79,
+            "length_m": 25660.968571,
+            "lines": 79,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 79,
+            "length_m": 25660.968571,
+            "lines": 79,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        },
+        "506.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 210,
+            "length_m": 39916.355251,
+            "lines": 210,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 210,
+            "length_m": 39916.355251,
+            "lines": 210,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/vegetation_areas.geojson": {
+      "codes": {
+        "403.000": {
+          "baseline": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2413778.90625,
+            "crossings": 0,
+            "features": 283,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 283
+          },
+          "properties_unmatched": 0
+        },
+        "406.000": {
+          "baseline": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 41663.53125,
+            "crossings": 0,
+            "features": 86,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 86
+          },
+          "properties_unmatched": 0
+        },
+        "407.000": {
+          "baseline": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 2025.0,
+            "crossings": 0,
+            "features": 2,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 2
+          },
+          "properties_unmatched": 0
+        },
+        "408.000": {
+          "baseline": {
+            "area_m2": 374406.1875,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 374406.1875,
+            "crossings": 0,
+            "features": 799,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 799
+          },
+          "properties_unmatched": 0
+        },
+        "410.000": {
+          "baseline": {
+            "area_m2": 389638.40625,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 389638.40625,
+            "crossings": 0,
+            "features": 994,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 994
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    },
+    "batch/temp_test_file_dir/water.geojson": {
+      "codes": {
+        "301.000": {
+          "baseline": {
+            "area_m2": 189113.525635,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "boundaries": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "candidate": {
+            "area_m2": 189113.525635,
+            "crossings": 0,
+            "features": 24,
+            "length_m": 0.0,
+            "lines": 0,
+            "points": 0,
+            "polygons": 24
+          },
+          "properties_unmatched": 0
+        },
+        "305.000": {
+          "baseline": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 13,
+            "length_m": 31947.224089,
+            "lines": 13,
+            "points": 0,
+            "polygons": 0
+          },
+          "candidate": {
+            "area_m2": 0.0,
+            "crossings": 0,
+            "features": 13,
+            "length_m": 31947.224089,
+            "lines": 13,
+            "points": 0,
+            "polygons": 0
+          },
+          "lines": {
+            "hausdorff_m": 0.0,
+            "mean_distance_back_m": 0.0,
+            "mean_distance_m": 0.0,
+            "precision": 1.0,
+            "recall": 1.0
+          },
+          "properties_unmatched": 0
+        }
+      },
+      "collection_changed": false
+    }
+  }
+}

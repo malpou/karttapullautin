@@ -80,18 +80,16 @@ impl WorldFile {
         )
     }
 
-    /// The literal unit-resolution header that `vegetation.pgw` and `_vege.pgw` carry: one
-    /// pixel per ground metre, north up, followed by the origin.
-    pub fn write_unit_resolution<W: Write>(
-        writer: &mut W,
-        x_origin: f64,
-        y_origin: f64,
-    ) -> std::io::Result<()> {
-        write!(
-            writer,
-            "1.0\r\n0.0\r\n0.0\r\n-1.0\r\n{}\r\n{}\r\n",
-            x_origin, y_origin
-        )
+    /// A north-up frame with square pixels of `pixel_size` ground metres and the given origin.
+    pub fn north_up(pixel_size: f64, x_origin: f64, y_origin: f64) -> Self {
+        Self {
+            pixel_size_x: pixel_size,
+            rotation_y: 0.0,
+            rotation_x: 0.0,
+            pixel_size_y: -pixel_size,
+            x_origin,
+            y_origin,
+        }
     }
 }
 
@@ -156,10 +154,32 @@ mod tests {
         assert!(WorldFile::parse("1\r\n0\r\nabc\r\n-1\r\n5\r\n6\r\n".as_bytes()).is_err());
     }
 
+    /// `vegetation.pgw` and `_vege.pgw`: one pixel per ground metre.
     #[test]
-    fn write_unit_resolution_matches_the_legacy_text() {
+    fn unit_north_up_frame_text() {
         let mut out = Vec::new();
-        WorldFile::write_unit_resolution(&mut out, 1.5, 2.0).unwrap();
-        assert_eq!(out, b"1.0\r\n0.0\r\n0.0\r\n-1.0\r\n1.5\r\n2\r\n");
+        WorldFile::north_up(1.0, 1.5, 2.0).write(&mut out).unwrap();
+        assert_eq!(out, b"1\r\n0\r\n0\r\n-1\r\n1.5\r\n2\r\n");
+    }
+
+    /// `undergrowth.pgw`: the pixel pitch is the reciprocal of the f32 factor the raster is
+    /// drawn with, printed with f64 digits; it survives a parse exactly.
+    #[test]
+    fn undergrowth_frame_text() {
+        let tmpfactor = (PX_PER_METRE / 1.0) as f32;
+        let w = WorldFile::north_up(1.0 / f64::from(tmpfactor), 381234.0, 6671298.0);
+        let mut out = Vec::new();
+        w.write(&mut out).unwrap();
+        assert_eq!(
+            out,
+            b"0.42333332155810494\r\n0\r\n0\r\n-0.42333332155810494\r\n381234\r\n6671298\r\n"
+        );
+        for scalefactor in [0.5, 1.0, 1.3] {
+            let tmpfactor = (PX_PER_METRE / scalefactor) as f32;
+            let w = WorldFile::north_up(1.0 / f64::from(tmpfactor), 381234.0, 6671298.0);
+            let mut out = Vec::new();
+            w.write(&mut out).unwrap();
+            assert_eq!(WorldFile::parse(out.as_slice()).unwrap(), w);
+        }
     }
 }
