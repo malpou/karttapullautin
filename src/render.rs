@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::geometry::BinaryDxf;
 use crate::geometry::Classification;
+use crate::geometry::ContourKind;
 use crate::geometry::Geometry;
 use crate::geometry::Point2;
 use crate::geometry::Polylines;
@@ -544,7 +545,10 @@ pub fn draw_curves(
 
         // The slope line is part of symbol 101, so it carries depression contour color
         // weight — it just belongs to a depression, hence the nodepressions gate below.
-        let color = if layer.is_contour() && layer != Classification::SlopeLine {
+        let kind = layer.contour_kind();
+        // a contour, index contour or half-interval line that is not a depression
+        let contour_line = kind.is_some_and(|k| !k.depression());
+        let color = if contour_line {
             Rgba([166, 85, 43, 255]) // brown
         } else {
             Rgba([
@@ -555,19 +559,20 @@ pub fn draw_curves(
             ]) // Default purple
         };
 
-        if !nodepressions || layer.is_contour() {
+        if !nodepressions || contour_line {
+            let index = kind.is_some_and(ContourKind::index);
             let mut curvew = 2.0;
-            if layer.is_index() {
+            if index {
                 curvew = 3.0;
             }
             if formline > 0.0 {
                 if formline == 1.0 {
                     curvew = 2.5
                 }
-                if layer.is_intermed() {
+                if kind.is_some_and(ContourKind::half_interval) {
                     curvew = 1.5
                 }
-                if layer.is_index() {
+                if index {
                     curvew = 3.5
                 }
             }

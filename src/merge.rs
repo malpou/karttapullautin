@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::contours::join_contours;
 use crate::geometry::{
-    BinaryDxf, Classification, Geometry, Point2, Point3, Points, Polylines, Ring,
+    BinaryDxf, Classification, ContourLevels, Geometry, Point2, Point3, Points, Polylines, Ring,
 };
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
@@ -296,7 +296,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
 
             geometries.extend(geometry.iter().cloned());
 
-            // for the contours, we filter out the intermediate contours for the all_geometries
+            // for the contours, we filter out the half-interval lines for the all_geometries
             if *suffix == "contours" {
                 for geo in geometry {
                     let filtered_geo: Geometry = match geo {
@@ -304,7 +304,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
                             let mut filtered_points = Points::with_capacity(points.len());
 
                             for (p, c) in points.into_iter() {
-                                if !c.is_intermed() {
+                                if !c.is_half_interval_line() {
                                     filtered_points.push(p, c);
                                 }
                             }
@@ -314,7 +314,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
                         Geometry::Polylines2(polylines) => {
                             let mut filtered_lines = Polylines::with_capacity(polylines.len());
                             for (l, c) in polylines.into_iter() {
-                                if !c.is_intermed() {
+                                if !c.is_half_interval_line() {
                                     filtered_lines.push(l, c);
                                 }
                             }
@@ -323,7 +323,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
                         Geometry::Polylines3(polylines) => {
                             let mut filtered_lines = Polylines::with_capacity(polylines.len());
                             for (l, c) in polylines.into_iter() {
-                                if !c.0.is_intermed() {
+                                if !c.0.is_half_interval_line() {
                                     filtered_lines.push(l, c);
                                 }
                             }
@@ -479,6 +479,12 @@ pub fn smoothjoin(
     }
 
     let interval = halfinterval;
+    let levels = ContourLevels {
+        trace_interval: interval,
+        // indexcontours=0 (formline=0 only) draws no index contours
+        index_interval: (indexcontours != 0.0).then_some(indexcontours),
+        half_interval_lines: formline > 0.0,
+    };
 
     let heightmap_in = tmpfolder.join("xyz_knolls.hmap");
     let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
@@ -828,38 +834,8 @@ pub fn smoothjoin(
                     el_y[l][k] = vy;
                 }
 
-                let mut layer = if depression == -1 {
-                    Classification::Depression
-                } else {
-                    Classification::Contour
-                };
-
-                if indexcontours != 0.0
-                    && (((h / interval + 0.5).floor() * interval) / indexcontours).floor()
-                        - ((h / interval + 0.5).floor() * interval) / indexcontours
-                        == 0.0
-                {
-                    // "Add" Index flag
-                    layer = match layer {
-                        Classification::Contour => Classification::ContourIndex,
-                        Classification::Depression => Classification::DepressionIndex,
-                        other => other,
-                    };
-                }
-                if formline > 0.0
-                    && (((h / interval + 0.5).floor() * interval) / (2.0 * interval)).floor()
-                        - ((h / interval + 0.5).floor() * interval) / (2.0 * interval)
-                        != 0.0
-                {
-                    // "Add" Intermed flag
-                    layer = match layer {
-                        Classification::Contour => Classification::ContourIntermed,
-                        Classification::ContourIndex => Classification::ContourIndexIntermed,
-                        Classification::Depression => Classification::DepressionIntermed,
-                        Classification::DepressionIndex => Classification::DepressionIndexIntermed,
-                        other => other,
-                    };
-                }
+                let layer =
+                    Classification::Contour(levels.kind_at(h).with_depression(depression == -1));
 
                 out2_lines.push(
                     el_x[l]

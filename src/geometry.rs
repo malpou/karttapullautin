@@ -199,7 +199,7 @@ impl From<Polylines<Point3, (Classification, f64)>> for Geometry {
 
 /// The version of the BinaryDxf file format. If any content of the [`BinaryDxf`] struct changes,
 /// including any sub-fields (basically anything in this mod) we need to increase this version.
-const BINARY_DXF_VERSION: usize = 1;
+const BINARY_DXF_VERSION: usize = 2;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct BinaryDxf {
@@ -270,16 +270,13 @@ impl BinaryDxf {
     pub fn from_reader<R: std::io::Read>(reader: &mut R) -> anyhow::Result<Self> {
         let object: Self = crate::util::read_object(reader)?;
 
-        // Prevously we were using the crate version, which is a string starting
-        // with 2.X.X, but now we use a simple integer version. Version 1 supports all those
-        // "2.X.X" versions as well.
-        if (object.version == BINARY_DXF_VERSION.to_string())
-            || (BINARY_DXF_VERSION == 1 && object.version.starts_with("2."))
-        {
+        // Version 1 (and the crate-version strings "2.X.X" before it) stored the contour
+        // kinds as eight separate classifications.
+        if object.version == BINARY_DXF_VERSION.to_string() {
             Ok(object)
         } else {
             anyhow::bail!(
-                "This DXF.BIN file version is not supported by this executable. Please re-run this command with an executable that supports this version (dxf.bin file version: {})",
+                "stale .dxf.bin temp file (version {}, this build reads version {BINARY_DXF_VERSION}): it was written by another build; regenerate it by re-running the job",
                 object.version,
             );
         }
@@ -370,16 +367,9 @@ pub enum Classification {
     /// Used in first contour generation step
     ContourSimple,
 
-    /// Used in second contour generation step (smoothjoin)
-    Contour,
-    ContourIndex,
-    ContourIntermed,
-    ContourIndexIntermed,
-
-    Depression,
-    DepressionIndex,
-    DepressionIntermed,
-    DepressionIndexIntermed,
+    /// A smoothed contour line of the second contour generation step (smoothjoin), with
+    /// what it is drawn as.
+    Contour(ContourKind),
 
     /// Use for formlines (generated in render)
     Formline,
@@ -407,8 +397,9 @@ pub enum Classification {
     SmallDepression,
 
     /// Vegetation and open-land areas, one per ISOM 2017-2 area symbol, traced from the
-    /// vegetation grids into closed rings. Kept at the end so the bincode variant indices
-    /// of the older variants (and thus existing `.dxf.bin` files) stay stable.
+    /// vegetation grids into closed rings. `.dxf.bin` stores a classification by its
+    /// variant index, so reordering or removing a variant needs a new
+    /// [`BINARY_DXF_VERSION`].
     Veg403,
     Veg406,
     Veg407,
@@ -422,15 +413,9 @@ impl Classification {
     /// with no map symbol, which vector output skips.
     pub fn isom_code(&self) -> Option<IsomCode> {
         Some(match self {
-            Self::ContourSimple | Self::Contour | Self::Depression => IsomCode::C101_000,
-            Self::ContourIndex | Self::DepressionIndex => IsomCode::C102_000,
-            // intermediate (half-interval) contours are represented as form lines in ISOM
-            Self::ContourIntermed
-            | Self::ContourIndexIntermed
-            | Self::DepressionIntermed
-            | Self::DepressionIndexIntermed
-            | Self::Formline
-            | Self::FormlineDepression => IsomCode::C103_000,
+            Self::ContourSimple => IsomCode::C101_000,
+            Self::Contour(kind) => kind.isom_code(),
+            Self::Formline | Self::FormlineDepression => IsomCode::C103_000,
             Self::Dotknoll | Self::UglyDotknoll => IsomCode::C109_000,
             Self::Udepression | Self::UglyUdepression | Self::SmallDepression => IsomCode::C111_000,
             Self::Cliff2 => IsomCode::C202_000,
@@ -450,14 +435,10 @@ impl Classification {
     /// contours that share their symbol code. None where [`Self::isom_code`] is None.
     pub fn symbol_name(&self) -> Option<&'static str> {
         Some(match self {
-            Self::ContourSimple | Self::Contour => "contour",
-            Self::ContourIndex => "index contour",
-            Self::ContourIntermed | Self::ContourIndexIntermed | Self::Formline => "form line",
-            Self::Depression => "depression contour",
-            Self::DepressionIndex => "depression index contour",
-            Self::DepressionIntermed | Self::DepressionIndexIntermed | Self::FormlineDepression => {
-                "depression form line"
-            }
+            Self::ContourSimple => "contour",
+            Self::Contour(kind) => kind.symbol_name(),
+            Self::Formline => "form line",
+            Self::FormlineDepression => "depression form line",
             Self::Dotknoll | Self::UglyDotknoll => "knoll",
             Self::Udepression | Self::UglyUdepression | Self::SmallDepression => "small depression",
             Self::Cliff2 => "cliff",
@@ -492,41 +473,165 @@ impl Classification {
         self.is_depression() || *self == Self::FormlineDepression
     }
 
-    pub fn is_contour(&self) -> bool {
-        matches!(
-            self,
-            Self::Contour | Self::ContourIndex | Self::ContourIntermed | Self::ContourIndexIntermed
-        )
+    /// The kind of a smoothed contour line; None for every other classification.
+    pub fn contour_kind(&self) -> Option<ContourKind> {
+        match self {
+            Self::Contour(kind) => Some(*kind),
+            _ => None,
+        }
     }
 
+    /// Whether this is a depression contour or depression half-interval line.
     pub fn is_depression(&self) -> bool {
-        matches!(
-            self,
-            Self::Depression
-                | Self::DepressionIndex
-                | Self::DepressionIntermed
-                | Self::DepressionIndexIntermed
-        )
+        self.contour_kind().is_some_and(ContourKind::depression)
     }
 
-    pub fn is_index(&self) -> bool {
-        matches!(
-            self,
-            Self::ContourIndex
-                | Self::ContourIndexIntermed
-                | Self::DepressionIndex
-                | Self::DepressionIndexIntermed
+    /// Whether this is a half-interval line: a contour kind drawn as a form line where
+    /// selected, left out of the merged contours and the vector output.
+    pub fn is_half_interval_line(&self) -> bool {
+        self.contour_kind().is_some_and(ContourKind::half_interval)
+    }
+}
+
+/// What a smoothed contour line is drawn as: three independent flags, packed into one
+/// byte so [`Classification`] stays one byte.
+///
+/// - `index`: its level is a multiple of the index contour interval (ISOM 102).
+/// - `half_interval`: a half-interval line, halfway between two contours; drawn as a form
+///   line (ISOM 103) where the renderer selects it, and left out of vector output.
+/// - `depression`: it encloses lower ground.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ContourKind(KindBits);
+
+/// The eight flag combinations of a [`ContourKind`] as an enum rather than a `u8`, so the
+/// unused values are a niche the other [`Classification`] variants fit in.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[repr(u8)]
+enum KindBits {
+    B0,
+    B1,
+    B2,
+    B3,
+    B4,
+    B5,
+    B6,
+    B7,
+}
+
+/// How smoothjoin's traced lines map to contour kinds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContourLevels {
+    /// Vertical distance between traced lines, in metres (half the contour interval
+    /// when the half-interval lines are traced too).
+    pub trace_interval: f64,
+    /// Levels at multiples of this are index contours; None draws no index contours.
+    pub index_interval: Option<f64>,
+    /// Whether every other traced line is a half-interval line: the odd multiples of
+    /// `trace_interval`. Without them every traced line is a contour.
+    pub half_interval_lines: bool,
+}
+
+impl ContourLevels {
+    /// The kind of a line traced at `level_m` (not a depression; see
+    /// [`ContourKind::with_depression`]).
+    pub fn kind_at(&self, level_m: f64) -> ContourKind {
+        let step = self.trace_interval;
+        // the level snapped to the traced lines, so float noise cannot drop a flag
+        let level = (level_m / step + 0.5).floor() * step;
+        let is_multiple = |of: f64| (level / of).floor() == level / of;
+        ContourKind::from_flags(
+            self.index_interval.is_some_and(is_multiple),
+            self.half_interval_lines && !is_multiple(2.0 * step),
+            false,
         )
     }
+}
 
-    pub fn is_intermed(&self) -> bool {
-        matches!(
-            self,
-            Self::ContourIntermed
-                | Self::ContourIndexIntermed
-                | Self::DepressionIntermed
-                | Self::DepressionIndexIntermed
-        )
+impl ContourKind {
+    const INDEX_BIT: u8 = 1;
+    const HALF_INTERVAL_BIT: u8 = 2;
+    const DEPRESSION_BIT: u8 = 4;
+
+    /// A contour (ISOM 101).
+    pub const CONTOUR: Self = Self::from_flags(false, false, false);
+    /// An index contour (ISOM 102).
+    pub const INDEX: Self = Self::from_flags(true, false, false);
+    /// A half-interval line (ISOM 103 where selected).
+    pub const HALF_INTERVAL: Self = Self::from_flags(false, true, false);
+    /// A half-interval line at an index level; still a half-interval line (103).
+    pub const INDEX_HALF_INTERVAL: Self = Self::from_flags(true, true, false);
+
+    const fn from_flags(index: bool, half_interval: bool, depression: bool) -> Self {
+        let bits = (index as u8 * Self::INDEX_BIT)
+            | (half_interval as u8 * Self::HALF_INTERVAL_BIT)
+            | (depression as u8 * Self::DEPRESSION_BIT);
+        Self(match bits {
+            0 => KindBits::B0,
+            1 => KindBits::B1,
+            2 => KindBits::B2,
+            3 => KindBits::B3,
+            4 => KindBits::B4,
+            5 => KindBits::B5,
+            6 => KindBits::B6,
+            _ => KindBits::B7,
+        })
+    }
+
+    /// This kind, enclosing lower ground where `depression` is set.
+    pub const fn with_depression(self, depression: bool) -> Self {
+        Self::from_flags(self.index(), self.half_interval(), depression)
+    }
+
+    const fn has(self, flag: u8) -> bool {
+        self.0 as u8 & flag != 0
+    }
+
+    pub const fn index(self) -> bool {
+        self.has(Self::INDEX_BIT)
+    }
+
+    pub const fn half_interval(self) -> bool {
+        self.has(Self::HALF_INTERVAL_BIT)
+    }
+
+    pub const fn depression(self) -> bool {
+        self.has(Self::DEPRESSION_BIT)
+    }
+
+    /// ISOM 2017-2 symbol code: a half-interval line is a form line (103), whether or not
+    /// its level is also an index level; otherwise index contour (102) or contour (101).
+    /// A depression shares its contour's code.
+    pub fn isom_code(self) -> IsomCode {
+        if self.half_interval() {
+            IsomCode::C103_000
+        } else if self.index() {
+            IsomCode::C102_000
+        } else {
+            IsomCode::C101_000
+        }
+    }
+
+    /// Human-readable symbol name, telling depressions apart from the contours that share
+    /// their code.
+    pub fn symbol_name(self) -> &'static str {
+        match (self.depression(), self.isom_code()) {
+            (false, IsomCode::C102_000) => "index contour",
+            (false, IsomCode::C103_000) => "form line",
+            (false, _) => "contour",
+            (true, IsomCode::C102_000) => "depression index contour",
+            (true, IsomCode::C103_000) => "depression form line",
+            (true, _) => "depression contour",
+        }
+    }
+}
+
+impl std::fmt::Debug for ContourKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContourKind")
+            .field("index", &self.index())
+            .field("half_interval", &self.half_interval())
+            .field("depression", &self.depression())
+            .finish()
     }
 }
 
@@ -921,38 +1026,6 @@ mod tests {
         use super::Classification::*;
         let expected = [
             (ContourSimple, Some(IsomCode::C101_000), Some("contour")),
-            (Contour, Some(IsomCode::C101_000), Some("contour")),
-            (
-                ContourIndex,
-                Some(IsomCode::C102_000),
-                Some("index contour"),
-            ),
-            (ContourIntermed, Some(IsomCode::C103_000), Some("form line")),
-            (
-                ContourIndexIntermed,
-                Some(IsomCode::C103_000),
-                Some("form line"),
-            ),
-            (
-                Depression,
-                Some(IsomCode::C101_000),
-                Some("depression contour"),
-            ),
-            (
-                DepressionIndex,
-                Some(IsomCode::C102_000),
-                Some("depression index contour"),
-            ),
-            (
-                DepressionIntermed,
-                Some(IsomCode::C103_000),
-                Some("depression form line"),
-            ),
-            (
-                DepressionIndexIntermed,
-                Some(IsomCode::C103_000),
-                Some("depression form line"),
-            ),
             (Formline, Some(IsomCode::C103_000), Some("form line")),
             (
                 FormlineDepression,
@@ -986,6 +1059,180 @@ mod tests {
             assert_eq!(c.isom_code(), code, "{c:?}");
             assert_eq!(c.symbol_name(), name, "{c:?}");
         }
+        // every contour kind reaches its code through the classification
+        for kind in all_contour_kinds() {
+            let c = Contour(kind);
+            assert_eq!(c.isom_code(), Some(kind.isom_code()), "{c:?}");
+            assert_eq!(c.symbol_name(), Some(kind.symbol_name()), "{c:?}");
+        }
+    }
+
+    /// The four upland kinds, then the same four as depressions.
+    fn all_contour_kinds() -> impl Iterator<Item = ContourKind> {
+        use super::ContourKind as K;
+        [false, true].into_iter().flat_map(|depression| {
+            [
+                K::CONTOUR,
+                K::INDEX,
+                K::HALF_INTERVAL,
+                K::INDEX_HALF_INTERVAL,
+            ]
+            .map(|k| k.with_depression(depression))
+        })
+    }
+
+    #[test]
+    fn contour_kind_constants_carry_their_flags() {
+        use super::ContourKind as K;
+        let flags = |k: K| (k.index(), k.half_interval(), k.depression());
+        assert_eq!(flags(K::CONTOUR), (false, false, false));
+        assert_eq!(flags(K::INDEX), (true, false, false));
+        assert_eq!(flags(K::HALF_INTERVAL), (false, true, false));
+        assert_eq!(flags(K::INDEX_HALF_INTERVAL), (true, true, false));
+        assert_eq!(flags(K::INDEX.with_depression(true)), (true, false, true));
+        assert_eq!(
+            K::INDEX.with_depression(true).with_depression(false),
+            K::INDEX
+        );
+        assert_eq!(
+            all_contour_kinds()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            8
+        );
+    }
+
+    /// All eight flag combinations against the vendored symbol table: a half-interval
+    /// line is a form line even at an index level, and a depression shares its code.
+    #[test]
+    fn contour_kind_isom_code_matches_the_symbol_table() {
+        use super::ContourKind as K;
+        use crate::isom::IsomTable;
+        let expected = [
+            (K::CONTOUR, "101.000", "contour"),
+            (K::INDEX, "102.000", "index contour"),
+            (K::HALF_INTERVAL, "103.000", "form line"),
+            (K::INDEX_HALF_INTERVAL, "103.000", "form line"),
+            (
+                K::CONTOUR.with_depression(true),
+                "101.000",
+                "depression contour",
+            ),
+            (
+                K::INDEX.with_depression(true),
+                "102.000",
+                "depression index contour",
+            ),
+            (
+                K::HALF_INTERVAL.with_depression(true),
+                "103.000",
+                "depression form line",
+            ),
+            (
+                K::INDEX_HALF_INTERVAL.with_depression(true),
+                "103.000",
+                "depression form line",
+            ),
+        ];
+        assert_eq!(
+            expected.map(|(k, ..)| k).to_vec(),
+            all_contour_kinds().collect::<Vec<_>>()
+        );
+        for (kind, code, name) in expected {
+            assert_eq!(kind.isom_code(), code.parse().unwrap(), "{kind:?}");
+            assert_eq!(kind.isom_code().table(), IsomTable::Contours, "{kind:?}");
+            assert_eq!(kind.symbol_name(), name, "{kind:?}");
+        }
+    }
+
+    /// The kinds smoothjoin gives a traced level: 1.25 m between traced lines (a 2.5 m
+    /// contour interval), index contours every 12.5 m.
+    #[test]
+    fn contour_kind_flags_follow_the_index_and_half_interval_multiples() {
+        use super::ContourKind as K;
+        let levels = ContourLevels {
+            trace_interval: 1.25,
+            index_interval: Some(12.5),
+            half_interval_lines: true,
+        };
+        // contours at the multiples of 2.5 m, half-interval lines halfway between
+        assert_eq!(levels.kind_at(10.0), K::CONTOUR);
+        assert_eq!(levels.kind_at(11.25), K::HALF_INTERVAL);
+        assert_eq!(levels.kind_at(0.0), K::INDEX);
+        assert_eq!(levels.kind_at(12.5), K::INDEX);
+        assert_eq!(levels.kind_at(25.0), K::INDEX);
+        assert_eq!(levels.kind_at(-12.5), K::INDEX);
+        assert_eq!(levels.kind_at(-1.25), K::HALF_INTERVAL);
+        // float noise around a traced level snaps to it
+        assert_eq!(levels.kind_at(12.5 + 1e-9), K::INDEX);
+        assert_eq!(levels.kind_at(11.25 - 1e-9), K::HALF_INTERVAL);
+        // every traced line is a contour when there are no half-interval lines
+        let no_half = ContourLevels {
+            half_interval_lines: false,
+            ..levels
+        };
+        assert_eq!(no_half.kind_at(11.25), K::CONTOUR);
+        assert_eq!(no_half.kind_at(12.5), K::INDEX);
+        // an index level that is also an odd multiple is both (drawn as a form line)
+        let odd_index = ContourLevels {
+            index_interval: Some(3.75),
+            ..levels
+        };
+        assert_eq!(odd_index.kind_at(3.75), K::INDEX_HALF_INTERVAL);
+        assert_eq!(K::INDEX_HALF_INTERVAL.isom_code(), IsomCode::C103_000);
+        // no index contours without an index interval
+        let no_index = ContourLevels {
+            index_interval: None,
+            ..levels
+        };
+        assert_eq!(no_index.kind_at(0.0), K::CONTOUR);
+        assert_eq!(no_index.kind_at(12.5), K::CONTOUR);
+    }
+
+    /// The `.dxf.bin` encoding of a few classifications, pinned: `.dxf.bin` stores a
+    /// classification by its variant index (and a contour's kind after it), so a
+    /// reordered, added-in-the-middle or removed variant changes these bytes. Bump
+    /// [`BINARY_DXF_VERSION`] when this changes, then update the bytes and the version.
+    #[test]
+    fn classification_encoding_is_pinned_to_the_binary_dxf_version() {
+        use super::Classification::*;
+        use super::ContourKind as K;
+        let bytes = |c: Classification| {
+            let mut out = Vec::new();
+            crate::util::write_object(&mut out, &c).unwrap();
+            out
+        };
+        assert_eq!(BINARY_DXF_VERSION, 2);
+        assert_eq!(bytes(ContourSimple), [0]);
+        assert_eq!(bytes(Contour(K::INDEX)), [1, 1]);
+        assert_eq!(
+            bytes(Contour(K::HALF_INTERVAL.with_depression(true))),
+            [1, 6]
+        );
+        assert_eq!(bytes(Cliff3), [10]);
+        assert_eq!(bytes(Veg410), [18]);
+    }
+
+    /// A contour kind survives the `.dxf.bin` round trip.
+    #[test]
+    fn contour_kinds_round_trip_through_binary_dxf() {
+        let mut lines = Polylines::new();
+        for kind in all_contour_kinds() {
+            lines.push(
+                vec![Point3::new(0.0, 0.0, 1.0)],
+                (Classification::Contour(kind), 1.0),
+            );
+        }
+        let dxf = BinaryDxf::new(Bounds::new(0.0, 1.0, 0.0, 1.0), vec![lines.into()]);
+        let mut bytes = Vec::new();
+        dxf.to_writer(&mut bytes).unwrap();
+        let back = BinaryDxf::from_reader(&mut bytes.as_slice()).unwrap();
+        let Geometry::Polylines3(back) = back.take_geometry().swap_remove(0) else {
+            panic!("not 3D polylines");
+        };
+        let kinds: Vec<_> = back.classification.iter().map(|(c, _)| *c).collect();
+        let expected: Vec<_> = all_contour_kinds().map(Classification::Contour).collect();
+        assert_eq!(kinds, expected);
     }
 
     #[test]
@@ -994,16 +1241,20 @@ mod tests {
         assert!(UglyDotknoll.is_ugly() && UglyUdepression.is_ugly());
         assert!(!Dotknoll.is_ugly() && !Udepression.is_ugly());
         assert!(
-            FormlineDepression.is_depression_line() && DepressionIndexIntermed.is_depression_line()
+            FormlineDepression.is_depression_line()
+                && Contour(ContourKind::INDEX_HALF_INTERVAL.with_depression(true))
+                    .is_depression_line()
         );
-        assert!(!Formline.is_depression_line() && !Contour.is_depression_line());
+        assert!(
+            !Formline.is_depression_line() && !Contour(ContourKind::CONTOUR).is_depression_line()
+        );
     }
 
     #[test]
     fn dxf_layers_are_symbol_codes_and_skip_knoll_detector_artifact() {
         let mut lines = Polylines::new();
         let line = vec![Point2::new(0.0, 0.0), Point2::new(1.0, 1.0)];
-        lines.push(line.clone(), Classification::ContourIndex);
+        lines.push(line.clone(), Classification::Contour(ContourKind::INDEX));
         lines.push(line, Classification::Knoll1010);
         let dxf = BinaryDxf::new(Bounds::new(0.0, 1.0, 0.0, 1.0), vec![lines.into()]);
         let mut out = Vec::new();
@@ -1024,23 +1275,13 @@ mod tests {
             Point2::new(0.0, 0.0),
         ];
         lines.push(ring.clone(), Classification::Veg406);
-        lines.push(ring, Classification::Contour);
+        lines.push(ring, Classification::Contour(ContourKind::CONTOUR));
         let dxf = BinaryDxf::new(Bounds::new(0.0, 1.0, 0.0, 1.0), vec![lines.into()]);
         let mut out = Vec::new();
         dxf.to_dxf(&mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n406.000\r\n 70\r\n1\r\n  0\r\n"));
         assert!(text.contains("POLYLINE\r\n 66\r\n1\r\n  8\r\n101.000\r\n  0\r\n"));
-    }
-
-    /// `.dxf.bin` stores a classification as its variant index: new variants go at the
-    /// end so existing indices (and files) keep their meaning.
-    #[test]
-    fn classification_variant_indices_are_stable() {
-        assert_eq!(Classification::ContourSimple as u8, 0);
-        assert_eq!(Classification::SmallDepression as u8, 20);
-        assert_eq!(Classification::Veg403 as u8, 21);
-        assert_eq!(Classification::Veg410 as u8, 25);
     }
 
     #[test]

@@ -23,11 +23,12 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Ground model**: The gridded terrain surface derived from ground returns. _Avoid_: heightmap, hmap, xyz, DEM
 **Cell size**: Ground distance between neighbouring cells of the ground model. _Avoid_: resolution, grid step
 **Local relief**: Height range within a small window around a cell. _Avoid_: steepness, slope
-**Contour interval**: Vertical spacing of full contours on the finished map.
-**Contour**: A line of equal height at a multiple of the contour interval (ISOM 101).
-**Level**: The height a contour is traced at, carried with the line from the tracer on (`Contour::level_m`) rather than read back off the ground model. _Avoid_: height, elevation (the GeoJSON property)
+**Contour interval**: Vertical spacing of full contours on the finished map. _Avoid_: equidistance
+**Contour**: A line of equal height at a multiple of the contour interval (ISOM 101). In code, `Classification::Contour(ContourKind)` is wider: every smoothed traced line, index contours, half-interval lines and depressions included, told apart by its `ContourKind`.
+**Level**: The height a contour is traced at, carried with the line from the tracer on (`Contour::level_m`) rather than read back off the ground model; the contours GeoJSON carries it as `level_m`. _Avoid_: height, elevation
 **Index contour**: Every fifth contour, drawn heavier (ISOM 102).
-**Form line**: A half-interval line kept only where contours alone under-describe the ground (ISOM 103). _Avoid_: intermed, formline (as a mode number)
+**Half-interval line**: A traced line halfway between two contours, the candidate form line (`ContourKind::half_interval`). _Avoid_: intermed, intermediate contour
+**Form line**: A half-interval line the form-line selection keeps, where contours alone under-describe the ground (ISOM 103). _Avoid_: intermed, formline (as a mode number)
 **Depression**: A closed contour whose inside is lower than the line.
 **Slope line**: The tick that marks the downhill side of a contour. _Avoid_: tick, decoration
 **Knoll**: A closed high point large enough to be drawn as a contour.

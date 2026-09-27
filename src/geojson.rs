@@ -120,18 +120,19 @@ fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Vec<Value> {
 }
 
 /// Typed GeoJSON properties for a terrain classification: the schema class of its
-/// code's table (contours, knolls and small depressions, or cliffs). `elevation` is kept
-/// only for contours. None for a classification the vector output leaves out: the
-/// knoll-detector artifact, which has no symbol code, and the half-interval contours,
-/// which the style would draw as form lines; the form lines are the renderer's
-/// selection of them ([`Source::FormLines`]).
+/// code's table (contours, knolls and small depressions, or cliffs). `level_m`, a 3D
+/// line's z (the level a contour was traced at), is kept only in the contours table.
+/// None for a classification the vector output leaves out: the knoll-detector
+/// artifact, which has no symbol code, and the half-interval lines, which the style
+/// would draw as form lines; the form lines are the renderer's selection of them
+/// ([`Source::FormLines`]).
 fn terrain_properties(
     c: Classification,
-    elevation: Option<f64>,
+    level_m: Option<f64>,
 ) -> Option<geojson_types::FeatureProperties> {
     use geojson_types::{CliffProperties, ContourProperties, KnollProperties};
 
-    if c.is_intermed() {
+    if c.is_half_interval_line() {
         return None;
     }
     let code = c.isom_code()?;
@@ -141,7 +142,7 @@ fn terrain_properties(
         IsomTable::Contours => ContourProperties {
             isom_code: class_code(code),
             symbol_name,
-            elevation,
+            level_m,
             depression: flag(c.is_depression_line()),
         }
         .into(),
@@ -189,12 +190,12 @@ fn terrain_feature(
     geometry: FeatureGeometryType,
     coordinates: Vec<Value>,
     c: Classification,
-    elevation: Option<f64>,
+    level_m: Option<f64>,
 ) -> Option<geojson_types::Feature> {
     Some(feature(
         geometry,
         coordinates,
-        terrain_properties(c, elevation)?,
+        terrain_properties(c, level_m)?,
     ))
 }
 
@@ -1169,15 +1170,15 @@ impl Combined {
     /// (a contour loop) stays closed until a knoll breaks it.
     fn line(&mut self, pts: &[[f64; 2]], props: &FeatureProperties, knolls: &[[f64; 2]]) {
         let code = isom_code(props);
-        let elevation = match props {
-            FeatureProperties::ContourProperties(p) => p.elevation,
+        let level_m = match props {
+            FeatureProperties::ContourProperties(p) => p.level_m,
             _ => None,
         };
         let pts = smoothed(code, pts);
         let closed = pts.len() > 3 && pts.first() == pts.last();
         for piece in published_pieces(code, &pts, closed, knolls) {
             let closed = closed && piece.first() == piece.last();
-            self.dxf_entity(code, &piece, closed, elevation);
+            self.dxf_entity(code, &piece, closed, level_m);
             self.feature(
                 FeatureGeometryType::LineString,
                 coords_line(piece),
@@ -1311,8 +1312,8 @@ pub fn export_combined(
         }
     };
 
-    for (pts, c, elevation) in bin_lines {
-        match terrain_properties(c, elevation) {
+    for (pts, c, level_m) in bin_lines {
+        match terrain_properties(c, level_m) {
             None => {} // the knoll-detector artifact
             Some(P::CliffProperties(p)) => add_dash(p, &pts),
             Some(props) => out.line(&pts, &props, &knoll_pts),
@@ -1393,7 +1394,10 @@ pub fn export_combined(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::ContourKind;
     use std::path::{Path, PathBuf};
+
+    const CONTOUR: Classification = Classification::Contour(ContourKind::CONTOUR);
 
     #[test]
     fn table_file_names() {
@@ -1430,12 +1434,12 @@ mod tests {
         let mut contours = Polylines::new();
         contours.push(
             vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
-            (Classification::ContourIndex, 45.0),
+            (Classification::Contour(ContourKind::INDEX), 45.0),
         );
         // a half-interval contour: the style would draw it as a form line, so it is left out
         contours.push(
             vec![Point3::new(0.0, 0.0, 0.0), Point3::new(1.0, 1.0, 0.0)],
-            (Classification::ContourIntermed, 42.5),
+            (Classification::Contour(ContourKind::HALF_INTERVAL), 42.5),
         );
         let mut slope_lines = Polylines::new();
         slope_lines.push(
@@ -1461,14 +1465,14 @@ mod tests {
         }
         let contours = read_features(&fs, IsomTable::Contours);
         assert_eq!(contours.len(), 2);
-        // a 3D polyline is a LineString that keeps its elevation
+        // a 3D polyline is a LineString that keeps its level
         assert_eq!(contours[0]["geometry"]["type"], "LineString");
         assert_eq!(contours[0]["properties"]["isom_code"], "102.000");
-        assert_eq!(contours[0]["properties"]["elevation"], 45.0);
+        assert_eq!(contours[0]["properties"]["level_m"], 45.0);
         // a 2D polyline has none
         assert_eq!(contours[1]["geometry"]["type"], "LineString");
         assert_eq!(contours[1]["properties"]["isom_code"], "101.001");
-        assert!(contours[1]["properties"].get("elevation").is_none());
+        assert!(contours[1]["properties"].get("level_m").is_none());
         // a point is a Point, in its own table
         let knolls = read_features(&fs, IsomTable::KnollsPoints);
         assert_eq!(knolls.len(), 1);
@@ -1531,7 +1535,7 @@ mod tests {
         let folder = Path::new("");
         let line = |c, x: f64| terrain_line(c, &[[x, 0.0], [x, 1.0]]);
         let write = |source, features| write_tables(&fs, folder, source, features, None).unwrap();
-        write(Source::Contours, vec![line(Classification::Contour, 1.0)]);
+        write(Source::Contours, vec![line(CONTOUR, 1.0)]);
         write(Source::FormLines, vec![line(Classification::Formline, 2.0)]);
         write(Source::FormLines, vec![line(Classification::Formline, 3.0)]);
         write(
@@ -1545,7 +1549,7 @@ mod tests {
         );
         write(
             Source::Contours,
-            vec![line(Classification::ContourIndex, 4.0)],
+            vec![line(Classification::Contour(ContourKind::INDEX), 4.0)],
         );
 
         let summary: Vec<(Value, f64)> = read_features(&fs, IsomTable::Contours)
@@ -1654,7 +1658,7 @@ mod tests {
             terrain_feature(
                 FeatureGeometryType::LineString,
                 vec![json!([0.0, 0.0]), json!([1.0, 0.0])],
-                Classification::Contour,
+                CONTOUR,
                 None,
             )
             .unwrap(),
@@ -1667,19 +1671,22 @@ mod tests {
         assert_eq!(kept, [([5.0, 0.0], None), ([50.0, 0.0], Some(true))]);
     }
 
-    fn props(c: Classification, elevation: Option<f64>) -> Value {
-        serde_json::to_value(terrain_properties(c, elevation).unwrap()).unwrap()
+    fn props(c: Classification, level_m: Option<f64>) -> Value {
+        serde_json::to_value(terrain_properties(c, level_m).unwrap()).unwrap()
     }
 
     #[test]
     fn terrain_properties_flags_present_only_when_set() {
-        let contour = props(Classification::Contour, Some(12.5));
+        let contour = props(CONTOUR, Some(12.5));
         assert_eq!(
             contour,
-            json!({"isom_code": "101.000", "symbol_name": "contour", "elevation": 12.5})
+            json!({"isom_code": "101.000", "symbol_name": "contour", "level_m": 12.5})
         );
 
-        let depression = props(Classification::Depression, Some(12.5));
+        let depression = props(
+            Classification::Contour(ContourKind::CONTOUR.with_depression(true)),
+            Some(12.5),
+        );
         assert_eq!(depression["isom_code"], "101.000");
         assert_eq!(depression["symbol_name"], "depression contour");
         assert_eq!(depression["depression"], true);
@@ -1691,7 +1698,7 @@ mod tests {
         // the slope line is 101's variant code, not a flag
         assert_eq!(
             props(Classification::SlopeLine, Some(12.5)),
-            json!({"isom_code": "101.001", "symbol_name": "slope line", "elevation": 12.5})
+            json!({"isom_code": "101.001", "symbol_name": "slope line", "level_m": 12.5})
         );
 
         assert_eq!(
@@ -1702,7 +1709,7 @@ mod tests {
         assert_eq!(ugly["isom_code"], "111.000");
         assert_eq!(ugly["ugly"], true);
 
-        // knoll and cliff classes carry no elevation, even from a 3D polyline
+        // knoll and cliff classes carry no level, even from a 3D polyline
         assert_eq!(
             props(Classification::SmallDepression, Some(3.0)),
             json!({"isom_code": "111.000", "symbol_name": "small depression"})
@@ -1712,7 +1719,13 @@ mod tests {
             json!({"isom_code": "201.000", "symbol_name": "impassable cliff"})
         );
         assert!(terrain_properties(Classification::Knoll1010, None).is_none());
-        assert!(terrain_properties(Classification::DepressionIndexIntermed, Some(1.0)).is_none());
+        assert!(
+            terrain_properties(
+                Classification::Contour(ContourKind::INDEX_HALF_INTERVAL.with_depression(true)),
+                Some(1.0)
+            )
+            .is_none()
+        );
     }
 
     /// Every code a classification or a schema class enum carries converts between the
@@ -1722,10 +1735,10 @@ mod tests {
         use Classification::*;
         for c in [
             ContourSimple,
-            Contour,
-            ContourIndex,
-            Depression,
-            DepressionIndex,
+            Contour(ContourKind::CONTOUR),
+            Contour(ContourKind::INDEX),
+            Contour(ContourKind::CONTOUR.with_depression(true)),
+            Contour(ContourKind::INDEX.with_depression(true)),
             Formline,
             FormlineDepression,
             Dotknoll,
@@ -1766,12 +1779,40 @@ mod tests {
         }
     }
 
+    /// The schema takes a contour's level as `level_m` and no longer knows `elevation`
+    /// (contour properties allow no other member).
+    #[test]
+    fn schema_accepts_level_m_on_contours() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let collection = |properties: Value| {
+            json!({"type": "FeatureCollection", "features": [{
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[0.0, 0.0], [1.0, 1.0]]},
+                "properties": properties,
+            }]})
+        };
+        let contour = props(Classification::Contour(ContourKind::INDEX), Some(12.5));
+        assert_eq!(contour["level_m"], 12.5);
+        assert!(validator.is_valid(&collection(contour)));
+        assert!(!validator.is_valid(&collection(
+            json!({"isom_code": "102.000", "elevation": 12.5})
+        )));
+        assert!(!validator.is_valid(&collection(
+            json!({"isom_code": "102.000", "level_m": "12.5"})
+        )));
+    }
+
     #[test]
     fn terrain_properties_deserialize_into_their_schema_class() {
         use geojson_types::FeatureProperties as P;
         let back = |c, h| serde_json::from_value::<P>(props(c, h)).unwrap();
         assert!(matches!(
-            back(Classification::DepressionIndex, Some(1.0)),
+            back(
+                Classification::Contour(ContourKind::INDEX.with_depression(true)),
+                Some(1.0)
+            ),
             P::ContourProperties(_)
         ));
         assert!(matches!(
@@ -1874,7 +1915,7 @@ mod tests {
 
         let contour = ContourProperties {
             depression: None,
-            elevation: None,
+            level_m: None,
             isom_code: ContourPropertiesIsomCode::X101000,
             symbol_name: None,
         };
@@ -1963,10 +2004,7 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let features = vec![
             // leaves the tile at x=10 and comes back: two parts
-            terrain_line(
-                Classification::Contour,
-                &[[0.0, 5.0], [20.0, 5.0], [20.0, 8.0], [0.0, 8.0]],
-            ),
+            terrain_line(CONTOUR, &[[0.0, 5.0], [20.0, 5.0], [20.0, 8.0], [0.0, 8.0]]),
             // entirely outside
             terrain_line(Classification::Cliff2, &[[20.0, 20.0], [30.0, 30.0]]),
             vegetation_area(
@@ -2047,7 +2085,7 @@ mod tests {
         let write = |name: String, features, epsg| {
             write_feature_collection(&fs, &out.join(name), features, epsg).unwrap();
         };
-        let contour = |x: f64| terrain_line(Classification::Contour, &[[x, 0.0], [x, 1.0]]);
+        let contour = |x: f64| terrain_line(CONTOUR, &[[x, 0.0], [x, 1.0]]);
         // listed out of order; the merge takes the tiles in file name order
         let contours = IsomTable::Contours;
         write(
@@ -2151,7 +2189,7 @@ mod tests {
         write(
             IsomTable::Contours,
             vec![
-                terrain_line(Classification::Contour, &along(0.0)),
+                terrain_line(CONTOUR, &along(0.0)),
                 terrain_line(Classification::Formline, &along(40.0)),
             ],
         );
@@ -2323,7 +2361,7 @@ mod tests {
             (0..=10)
                 .map(|x| Point3::new(x as f64, 500.0, 12.0))
                 .collect(),
-            (Classification::ContourIndex, 12.0),
+            (Classification::Contour(ContourKind::INDEX), 12.0),
         );
         let mut cliffs = Polylines::new();
         for i in 0..5 {
@@ -2369,7 +2407,7 @@ mod tests {
                 _ => None,
             })
             .unwrap();
-        assert_eq!(index.elevation, Some(12.0));
+        assert_eq!(index.level_m, Some(12.0));
     }
 
     #[test]
@@ -2386,14 +2424,14 @@ mod tests {
             (0..=100)
                 .map(|x| Point3::new(x as f64, 0.0, 10.0))
                 .collect(),
-            (Classification::Contour, 10.0),
+            (CONTOUR, 10.0),
         );
         let lp = |x: f64, y: f64| Point3::new(x, y, 20.0);
         let mut ring: Vec<Point3> = (0..40).map(|i| lp(200.0 + i as f64, 0.0)).collect();
         ring.extend((0..40).map(|i| lp(240.0, i as f64)));
         ring.extend((0..40).map(|i| lp(240.0 - i as f64, 40.0)));
         ring.extend((0..=40).map(|i| lp(200.0, 40.0 - i as f64)));
-        contours.push(ring, (Classification::Contour, 20.0));
+        contours.push(ring, (CONTOUR, 20.0));
         let mut points = Points::new();
         points.push(Point2::new(50.0, 0.0), Classification::Dotknoll);
         let bin = Path::new(crate::merge::MERGED_DXF_BIN);

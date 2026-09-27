@@ -316,11 +316,11 @@ fn assert_terrain_outputs(tile: &Path) {
     for code in ["101.000", "102.000", "103.000"] {
         assert!(found.contains(code), "{found:?}");
     }
-    // contours carry their elevation; the form lines, the renderer's selection of the
+    // contours carry their level; the form lines, the renderer's selection of the
     // half-interval contours, have none, and the half-interval contours are left out
     for f in &contours {
         let form_line = f["properties"]["isom_code"] == "103.000";
-        assert_eq!(f["properties"]["elevation"].is_number(), !form_line, "{f}");
+        assert_eq!(f["properties"]["level_m"].is_number(), !form_line, "{f}");
     }
     // the regression tile has depressions; the flag is only ever true
     assert!(

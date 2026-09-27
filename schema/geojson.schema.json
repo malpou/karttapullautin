@@ -39,7 +39,7 @@
       "properties": {
         "isom_code": { "enum": ["101.000", "101.001", "102.000", "103.000"] },
         "symbol_name": { "type": "string" },
-        "elevation": { "type": "number" },
+        "level_m": { "description": "The level the contour was traced at, in metres.", "type": "number" },
         "depression": { "type": "boolean" }
       }
     },
