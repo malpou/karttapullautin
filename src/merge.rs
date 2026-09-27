@@ -454,37 +454,86 @@ fn decorate_depression(
     ))
 }
 
+/// Whether the map has form lines (ini `form_lines`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormLineMode {
+    /// Contours only: lines are traced at the contour interval and every one is a contour.
+    None,
+    /// Lines are traced at half the contour interval; the half-interval lines the
+    /// form-line selection keeps are drawn as form lines (ISOM 103).
+    Selective,
+}
+
+impl FormLineMode {
+    /// The trace interval of a map at `contour_interval`: the vertical distance between
+    /// traced lines, in metres (before `scalefactor`).
+    pub fn trace_interval(self, contour_interval: f64) -> f64 {
+        match self {
+            Self::None => contour_interval,
+            Self::Selective => contour_interval / 2.0,
+        }
+    }
+}
+
+/// Parameters of [`smoothjoin`], which smooths the traced lines, gives each its contour
+/// kind, and picks out depressions, knoll heads and dot knolls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmoothJoinParams {
+    /// Scales the map: part of the trace interval (ini `scalefactor`). Stays here until
+    /// the scalefactor split.
+    pub scalefactor: f64,
+    /// The map's contour interval in metres (ini `contour_interval`); index contours are
+    /// every fifth contour.
+    pub contour_interval: f64,
+    /// Whether half-interval lines are traced between the contours (ini `form_lines`).
+    pub form_lines: FormLineMode,
+    /// Weight of the neighbours in the smoothing; bigger smooths more (ini `smoothing`).
+    pub smoothing: f64,
+    /// How much of the smoothing is added back, exaggerating re-entrants and spurs
+    /// (ini `curviness`).
+    pub curviness: f64,
+    /// Closed lines of fewer vertices than this are tested for depressions and dot knolls
+    /// (ini `depression_length`).
+    pub depression_length: usize,
+    /// Mark each depression's downhill side with a slope line (ini `decorate_depressions`).
+    pub decorate_depressions: bool,
+    /// How distinct a small closed line must be to stay a contour rather than become a
+    /// dot knoll: the share of its vertices that must be steep, and, times 0.45-0.9 m
+    /// (and `scalefactor`), its relief (ini `knolls`).
+    pub inidotknolls: f64,
+}
+
+impl SmoothJoinParams {
+    /// How the traced lines map to contour kinds: traced every trace interval (times
+    /// `scalefactor`), index contours every fifth contour.
+    pub fn levels(&self) -> ContourLevels {
+        ContourLevels {
+            trace_interval: self.form_lines.trace_interval(self.contour_interval)
+                * self.scalefactor,
+            index_interval: 5.0 * self.contour_interval,
+            half_interval_lines: self.form_lines == FormLineMode::Selective,
+        }
+    }
+}
+
 pub fn smoothjoin(
     fs: &impl FileSystem,
-    config: &Config,
+    params: &SmoothJoinParams,
+    output_dxf: bool,
     tmpfolder: &Path,
 ) -> Result<(), Box<dyn Error>> {
     info!("Smooth curves...");
 
-    let &Config {
+    let &SmoothJoinParams {
         scalefactor,
         inidotknolls,
         smoothing,
         curviness,
-        mut indexcontours,
-        formline,
         depression_length,
-        contour_interval,
+        decorate_depressions,
         ..
-    } = config;
-
-    let halfinterval = contour_interval / 2.0 * scalefactor;
-    if formline > 0.0 {
-        indexcontours = 5.0 * contour_interval;
-    }
-
-    let interval = halfinterval;
-    let levels = ContourLevels {
-        trace_interval: interval,
-        // indexcontours=0 (formline=0 only) draws no index contours
-        index_interval: (indexcontours != 0.0).then_some(indexcontours),
-        half_interval_lines: formline > 0.0,
-    };
+    } = params;
+    let levels = params.levels();
 
     let heightmap_in = tmpfolder.join("xyz_knolls.hmap");
     let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
@@ -853,7 +902,7 @@ pub fn smoothjoin(
                 // `depression` into plain 101, so the distinction was lost for good.
                 // if the return element happens to be a small depression, lets remove the
                 // original countour
-                if config.decorate_depressions
+                if decorate_depressions
                     && layer.is_depression()
                     && let Some((form, class)) = decorate_depression(&el_x[l], &el_y[l], h)
                 {
@@ -877,7 +926,7 @@ pub fn smoothjoin(
     let mut fp = fs.create(output).expect("Unable to create file");
     out2_dxf.to_writer(&mut fp)?;
 
-    if config.output_dxf {
+    if output_dxf {
         out2_dxf.to_dxf(&mut fs.create(tmpfolder.join("out2.dxf"))?)?;
     }
 

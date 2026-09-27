@@ -335,7 +335,8 @@ fn main() {
     }
 
     if command == "smoothjoin" {
-        pullauta::merge::smoothjoin(&fs, &config, &tmpfolder).unwrap();
+        pullauta::merge::smoothjoin(&fs, &config.smoothjoin, config.output_dxf, &tmpfolder)
+            .unwrap();
     }
 
     if command == "xyzknolls" {

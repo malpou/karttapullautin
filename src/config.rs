@@ -5,6 +5,8 @@ use log::warn;
 
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
+use crate::merge::{FormLineMode, SmoothJoinParams};
+use crate::render::CurveRenderParams;
 
 /// The config parsed from the .ini configuration file.
 pub struct Config {
@@ -45,15 +47,20 @@ pub struct Config {
     pub thinfactor: f64,
 
     pub skipknolldetection: bool,
-    /// The knoll stage's parameters; `scalefactor` and `contour_interval` are copied in.
+    /// The knoll stage's parameters; `scalefactor` and the trace interval are copied in.
     pub knoll: KnollParams,
+    /// smoothjoin's parameters, with `scalefactor`, `contour_interval` and `form_lines`.
+    pub smoothjoin: SmoothJoinParams,
+    /// draw_curves' parameters, with `scalefactor` and `form_lines`.
+    pub curves: CurveRenderParams,
 
     pub xfactor: f64,
     pub yfactor: f64,
     pub zfactor: f64,
 
-    pub contour_interval: f64,
-    pub basemapcontours: f64,
+    /// Interval in metres of the extra raw contours in `basemap.dxf.bin` (ini
+    /// `basemapinterval`, 0 for None).
+    pub basemapcontours: Option<f64>,
 
     pub detectbuildings: bool,
 
@@ -62,14 +69,6 @@ pub struct Config {
     pub water_class: u8,
     /// Draw the `water_class` returns blue in the vegetation map (`water_blue`, default off).
     pub water_blue: bool,
-
-    // merge
-    pub inidotknolls: f64,
-    pub smoothing: f64,
-    pub curviness: f64,
-    pub indexcontours: f64,
-    pub formline: f64,
-    pub depression_length: usize,
 
     // cliffs
     pub c1_limit: f64,
@@ -131,18 +130,6 @@ pub struct Config {
     pub vectorconf: String,
     pub mtkskiplayers: Vec<String>,
     pub cliffdebug: bool,
-
-    pub formlinesteepness: f64,
-    // pub formline: f64,
-    pub formlineaddition: f64,
-    pub dashlength: f64,
-    pub gaplength: f64,
-    pub minimumgap: u32,
-    pub label_depressions: bool,
-    pub remove_touching_contours: bool,
-
-    pub depressions_color: (u8, u8, u8),
-    pub decorate_depressions: bool,
 }
 
 pub struct Zone {
@@ -276,7 +263,7 @@ impl Config {
             warn!("{warning}");
         }
 
-        let basemapcontours: f64 = parse_typed(gs, "basemapinterval", 0.0);
+        let basemapcontours = Some(parse_typed(gs, "basemapinterval", 0.0)).filter(|&i| i != 0.0);
 
         let detectbuildings: bool = gs.get("detectbuildings").unwrap_or("0") == "1";
 
@@ -291,8 +278,13 @@ impl Config {
         let inidotknolls: f64 = parse_typed(gs, "knolls", 0.8);
         let smoothing: f64 = parse_typed(gs, "smoothing", 1.0);
         let curviness: f64 = parse_typed(gs, "curviness", 1.0);
-        let indexcontours: f64 = parse_typed(gs, "indexcontours", 12.5);
-        let formline: f64 = parse_typed(gs, "formline", 2.0);
+        let form_lines = match gs.get("form_lines").map(str::trim) {
+            None | Some("selective") => FormLineMode::Selective,
+            Some("none") => FormLineMode::None,
+            Some(v) => {
+                return Err(format!("Value {v} of `form_lines` must be none or selective").into());
+            }
+        };
 
         let depression_length: usize = parse_typed(gs, "depression_length", 181);
 
@@ -500,23 +492,38 @@ impl Config {
             skipknolldetection,
             knoll: KnollParams {
                 scalefactor,
-                contour_interval,
+                trace_interval: form_lines.trace_interval(contour_interval),
                 ..KnollParams::default()
+            },
+            smoothjoin: SmoothJoinParams {
+                scalefactor,
+                contour_interval,
+                form_lines,
+                smoothing,
+                curviness,
+                depression_length,
+                decorate_depressions,
+                inidotknolls,
+            },
+            curves: CurveRenderParams {
+                scalefactor,
+                form_lines,
+                formlinesteepness,
+                formlineaddition,
+                dashlength,
+                gaplength,
+                minimumgap,
+                label_depressions,
+                remove_touching_contours,
+                depressions_color,
             },
             xfactor,
             yfactor,
             zfactor,
-            contour_interval,
             basemapcontours,
             detectbuildings,
             water_class,
             water_blue,
-            inidotknolls,
-            smoothing,
-            curviness,
-            indexcontours,
-            formline,
-            depression_length,
             c1_limit,
             c2_limit,
             cliff_thin,
@@ -559,15 +566,6 @@ impl Config {
             vectorconf,
             mtkskiplayers,
             cliffdebug,
-            formlinesteepness,
-            formlineaddition,
-            dashlength,
-            gaplength,
-            minimumgap,
-            label_depressions,
-            remove_touching_contours,
-            depressions_color,
-            decorate_depressions,
         })
     }
 }
@@ -633,13 +631,22 @@ impl<'a> Keys<'a> {
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
 /// unknown.
-const REMOVED_KEYS: [(&str, &str); 4] = [
+const REMOVED_KEYS: [(&str, &str); 6] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
     (
         "parallell_laz_decompression",
         "renamed to parallel_laz_decompression",
+    ),
+    (
+        "formline",
+        "formline=2 is form_lines=selective; formline=0 at contour_interval=I is \
+         form_lines=none at contour_interval=I/2; formline=1 is gone",
+    ),
+    (
+        "indexcontours",
+        "index contours are every fifth contour; delete it",
     ),
 ];
 
@@ -804,6 +811,8 @@ mod test {
             "vegemode",
             "draw_slopelines",
             "parallell_laz_decompression",
+            "formline",
+            "indexcontours",
         ] {
             let err = load_appended(&format!("{key}=1")).err().unwrap();
             assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
@@ -875,7 +884,7 @@ mod test {
     fn contour_interval_is_a_positive_number() {
         for (value, interval) in [("5", 5.0), ("2.5", 2.5), ("2", 2.0), ("10", 10.0)] {
             let config = load_with(&[("contour_interval", value)]).unwrap();
-            assert_eq!(config.contour_interval, interval);
+            assert_eq!(config.smoothjoin.contour_interval, interval);
         }
         for bad in ["0", "-5", "NaN", "inf", "five", ""] {
             let err = load_with(&[("contour_interval", bad)]).err().unwrap();
@@ -895,15 +904,75 @@ mod test {
     }
 
     #[test]
-    fn knoll_params_take_scalefactor_and_contour_interval() {
+    fn knoll_params_take_scalefactor_and_trace_interval() {
         use crate::knolls::KnollParams;
         let config = load_with(&[("scalefactor", "1.5"), ("contour_interval", "2.5")]).unwrap();
         let expected = KnollParams {
             scalefactor: 1.5,
-            contour_interval: 2.5,
+            trace_interval: 1.25,
             ..KnollParams::default()
         };
         assert_eq!(config.knoll, expected);
+    }
+
+    /// `contour_interval` is the map's contour interval in both form line modes; lines
+    /// are traced at it, or at half of it between contours with form lines.
+    #[test]
+    fn form_lines_set_the_trace_interval() {
+        use crate::merge::FormLineMode::{None, Selective};
+        // (form_lines, contour_interval) -> (mode, trace interval, half-interval lines,
+        // index contour interval)
+        for (value, interval, mode, trace, half, index) in [
+            ("none", "2.5", None, 2.5, false, 12.5),
+            ("none", "5", None, 5.0, false, 25.0),
+            ("selective", "2.5", Selective, 1.25, true, 12.5),
+            ("selective", "5", Selective, 2.5, true, 25.0),
+        ] {
+            let config =
+                load_with(&[("form_lines", value), ("contour_interval", interval)]).unwrap();
+            assert_eq!(config.smoothjoin.form_lines, mode);
+            assert_eq!(config.curves.form_lines, mode);
+            let levels = config.smoothjoin.levels();
+            assert_eq!(levels.trace_interval, trace, "{value} {interval}");
+            assert_eq!(levels.half_interval_lines, half);
+            assert_eq!(levels.index_interval, index);
+            assert_eq!(config.knoll.trace_interval, trace);
+        }
+        assert_eq!(
+            load_without("form_lines").unwrap().smoothjoin.form_lines,
+            Selective
+        );
+        let err = load_with(&[("form_lines", "2")]).err().unwrap();
+        assert!(err.contains("form_lines"), "{err}");
+    }
+
+    /// The release note's equivalence: old `formline=0, contour_interval=5` is
+    /// `form_lines=none, contour_interval=2.5`. Old mode 0 traced at 5 / 2 = 2.5 m, drew
+    /// index contours every `indexcontours=12.5` m, had no half-interval lines, and the
+    /// knoll stage stepped by 2.5 m with a threshold ratio of 5 / 5 = 1.
+    #[test]
+    fn form_lines_none_at_half_the_interval_is_old_formline_0() {
+        use crate::geometry::ContourLevels;
+        let config = load_with(&[("form_lines", "none"), ("contour_interval", "2.5")]).unwrap();
+        let old_mode_0 = ContourLevels {
+            trace_interval: 2.5,
+            index_interval: 12.5,
+            half_interval_lines: false,
+        };
+        assert_eq!(config.smoothjoin.levels(), old_mode_0);
+        assert_eq!(config.knoll.trace_interval, 2.5);
+        // knolldetector's threshold ratio, trace_interval / 2.5 * scalefactor
+        assert_eq!(
+            config.knoll.trace_interval / 2.5 * config.knoll.scalefactor,
+            1.0
+        );
+    }
+
+    #[test]
+    fn basemapinterval_0_draws_no_basemap_contours() {
+        assert_eq!(load_with(&[]).unwrap().basemapcontours, None);
+        let config = load_with(&[("basemapinterval", "1.125")]).unwrap();
+        assert_eq!(config.basemapcontours, Some(1.125));
     }
 
     #[test]

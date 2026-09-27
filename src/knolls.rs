@@ -31,9 +31,10 @@ pub struct KnollParams {
     /// Scales the map: pixel size of the dot knoll image and part of the level spacing
     /// (ini `scalefactor`). Stays here until the scalefactor split.
     pub scalefactor: f64,
-    /// Contour interval in metres (ini `contour_interval`). The knoll levels step by half
-    /// of it times `scalefactor`, and the candidate thresholds tuned at 5 m scale with it.
-    pub contour_interval: f64,
+    /// Trace interval in metres: the contour interval, or half of it with form lines
+    /// (ini `contour_interval` and `form_lines`). The knoll levels step by it times
+    /// `scalefactor`, and the candidate thresholds tuned at 2.5 m scale with it.
+    pub trace_interval: f64,
 
     // knolldetector: which closed contours are knoll candidates
     /// Lines of this many vertices or more are dropped before the end-to-end join.
@@ -54,9 +55,9 @@ pub struct KnollParams {
     /// larger hill. Metres.
     pub max_drop_below_top_m: f64,
     /// A top keeps its current best candidate when that candidate's lift to the next knoll
-    /// level is under this many fifths of the contour interval (times `scalefactor`)…
+    /// level is under this times the trace interval / 2.5 m (times `scalefactor`)…
     pub settled_max_lift: f64,
-    /// … and the top stands this many fifths of the interval above it…
+    /// … and the top stands this times the trace interval / 2.5 m above it…
     pub settled_top_height: f64,
     /// … give or take this much. Metres.
     pub settled_top_tolerance_m: f64,
@@ -124,7 +125,7 @@ impl Default for KnollParams {
     fn default() -> Self {
         Self {
             scalefactor: 1.0,
-            contour_interval: 5.0,
+            trace_interval: 2.5,
             join_max_vertices: 201,
             max_ring_vertices: 121,
             short_ring_vertices: 9,
@@ -292,12 +293,10 @@ pub fn knolldetector(
 ) -> anyhow::Result<()> {
     info!("Detecting knolls...");
     let scalefactor = params.scalefactor;
-    let contour_interval = params.contour_interval;
+    let halfinterval = params.trace_interval * scalefactor;
 
-    let halfinterval = contour_interval / 2.0 * scalefactor;
-
-    // the thresholds were tuned at a 5 m contour interval; this scales them to the map's
-    let contours_ratio = contour_interval / 5.0 * scalefactor;
+    // the thresholds were tuned at a 2.5 m trace interval; this scales them to the map's
+    let contours_ratio = params.trace_interval / 2.5 * scalefactor;
 
     let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
 
@@ -769,9 +768,7 @@ pub fn xyzknolls(
 ) -> anyhow::Result<()> {
     info!("Identifying knolls...");
     let scalefactor = params.scalefactor;
-    let contour_interval = params.contour_interval;
-
-    let interval = contour_interval / 2.0 * scalefactor;
+    let interval = params.trace_interval * scalefactor;
 
     // load the binary file
     let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
@@ -1002,7 +999,7 @@ mod tests {
     #[test]
     fn knoll_params_default_to_the_perl_constants() {
         let p = KnollParams::default();
-        assert_eq!((p.scalefactor, p.contour_interval), (1.0, 5.0));
+        assert_eq!((p.scalefactor, p.trace_interval), (1.0, 2.5));
         assert_eq!(p.join_max_vertices, 201);
         assert_eq!((p.short_ring_vertices, p.max_ring_vertices), (9, 121));
         assert_eq!((p.min_ring_vertices, p.min_short_ring_length_m), (3, 5.0));

@@ -531,15 +531,11 @@ pub fn process_tile(
     fs.copy(tmpfolder.join("xyz_03.hmap"), tmpfolder.join("xyz2.hmap"))
         .expect("Could not copy file");
 
-    let &Config {
-        contour_interval,
-        basemapcontours,
-        ..
-    } = config;
-    let halfinterval = contour_interval / 2.0 * scalefactor;
+    // out.dxf.bin is traced at the levels smoothjoin reads it at
+    let trace_interval = config.smoothjoin.levels().trace_interval;
 
     if !vegeonly && !cliffsonly {
-        if basemapcontours != 0.0 {
+        if let Some(basemapcontours) = config.basemapcontours {
             info!("Basemap contours");
             let xyz2 = HeightMap::from_file(fs, tmpfolder.join("xyz2.hmap"))
                 .expect("could not read xyz2 heightmap");
@@ -584,7 +580,7 @@ pub fn process_tile(
             contours::heightmap2contours(
                 fs,
                 tmpfolder,
-                halfinterval,
+                trace_interval,
                 &xyz_knolls,
                 "out.dxf.bin", // generates dxf curves
                 config.output_dxf,
@@ -596,7 +592,7 @@ pub fn process_tile(
             contours::heightmap2contours(
                 fs,
                 tmpfolder,
-                halfinterval,
+                trace_interval,
                 &hmap,
                 "out.dxf.bin", // generate dxf curves
                 config.output_dxf,
@@ -605,7 +601,7 @@ pub fn process_tile(
         }
         info!("Contour generation part 3");
         timing.start_section("contour generation part 3");
-        merge::smoothjoin(fs, config, tmpfolder).unwrap();
+        merge::smoothjoin(fs, &config.smoothjoin, config.output_dxf, tmpfolder).unwrap();
 
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
@@ -687,7 +683,11 @@ pub fn process_tile(
         info!("Rendering formlines");
         timing.start_section("rendering formlines");
         let mut img = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
-        render::draw_curves(fs, config, &mut img, tmpfolder, false, false).unwrap();
+        if let Some(formlines) =
+            render::draw_curves(fs, &config.curves, &mut img, tmpfolder, false, false).unwrap()
+        {
+            render::write_formlines(fs, config, tmpfolder, &formlines).unwrap();
+        }
     } else {
         info!("Skipped rendering");
     }

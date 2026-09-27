@@ -9,6 +9,7 @@ use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, WorldFile};
+use crate::merge::FormLineMode;
 use crate::vec2d::Vec2D;
 use image::ImageBuffer;
 use image::Rgba;
@@ -123,7 +124,11 @@ pub fn render(
         }
     }
 
-    draw_curves(fs, config, &mut img, tmpfolder, nodepressions, true).unwrap();
+    if let Some(formlines) =
+        draw_curves(fs, &config.curves, &mut img, tmpfolder, nodepressions, true)?
+    {
+        write_formlines(fs, config, tmpfolder, &formlines)?;
+    }
 
     // dotknolls----------
     let input = tmpfolder.join("dotknolls.dxf.bin");
@@ -353,27 +358,62 @@ fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], scalefactor: f64) -> boo
     (xmax - xmin).max(ymax - ymin) * to_metres < MIN_GROUND_M
 }
 
+/// Parameters of [`draw_curves`], which draws the contours and selects and dashes the
+/// form lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurveRenderParams {
+    /// Scales the map: pixel size and part of the steepness threshold (ini
+    /// `scalefactor`). Stays here until the scalefactor split.
+    pub scalefactor: f64,
+    /// Whether the half-interval lines are selected into form lines (ini `form_lines`).
+    pub form_lines: FormLineMode,
+    /// Local relief threshold of the form-line selection; greater gives more form lines
+    /// (ini `formlinesteepness`).
+    pub formlinesteepness: f64,
+    /// Vertices added to each end of a selected form line stretch (ini
+    /// `formlineaddition`).
+    pub formlineaddition: f64,
+    /// Form line dash length in pixels (ini `dashlength`).
+    pub dashlength: f64,
+    /// Form line gap length in pixels (ini `gaplength`).
+    pub gaplength: f64,
+    /// Gaps between form line stretches shorter than this many vertices are closed (ini
+    /// `minimumgap`).
+    pub minimumgap: u32,
+    /// Give the form lines of depressions their own class in the form line output (ini
+    /// `label_formlines_depressions`).
+    pub label_depressions: bool,
+    /// Drop form lines where the ground is too steep to draw them apart from the contours
+    /// (ini `remove_touching_contours`).
+    pub remove_touching_contours: bool,
+    /// Colour of depression contours (ini `depressions_color`).
+    pub depressions_color: (u8, u8, u8),
+}
+
+/// Draw the contours onto `canvas` (when `draw_image`), and return the selected form
+/// lines, None without form lines or with `nodepressions`.
 pub fn draw_curves(
     fs: &impl FileSystem,
-    config: &Config,
+    params: &CurveRenderParams,
     canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     tmpfolder: &Path,
     nodepressions: bool,
     draw_image: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<BinaryDxf>, Box<dyn Error>> {
     // Drawing curves --------------
-    let &Config {
+    let &CurveRenderParams {
         scalefactor,
         mut formlinesteepness,
-        formline,
+        form_lines,
         formlineaddition,
         dashlength,
         gaplength,
         minimumgap,
         label_depressions,
         remove_touching_contours,
-        ..
-    } = config;
+        depressions_color,
+    } = params;
+    let selective = form_lines == FormLineMode::Selective;
     formlinesteepness *= scalefactor;
 
     let mut size: f64 = 0.0;
@@ -390,7 +430,7 @@ pub fn draw_curves(
 
     let mut steepness = Vec2D::new(xyz.width(), xyz.height(), 0f64);
 
-    if formline > 0.0 {
+    if selective {
         xstart = hmap.xoffset;
         ystart = hmap.yoffset;
         size = hmap.scale;
@@ -505,7 +545,7 @@ pub fn draw_curves(
         return Err(anyhow::anyhow!("out2.dxf.bin does not contain polylines").into());
     };
 
-    let should_generate_formlines = formline == 2.0 && !nodepressions;
+    let should_generate_formlines = selective && !nodepressions;
     let mut formlines = Polylines::<Point2, Classification>::new();
 
     let mut last_curve_drawn = false;
@@ -552,9 +592,9 @@ pub fn draw_curves(
             Rgba([166, 85, 43, 255]) // brown
         } else {
             Rgba([
-                config.depressions_color.0,
-                config.depressions_color.1,
-                config.depressions_color.2,
+                depressions_color.0,
+                depressions_color.1,
+                depressions_color.2,
                 255,
             ]) // Default purple
         };
@@ -565,10 +605,7 @@ pub fn draw_curves(
             if index {
                 curvew = 3.0;
             }
-            if formline > 0.0 {
-                if formline == 1.0 {
-                    curvew = 2.5
-                }
+            if selective {
                 if kind.is_some_and(ContourKind::half_interval) {
                     curvew = 1.5
                 }
@@ -595,21 +632,18 @@ pub fn draw_curves(
                         continue;
                     }
 
-                    if curvew != 1.5
-                        || formline == 0.0
-                        || steepness[(xx, yy)] < formlinesteepness
+                    if steepness[(xx, yy)] < formlinesteepness
                         || steepness[(xx, yy + 1)] < formlinesteepness
                         || steepness[(xx + 1, yy)] < formlinesteepness
                         || steepness[(xx + 1, yy + 1)] < formlinesteepness
                     {
                         help[i] = true;
                     }
-                    if formline == 0.0
-                        || ((xyz[(xx - 1, yy)] - xyz[(xx + 1, yy)]).abs() < 2.5
-                            && (xyz[(xx, yy - 1)] - xyz[(xx, yy + 1)]).abs() < 2.5
-                            && (xyz[(xx, yy)] - xyz[(xx + 1, yy + 1)]).abs() < 3.5
-                            && (xyz[(xx - 1, yy - 1)] - xyz[(xx + 1, yy + 1)]).abs() < 3.5
-                            && (xyz[(xx + 1, yy - 1)] - xyz[(xx - 1, yy + 1)]).abs() < 3.5)
+                    if (xyz[(xx - 1, yy)] - xyz[(xx + 1, yy)]).abs() < 2.5
+                        && (xyz[(xx, yy - 1)] - xyz[(xx, yy + 1)]).abs() < 2.5
+                        && (xyz[(xx, yy)] - xyz[(xx + 1, yy + 1)]).abs() < 3.5
+                        && (xyz[(xx - 1, yy - 1)] - xyz[(xx + 1, yy + 1)]).abs() < 3.5
+                        && (xyz[(xx + 1, yy - 1)] - xyz[(xx - 1, yy + 1)]).abs() < 3.5
                     {
                         help3[i] = true;
                     }
@@ -790,7 +824,7 @@ pub fn draw_curves(
             };
 
             for i in 1..x.len() {
-                if !(curvew != 1.5 || formline == 0.0 || help2[i] || smallringtest)
+                if !(curvew != 1.5 || help2[i] || smallringtest)
                     && should_draw_next_slope_line
                     && let Some((next_x, next_y)) = next_slopeline_start
                     && x[i] == next_x
@@ -798,13 +832,13 @@ pub fn draw_curves(
                 {
                     should_draw_next_slope_line = false;
                 }
-                if curvew != 1.5 || formline == 0.0 || help2[i] || smallringtest {
+                if curvew != 1.5 || help2[i] || smallringtest {
                     if should_generate_formlines && curvew == 1.5 {
                         formiline_points.push(pixel_to_ground(x[i], y[i], x0, y0, scalefactor));
                     }
 
                     if draw_image {
-                        if curvew == 1.5 && formline == 2.0 {
+                        if curvew == 1.5 {
                             let step =
                                 ((x[i - 1] - x[i]).powi(2) + (y[i - 1] - y[i]).powi(2)).sqrt();
                             if i < 4 {
@@ -917,29 +951,36 @@ pub fn draw_curves(
         }
     }
 
-    if should_generate_formlines {
-        let out_formlines = BinaryDxf::new(bounds, vec![formlines.into()]);
-        out_formlines
-            .to_writer(&mut fs.create(tmpfolder.join("formlines.dxf.bin"))?)
-            .expect("Could not write formlines.dxf.bin");
+    Ok(should_generate_formlines.then(|| BinaryDxf::new(bounds, vec![formlines.into()])))
+}
 
-        if config.output_dxf {
-            out_formlines.to_dxf(&mut fs.create(tmpfolder.join("formlines.dxf"))?)?;
-        }
+/// Write the form lines [`draw_curves`] selected: `formlines.dxf.bin`, and the DXF and
+/// GeoJSON when those outputs are on.
+pub fn write_formlines(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    formlines: &BinaryDxf,
+) -> Result<(), Box<dyn Error>> {
+    formlines
+        .to_writer(&mut fs.create(tmpfolder.join("formlines.dxf.bin"))?)
+        .expect("Could not write formlines.dxf.bin");
 
-        // As for contours (process_tile): 103.000 in the contours table is this
-        // selected set, not the half-interval contours, whether or not savetempfiles is on.
-        if config.vector_vege {
-            crate::geojson::bindxf_to_tables(
-                fs,
-                &[tmpfolder.join("formlines.dxf.bin")],
-                tmpfolder,
-                crate::geojson::Source::FormLines,
-                config.epsg,
-            )?;
-        }
+    if config.output_dxf {
+        formlines.to_dxf(&mut fs.create(tmpfolder.join("formlines.dxf"))?)?;
     }
 
+    // As for contours (process_tile): 103.000 in the contours table is this
+    // selected set, not the half-interval contours, whether or not savetempfiles is on.
+    if config.vector_vege {
+        crate::geojson::bindxf_to_tables(
+            fs,
+            &[tmpfolder.join("formlines.dxf.bin")],
+            tmpfolder,
+            crate::geojson::Source::FormLines,
+            config.epsg,
+        )?;
+    }
     Ok(())
 }
 

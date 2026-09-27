@@ -524,8 +524,8 @@ pub struct ContourLevels {
     /// Vertical distance between traced lines, in metres (half the contour interval
     /// when the half-interval lines are traced too).
     pub trace_interval: f64,
-    /// Levels at multiples of this are index contours; None draws no index contours.
-    pub index_interval: Option<f64>,
+    /// Levels at multiples of this are index contours, in metres.
+    pub index_interval: f64,
     /// Whether every other traced line is a half-interval line: the odd multiples of
     /// `trace_interval`. Without them every traced line is a contour.
     pub half_interval_lines: bool,
@@ -540,7 +540,7 @@ impl ContourLevels {
         let level = (level_m / step + 0.5).floor() * step;
         let is_multiple = |of: f64| (level / of).floor() == level / of;
         ContourKind::from_flags(
-            self.index_interval.is_some_and(is_multiple),
+            is_multiple(self.index_interval),
             self.half_interval_lines && !is_multiple(2.0 * step),
             false,
         )
@@ -1152,7 +1152,7 @@ mod tests {
         use super::ContourKind as K;
         let levels = ContourLevels {
             trace_interval: 1.25,
-            index_interval: Some(12.5),
+            index_interval: 12.5,
             half_interval_lines: true,
         };
         // contours at the multiples of 2.5 m, half-interval lines halfway between
@@ -1175,18 +1175,11 @@ mod tests {
         assert_eq!(no_half.kind_at(12.5), K::INDEX);
         // an index level that is also an odd multiple is both (drawn as a form line)
         let odd_index = ContourLevels {
-            index_interval: Some(3.75),
+            index_interval: 3.75,
             ..levels
         };
         assert_eq!(odd_index.kind_at(3.75), K::INDEX_HALF_INTERVAL);
         assert_eq!(K::INDEX_HALF_INTERVAL.isom_code(), IsomCode::C103_000);
-        // no index contours without an index interval
-        let no_index = ContourLevels {
-            index_interval: None,
-            ..levels
-        };
-        assert_eq!(no_index.kind_at(0.0), K::CONTOUR);
-        assert_eq!(no_index.kind_at(12.5), K::CONTOUR);
     }
 
     /// The `.dxf.bin` encoding of a few classifications, pinned: `.dxf.bin` stores a
