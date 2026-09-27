@@ -85,3 +85,31 @@ Baseline moves to d6590ca.
   `{laz}_vege.pgw` in `out/` (they need `savetempfiles=1`). They change
   the same way; `_undergrowth.pgw`'s origin takes half its pixel size,
   so it moves in the last digits.
+
+### 2026-09-27: pr/ring-quirks
+
+The knoll detector's elevation pass and the knoll lift use `Ring::contains`
+instead of ray casts that skipped the closing and the first edge,
+`join_polylines` lets slot 0 be a join partner, and the knoll-lift
+smoothing skips every cell the lift already raised (ticket 18 items 1-4).
+The last is the intended rule: the old guard skipped a lifted cell only at
+whole-number coordinates, an artefact of the string-keyed lookup it
+replaced. Baseline moves to ddd4d06.
+
+- Pixels: single job 41 020 of 50 310 649 (0.0815 %), batch job 39 373 of
+  50 239 744 (0.0784 %), on every rendered PNG. The ring and join fixes
+  alone account for 19 606 / 18 762 px, the smoothing fix for the rest.
+- `detected.*`, `pins.bin` and `contours03.*` are identical: the change
+  enters at `xyz_knolls.hmap`. `knollheads.txt` goes from 1 993 to 1 941
+  lines.
+- Per code (batch job, `merged_*.geojson`):
+  101 features 844 -> 812, length 160 153.7 -> 159 340.0 m, precision
+  0.9994, recall 0.9958;
+  102 features 169 -> 167, length 34 228.1 -> 34 120.6 m, precision
+  0.9997, recall 0.9982;
+  103 features 572 -> 570, length 141 199.1 -> 140 997.9 m, precision
+  0.9998, recall 0.9986;
+  109 points 625 -> 660, precision 0.900, recall 0.950;
+  111 points 400, 2 with changed properties (299 -> 300 points in the
+  combined export's `knolls_points.geojson`).
+  Every other code is identical.

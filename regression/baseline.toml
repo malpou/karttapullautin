@@ -1,5 +1,5 @@
 # The commit whose output CI compares this branch's output with
 # (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
 # How to move it: CHANGES.md.
-ref = "d6590ca6386d2bb5ddef8792dc665ab6f66865dd"
-note = "pr/worldfile-normalise commit 1: every world file written by WorldFile"
+ref = "ddd4d068d0466c74a9b4ddbddd7f2f80fca0a371"
+note = "pr/ring-quirks commit 1: ring and join quirks fixed (knoll lift, about 0.08 % px)"
