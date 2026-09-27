@@ -70,9 +70,11 @@ fn main() {
 
     // the input tiles' CRS, unless the `epsg` ini key overrides it
     let inputs = if command.is_empty() && batch {
-        fs.list(&config.lazfolder).unwrap_or_default()
-    } else {
+        pullauta::process::batch_tiles(&fs, &config.lazfolder).unwrap_or_default()
+    } else if command_lowercase.ends_with(".las") || command_lowercase.ends_with(".laz") {
         vec![PathBuf::from(&command)]
+    } else {
+        Vec::new()
     };
     config.epsg = pullauta::crs::resolve_epsg(&fs, config.epsg, &inputs).unwrap_or_else(|e| {
         error!("{e:#}");

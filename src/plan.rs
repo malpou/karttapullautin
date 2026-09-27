@@ -31,6 +31,22 @@ pub struct InputFile {
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct InputFileIndex(usize);
 
+/// The LAS/LAZ tiles of a batch in `input_folder`, sorted for a deterministic processing
+/// order (not strictly needed, but makes it easier to debug and test). The one tile
+/// list: the plan processes these, and the batch's CRS is resolved from them.
+pub fn batch_tiles(fs: &impl FileSystem, input_folder: &str) -> std::io::Result<Vec<PathBuf>> {
+    let mut laz_files: Vec<PathBuf> = Vec::new();
+    for path in fs.list(input_folder)? {
+        if let Some(extension) = path.extension()
+            && (extension == "laz" || extension == "las")
+        {
+            laz_files.push(path);
+        }
+    }
+    laz_files.sort();
+    Ok(laz_files)
+}
+
 impl Plan {
     pub fn new_from_input_files<F: FileSystem + Send + Clone + 'static>(
         fs: F,
@@ -40,17 +56,7 @@ impl Plan {
         padding: f64,
     ) -> anyhow::Result<Self> {
         // list all the files that we have to process
-        let mut laz_files: Vec<PathBuf> = Vec::new();
-        for path in fs.list(input_folder).context("listing input files")? {
-            if let Some(extension) = path.extension()
-                && (extension == "laz" || extension == "las")
-            {
-                laz_files.push(path);
-            }
-        }
-
-        // sort for deterministic processing order (not strictly needed, but makes it easier to debug and test)
-        laz_files.sort();
+        let laz_files = batch_tiles(&fs, input_folder).context("listing input files")?;
 
         let mut input_files: Vec<InputFile> = Vec::with_capacity(laz_files.len());
         for path in laz_files {
@@ -365,6 +371,17 @@ impl Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_tiles_are_the_lowercase_las_laz_files_sorted() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        fs.create_dir_all("in").unwrap();
+        for name in ["b.las", "a.laz", "old.LAS", "notes.txt", "c.laz.bak"] {
+            fs.create(Path::new("in").join(name)).unwrap();
+        }
+        let tiles = batch_tiles(&fs, "in").unwrap();
+        assert_eq!(tiles, ["in/a.laz", "in/b.las"].map(PathBuf::from));
+    }
 
     #[derive(Debug, PartialEq, Eq)]
     struct OperationSummary {

@@ -264,6 +264,7 @@ pub fn render(
             }
         }
     }
+    crate::crs::write_raster_crs(fs, format!("{filename}.png"), config.epsg)?;
     info!("Done");
     Ok(())
 }

@@ -113,10 +113,11 @@ pub struct Config {
     pub vector_simplify: f64,
     /// Give each green vegetation area its greenshade index as a `shade` property.
     pub vector_shade: bool,
-    /// EPSG code of the input data's projected CRS, declared in every GeoJSON output.
-    /// The key overrides the CRS the input tiles declare; with the key empty or missing,
-    /// `main` fills this from the tiles (see [`crate::crs::resolve_epsg`]), and None
-    /// leaves the declaration out.
+    /// EPSG code of the input data's projected CRS, declared in every GeoJSON output and
+    /// map raster CRS sidecar. Loaded from the `epsg` key; `main` then replaces it, before
+    /// any output is written, with the resolved code (the key, else the code the input
+    /// tiles declare, see [`crate::crs::resolve_epsg`]), so the writers read one field.
+    /// None leaves the declaration out.
     pub epsg: Option<u32>,
 
     // render

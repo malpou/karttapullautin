@@ -41,6 +41,8 @@ use crate::vegetation;
 const LAZ_BUFFER_SIZE: usize =
     50 * 1024 * 1024 / (size_of::<las::Point>() + size_of::<XyzRecord>());
 
+pub use crate::plan::batch_tiles;
+
 /// Launches threads and coordinates the logic for processing multiple files in parallell.
 /// When it returns, all files have been processed and output files have been generated according to
 /// the Config.
@@ -801,6 +803,13 @@ pub fn batch_process(
                 format!("{batchoutfolder}/{laz}_depr.pgw"),
             )
             .expect("Could not copy file to output folder");
+            for png in [
+                outfile.to_path_buf(),
+                PathBuf::from(format!("{batchoutfolder}/{laz}_depr.png")),
+            ] {
+                crate::crs::write_raster_crs(fs, png, conf.epsg)
+                    .expect("Could not write raster CRS sidecar");
+            }
         }
 
         if savetempfiles {

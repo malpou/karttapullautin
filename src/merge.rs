@@ -150,6 +150,9 @@ fn merge_png(
         Path::new(&format!("{outfilename}.jgw")),
     )
     .expect("Could not copy file");
+    for extension in ["png", "jpg"] {
+        crate::crs::write_raster_crs(fs, format!("{outfilename}.{extension}"), config.epsg)?;
+    }
     Ok(())
 }
 

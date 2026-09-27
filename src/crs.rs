@@ -1,44 +1,43 @@
 //! The coordinate reference system (CRS) an input tile declares in its LAS
-//! variable-length records (VLRs), reduced to the EPSG code the GeoJSON outputs declare.
+//! variable-length records (VLRs), reduced to the EPSG code the GeoJSON outputs and the
+//! map rasters' sidecars declare.
 //!
 //! A LAS file declares its CRS either as OGC WKT (record 2112, LAS 1.4) or as GeoTIFF
 //! keys (records 34735-34737, older files). Only a projected CRS with an EPSG code is
 //! used: the outputs are in the input's projected metres, and without a CRS database
-//! (ADR 0002: no proj/gdal) an unnamed CRS cannot be turned into a code, so it is warned
-//! about and left undeclared rather than guessed.
+//! (ADR 0002: no proj/gdal) an unnamed CRS cannot be turned into a code, so it is never
+//! guessed: it is left undeclared, or refused in a batch whose other tiles name a code.
 
-use anyhow::Context;
 use log::{info, warn};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::io::fs::FileSystem;
 
-/// The EPSG code the GeoJSON outputs declare: `config_epsg` (the `epsg` ini key) when
-/// set, otherwise the one code the `.las`/`.laz` files among `inputs` declare (other
-/// paths are skipped). Tiles without a usable EPSG code are left out of the agreement;
-/// tiles declaring different codes are refused, since their outputs would not line up.
+/// The EPSG code the outputs declare: `config_epsg` (the `epsg` ini key) when set,
+/// otherwise the one code the LAS/LAZ `tiles` declare. Every tile that declares a CRS
+/// must name that code: a different code, or a CRS without a usable EPSG code, is
+/// refused, since its outputs would not line up with the others. A tile declaring
+/// nothing (or unreadable here; processing reports it) is assumed to share the code.
 pub fn resolve_epsg(
     fs: &impl FileSystem,
     config_epsg: Option<u32>,
-    inputs: &[PathBuf],
+    tiles: &[PathBuf],
 ) -> anyhow::Result<Option<u32>> {
     let mut declared: Vec<(&Path, u32)> = Vec::new();
+    let mut unusable: Vec<(&Path, String)> = Vec::new();
     let mut undeclared: Vec<&Path> = Vec::new();
-    for path in inputs {
-        let extension = path.extension().map(|e| e.to_string_lossy().to_lowercase());
-        if !matches!(extension.as_deref(), Some("las" | "laz")) {
-            continue;
-        }
-        let file = fs
+    for path in tiles {
+        let header = fs
             .open(path)
-            .with_context(|| format!("opening {}", path.display()))?;
-        let reader =
-            las::Reader::new(file).with_context(|| format!("reading {}", path.display()))?;
-        match header_epsg(reader.header()) {
-            Ok(Some(code)) => declared.push((path, code)),
-            Ok(None) => undeclared.push(path),
+            .map_err(anyhow::Error::from)
+            .and_then(|file| Ok(las::Reader::new(file)?.header().clone()));
+        match header.map(|h| header_epsg(&h)) {
+            Ok(Ok(Some(code))) => declared.push((path, code)),
+            Ok(Ok(None)) => undeclared.push(path),
+            Ok(Err(reason)) => unusable.push((path, reason)),
             Err(e) => {
-                warn!("{}: {e}; its CRS is not declared", path.display());
+                warn!("{}: CRS not read: {e}", path.display());
                 undeclared.push(path);
             }
         }
@@ -51,30 +50,65 @@ pub fn resolve_epsg(
                 path.display()
             );
         }
+        for (path, reason) in &unusable {
+            warn!(
+                "{}: {reason}; using EPSG:{code} from `epsg`",
+                path.display()
+            );
+        }
         return Ok(Some(code));
     }
 
     let Some(&(_, code)) = declared.first() else {
+        for (path, reason) in &unusable {
+            warn!("{}: {reason}; no CRS declared", path.display());
+        }
         return Ok(None);
     };
-    if declared.iter().any(|(_, c)| *c != code) {
-        let list: Vec<String> = declared
+    let mut refused: Vec<String> = declared
+        .iter()
+        .filter(|(_, c)| *c != code)
+        .map(|(path, c)| format!("{} declares EPSG:{c}", path.display()))
+        .collect();
+    refused.extend(
+        unusable
             .iter()
-            .map(|(path, c)| format!("{} EPSG:{c}", path.display()))
-            .collect();
+            .map(|(path, reason)| format!("{}: {reason}", path.display())),
+    );
+    if !refused.is_empty() {
         anyhow::bail!(
-            "input tiles declare different CRSs ({}); reproject them to one CRS, or set `epsg` if the declarations are wrong",
-            list.join(", ")
+            "input tiles do not all declare EPSG:{code} ({}); reproject them to one CRS, or set `epsg` if the declarations are wrong",
+            refused.join("; ")
         );
     }
     info!("Input declares EPSG:{code}");
     for path in undeclared {
         warn!(
-            "{} declares no EPSG code; assuming EPSG:{code} like the other tiles",
+            "{} declares no CRS; assuming EPSG:{code} like the other tiles",
             path.display()
         );
     }
     Ok(Some(code))
+}
+
+/// Write the GDAL PAM sidecar `<raster>.aux.xml` naming `epsg`, the CRS of the
+/// coordinates in the raster's world file, which has no CRS of its own. GDAL and QGIS
+/// read it. Without a code a sidecar left by an earlier run is removed.
+pub fn write_raster_crs(
+    fs: &impl FileSystem,
+    raster: impl AsRef<Path>,
+    epsg: Option<u32>,
+) -> std::io::Result<()> {
+    let mut path = raster.as_ref().as_os_str().to_owned();
+    path.push(".aux.xml");
+    match epsg {
+        Some(code) => write!(
+            fs.create(&path)?,
+            "<PAMDataset>\n  <SRS>EPSG:{code}</SRS>\n</PAMDataset>\n"
+        ),
+        None if fs.exists(&path) => fs.remove_file(&path),
+        None => Ok(()),
+    }
 }
 
 /// The EPSG code of the projected CRS a LAS header declares: from the WKT record when
@@ -83,7 +117,8 @@ pub fn resolve_epsg(
 pub fn header_epsg(header: &las::Header) -> Result<Option<u32>, String> {
     if let Some(bytes) = header.get_wkt_crs_bytes() {
         let wkt = String::from_utf8_lossy(bytes);
-        return wkt_epsg(wkt.trim_end_matches('\0')).map(Some);
+        let wkt = wkt.trim_start_matches('\u{feff}').trim_end_matches('\0');
+        return wkt_epsg(wkt).map(Some);
     }
     let Some(geotiff) = header
         .get_geotiff_crs()
@@ -155,7 +190,7 @@ impl Node {
             {
                 match args.as_slice() {
                     [Arg::Text(name), Arg::Text(code), ..] if name.eq_ignore_ascii_case("EPSG") => {
-                        code.trim().parse().ok()
+                        code.trim().parse().ok().filter(|&code: &u32| code > 0)
                     }
                     _ => None,
                 }
@@ -347,6 +382,8 @@ mod tests {
             r#"PROJCS["local",GEOGCS["ETRS89",AUTHORITY["EPSG","4258"]],UNIT["metre",1]]"#;
         assert!(wkt_epsg(unnamed).is_err());
         assert!(wkt_epsg(r#"PROJCS["x",AUTHORITY["ESRI","102100"]]"#).is_err());
+        // not a valid EPSG code, like the `epsg` key
+        assert!(wkt_epsg(r#"PROJCS["x",AUTHORITY["EPSG","0"]]"#).is_err());
         for bad in [
             "",
             "PROJCS",
@@ -362,7 +399,7 @@ mod tests {
     #[test]
     fn header_epsg_reads_wkt_geotiff_or_nothing() {
         let fs = MemoryFileSystem::new();
-        wkt_las(&fs, "wkt.las", &format!("{WKT1_3067}\0"));
+        wkt_las(&fs, "wkt.las", &format!("\u{feff}{WKT1_3067}\0"));
         assert_eq!(epsg_of(&fs, "wkt.las"), Ok(Some(3067)));
         geotiff_las(&fs, "geotiff.las", GEOTIFF_3067);
         assert_eq!(epsg_of(&fs, "geotiff.las"), Ok(Some(3067)));
@@ -395,26 +432,54 @@ mod tests {
         assert_eq!(resolve(&fs, Some(3067), &["a.las"]), Some(3067));
         assert_eq!(resolve(&fs, None, &["none.las"]), None);
         assert_eq!(resolve(&fs, Some(3067), &["none.las"]), Some(3067));
-        // not LAS: not read
-        assert_eq!(resolve(&fs, None, &["x.xyz", "", "cliffgeneralize"]), None);
+        assert_eq!(resolve(&fs, None, &[]), None);
     }
 
     #[test]
     fn resolve_epsg_requires_tiles_to_agree() {
         let fs = MemoryFileSystem::new();
         wkt_las(&fs, "a.las", WKT1_3067);
-        geotiff_las(&fs, "b.LAS", GEOTIFF_3067);
+        geotiff_las(&fs, "b.las", GEOTIFF_3067);
         write_las(&fs, "none.las", (1, 2), vec![]);
         wkt_las(&fs, "c.las", WKT2_25832);
+        wkt_las(&fs, "unnamed.las", r#"PROJCS["local",UNIT["metre",1]]"#);
+        fs.create("corrupt.laz")
+            .unwrap()
+            .write_all(b"LASF")
+            .unwrap();
+        // undeclared and unreadable tiles take the others' code
         assert_eq!(
-            resolve(&fs, None, &["a.las", "b.LAS", "none.las"]),
+            resolve(&fs, None, &["a.las", "b.las", "none.las", "corrupt.laz"]),
             Some(3067)
         );
+        // a lone unusable declaration declares nothing
+        assert_eq!(resolve(&fs, None, &["unnamed.las", "none.las"]), None);
 
-        let inputs: Vec<PathBuf> = ["a.las", "b.LAS", "c.las"].map(PathBuf::from).into();
-        let err = resolve_epsg(&fs, None, &inputs).unwrap_err().to_string();
-        assert!(err.contains("c.las EPSG:25832"), "{err}");
-        // the override settles a disagreement
-        assert_eq!(resolve_epsg(&fs, Some(3067), &inputs).unwrap(), Some(3067));
+        for (other, expected) in [
+            ("c.las", "c.las declares EPSG:25832"),
+            (
+                "unnamed.las",
+                "unnamed.las: the WKT projected CRS has no EPSG code",
+            ),
+        ] {
+            let inputs: Vec<PathBuf> = ["a.las", "b.las", other].map(PathBuf::from).into();
+            let err = resolve_epsg(&fs, None, &inputs).unwrap_err().to_string();
+            assert!(err.contains(expected), "{err}");
+            // the override settles it
+            assert_eq!(resolve_epsg(&fs, Some(3067), &inputs).unwrap(), Some(3067));
+        }
+    }
+
+    #[test]
+    fn raster_crs_sidecar_names_the_code_or_is_removed() {
+        let fs = MemoryFileSystem::new();
+        write_raster_crs(&fs, "pullautus.png", Some(3067)).unwrap();
+        assert_eq!(
+            fs.read_to_string("pullautus.png.aux.xml").unwrap(),
+            "<PAMDataset>\n  <SRS>EPSG:3067</SRS>\n</PAMDataset>\n"
+        );
+        write_raster_crs(&fs, "pullautus.png", None).unwrap();
+        assert!(!fs.exists("pullautus.png.aux.xml"));
+        write_raster_crs(&fs, "pullautus.png", None).unwrap();
     }
 }

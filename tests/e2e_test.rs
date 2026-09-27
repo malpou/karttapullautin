@@ -366,6 +366,9 @@ fn single_job_writes_terrain_geojson() {
     let temp = dir.join("temp");
     assert_terrain_outputs(&temp);
     assert_crs(&table_path(&temp, IsomTable::Contours));
+    for name in ["pullautus.png", "pullautus_depr.png"] {
+        assert_raster_crs(&dir.join(name));
+    }
     let vegetation = table_path(&temp, IsomTable::VegetationAreas);
     let green = assert_vegetation_features(&vegetation, false);
     assert!(green.contains("406.000"), "{green:?}");
@@ -565,6 +568,13 @@ fn assert_crs(path: &Path) {
     );
 }
 
+/// Check the GDAL sidecar `<raster>.aux.xml` names [`EPSG`].
+fn assert_raster_crs(raster: &Path) {
+    let path = PathBuf::from(format!("{}.aux.xml", raster.display()));
+    let xml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(xml.contains(&format!("<SRS>EPSG:{EPSG}</SRS>")), "{xml}");
+}
+
 /// Check the batch output folder after `batchmerge=1`: every table cropped per tile,
 /// merged and combined, the combined DXF and CRT, and the merged rasters (not in the
 /// working directory).
@@ -583,6 +593,15 @@ fn assert_batch_merge(out: &Path) {
         combined.extend(feature_collection(&table_path(out, table)));
     }
     // (merged_vege.png needs savetempfiles=1, which writes the tile vegetation rasters)
+    for name in [
+        "test_file.png",
+        "test_file_depr.png",
+        "merged.png",
+        "merged.jpg",
+        "merged_depr.png",
+    ] {
+        assert_raster_crs(&out.join(name));
+    }
     for name in ["merged.png", "merged.pgw", "merged_depr.png"] {
         assert!(out.join(name).exists(), "{name} is not in out/");
         assert!(
