@@ -10,7 +10,7 @@ use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::io::xyz::XyzInternalReader;
+use crate::io::xyz::{LasClass, XyzInternalReader};
 use crate::util::cliff_thinning_rng;
 use crate::vec2d::Vec2D;
 
@@ -102,9 +102,7 @@ pub fn makecliffs(
         for r in chunk {
             if cliff_thin == 1.0 || rng.sample(randdist) {
                 let (x, y, h) = (r.x, r.y, r.z as f64);
-                let r3 = r.classification;
-
-                if r3 == 2 {
+                if r.class() == LasClass::Ground {
                     list_alt[(
                         ((x - xmin).floor() / 3.0) as usize,
                         ((y - ymin).floor() / 3.0) as usize,

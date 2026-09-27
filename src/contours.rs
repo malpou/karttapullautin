@@ -7,7 +7,7 @@ use crate::config::Config;
 use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::io::xyz::XyzInternalReader;
+use crate::io::xyz::{LasClass, XyzInternalReader};
 use crate::vec2d::Vec2D;
 
 /// Create a heightmap from a point cloud file.
@@ -84,7 +84,7 @@ pub fn xyz2heightmap(
 
     while let Some(chunk) = reader.next_chunk()? {
         for r in chunk {
-            if r.classification == 2 || r.classification == config.water_class {
+            if r.class() == LasClass::Ground || r.classification == config.water_class {
                 let x: f64 = r.x;
                 let y: f64 = r.y;
                 let h: f64 = r.z as f64;

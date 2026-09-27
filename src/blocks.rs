@@ -5,9 +5,20 @@ use imageproc::rect::Rect;
 use log::info;
 use std::{error::Error, path::Path};
 
-use crate::io::{bytes::FromToBytes, fs::FileSystem, heightmap::HeightMap, xyz::XyzInternalReader};
+use crate::config::Config;
+use crate::io::{
+    bytes::FromToBytes,
+    fs::FileSystem,
+    heightmap::HeightMap,
+    xyz::{LasClass, XyzInternalReader, XyzRecord},
+};
 
-pub fn blocks(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dyn Error>> {
+/// Draws the returns [`is_block`] picks as blocks; `config.water_class` names the water class.
+pub fn blocks(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+) -> Result<(), Box<dyn Error>> {
     info!("Identifying blocks...");
 
     let heightmap_in = tmpfolder.join("xyz2.hmap");
@@ -30,19 +41,12 @@ pub fn blocks(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dyn Erro
     let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?).unwrap();
     while let Some(chunk) = reader.next_chunk().unwrap() {
         for r in chunk {
-            let (x, y, h) = (r.x, r.y, r.z as f64);
-            let r3 = r.classification;
-            let r4 = r.number_of_returns;
-            let r5 = r.return_number;
+            let (x, y) = (r.x, r.y);
 
             let xx = ((x - xstartxyz) / size).floor() as usize;
             let yy = ((y - ystartxyz) / size).floor() as usize;
-            if r3 != 2
-                && r3 != 9
-                && r4 == 1
-                && r5 == 1
-                && h - hmap.grid.get((xx, yy)).copied().unwrap_or(0.0) > 2.0
-            {
+            let ground = hmap.grid.get((xx, yy)).copied().unwrap_or(0.0);
+            if is_block(r, config.water_class, ground) {
                 draw_filled_rect_mut(
                     &mut img,
                     Rect::at(
@@ -90,4 +94,39 @@ pub fn blocks(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dyn Erro
     .expect("error saving png");
     info!("Done");
     Ok(())
+}
+
+/// Whether a return is drawn as a block: neither ground nor of `water_class`, the only echo
+/// of its pulse, and more than 2 m above `ground`, the ground model's height under it.
+fn is_block(r: &XyzRecord, water_class: u8, ground: f64) -> bool {
+    r.class() != LasClass::Ground
+        && r.classification != water_class
+        && r.number_of_returns == 1
+        && r.return_number == 1
+        && r.z as f64 - ground > 2.0
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    fn single_echo(classification: u8) -> XyzRecord {
+        XyzRecord {
+            z: 10.0,
+            classification,
+            number_of_returns: 1,
+            return_number: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn blocks_exclude_ground_and_the_configured_water_class() {
+        assert!(!is_block(&single_echo(2), 9, 0.0));
+        assert!(!is_block(&single_echo(9), 9, 0.0));
+        assert!(is_block(&single_echo(9), 42, 0.0));
+        assert!(!is_block(&single_echo(42), 42, 0.0));
+        assert!(is_block(&single_echo(6), 9, 0.0));
+        assert!(!is_block(&single_echo(6), 9, 8.0));
+    }
 }

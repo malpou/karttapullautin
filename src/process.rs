@@ -1,7 +1,7 @@
 use anyhow::Context;
 use image::{GrayImage, Luma, Rgb, RgbImage, Rgba, RgbaImage};
 use itertools::izip;
-use las::{PointDataBuilder, Reader};
+use las::{PointData, PointDataBuilder, Reader};
 use log::debug;
 use log::info;
 use rand::prelude::*;
@@ -20,6 +20,7 @@ use crate::crop;
 use crate::geojson;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
+use crate::io::xyz::LasClass;
 use crate::io::xyz::XyzInternalWriter;
 use crate::io::xyz::XyzRecord;
 use crate::isom::IsomTable;
@@ -40,6 +41,27 @@ use crate::vegetation;
 // compute the number of elements we can buffer for 50MB of memory usage during LAZ -> XyzRecord conversion
 const LAZ_BUFFER_SIZE: usize =
     50 * 1024 * 1024 / (size_of::<las::Point>() + size_of::<XyzRecord>());
+
+/// The [`XyzRecord::flags`] of each point in `pd`, in point order.
+fn las_flags(pd: &PointData) -> impl Iterator<Item = u8> + '_ {
+    let extended = pd.format().is_extended;
+    pd.raw_bytes()
+        .chunks_exact(pd.record_len())
+        .map(move |rec| record_flags(extended, rec))
+}
+
+/// The withheld, synthetic and overlap flags of one raw LAS point record. Formats 0-5 keep
+/// the class in the low 5 bits of byte 15, synthetic and withheld in bits 5 and 7, and mark
+/// overlap as class 12. Formats 6-10 (`extended`) keep synthetic, withheld and overlap in
+/// bits 0, 2 and 3 of byte 15.
+fn record_flags(extended: bool, rec: &[u8]) -> u8 {
+    let b = rec[15];
+    if extended {
+        XyzRecord::pack_flags(b & 0b0100 != 0, b & 0b0001 != 0, b & 0b1000 != 0)
+    } else {
+        XyzRecord::pack_flags(b & 0x80 != 0, b & 0x20 != 0, b & 0x1f == 12)
+    }
+}
 
 pub use crate::plan::batch_tiles;
 
@@ -191,13 +213,15 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
                                 pt_classification,
                                 pt_number_of_returns,
                                 pt_return_number,
+                                pt_flags,
                             ) in izip!(
                                 pd.x(),
                                 pd.y(),
                                 pd.z(),
                                 pd.classification(),
                                 pd.number_of_returns(),
-                                pd.return_number()
+                                pd.return_number(),
+                                las_flags(&pd)
                             ) {
                                 if (to_self || padded_bounds.contains(pt_x, pt_y))
                                     && (thinfactor == 1.0 || rng.sample(randdist))
@@ -209,7 +233,7 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
                                         classification: pt_classification,
                                         number_of_returns: pt_number_of_returns,
                                         return_number: pt_return_number,
-                                        ..Default::default()
+                                        flags: pt_flags,
                                     });
                                 }
                             }
@@ -364,7 +388,9 @@ pub fn process_tile(
             let y = parts.next().unwrap().parse::<f64>().unwrap();
             let z = parts.next().unwrap().parse::<f32>().unwrap();
 
-            let classification = parts.next().unwrap_or("2").parse::<u8>().unwrap();
+            let classification = parts
+                .next()
+                .map_or(LasClass::Ground.into(), |c| c.parse::<u8>().unwrap());
             let number_of_returns = parts.next().unwrap_or("0").parse::<u8>().unwrap();
             let return_number = parts.next().unwrap_or("0").parse::<u8>().unwrap();
 
@@ -424,13 +450,22 @@ pub fn process_tile(
 
             // convert all read points to records
             records.clear();
-            for (pt_x, pt_y, pt_z, pt_classification, pt_number_of_returns, pt_return_number) in izip!(
+            for (
+                pt_x,
+                pt_y,
+                pt_z,
+                pt_classification,
+                pt_number_of_returns,
+                pt_return_number,
+                pt_flags,
+            ) in izip!(
                 pd.x(),
                 pd.y(),
                 pd.z(),
                 pd.classification(),
                 pd.number_of_returns(),
-                pd.return_number()
+                pd.return_number(),
+                las_flags(&pd)
             ) {
                 if thinfactor == 1.0 || rng.sample(randdist) {
                     records.push(crate::io::xyz::XyzRecord {
@@ -440,7 +475,7 @@ pub fn process_tile(
                         classification: pt_classification,
                         number_of_returns: pt_number_of_returns,
                         return_number: pt_return_number,
-                        ..Default::default()
+                        flags: pt_flags,
                     });
                 }
             }
@@ -607,7 +642,7 @@ pub fn process_tile(
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");
         timing.start_section("detecting buildings");
-        blocks::blocks(fs, tmpfolder).unwrap();
+        blocks::blocks(fs, config, tmpfolder).unwrap();
     }
     if !skip_rendering && !vegeonly && !contoursonly && !cliffsonly {
         info!("Rendering png map with depressions");
@@ -1046,5 +1081,80 @@ pub fn batch_process(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use las::point::Format;
+
+    /// Point data of the given format whose records have the given bytes 15 and 16.
+    fn point_data(format: u8, bytes_15_16: &[(u8, u8)]) -> PointData {
+        let format = Format::new(format).unwrap();
+        let len = format.len() as usize;
+        let mut bytes = vec![0; len * bytes_15_16.len()];
+        for (rec, &(b15, b16)) in bytes.chunks_exact_mut(len).zip(bytes_15_16) {
+            rec[15] = b15;
+            rec[16] = b16;
+        }
+        PointDataBuilder::new()
+            .with_format(format)
+            .build_from_bytes(bytes)
+            .unwrap()
+    }
+
+    #[test]
+    fn las_flags_of_formats_0_to_5() {
+        let pd = point_data(
+            1,
+            &[
+                (2 | 0x80, 0), // withheld ground
+                (2 | 0x20, 0), // synthetic ground
+                (12, 0),       // overlap class
+                (28, 0),       // reserved class 28: not overlap
+                (2, 0xff),     // byte 16 is not a flags byte here
+            ],
+        );
+        let flags: Vec<u8> = las_flags(&pd).collect();
+        assert_eq!(
+            flags,
+            [
+                XyzRecord::WITHHELD,
+                XyzRecord::SYNTHETIC,
+                XyzRecord::OVERLAP,
+                0,
+                0
+            ]
+        );
+    }
+
+    #[test]
+    fn las_flags_of_formats_6_to_10() {
+        let pd = point_data(
+            6,
+            &[
+                (0b1000, 2),  // overlap bit
+                (0b0001, 2),  // synthetic bit
+                (0b0100, 2),  // withheld bit
+                (0b0010, 2),  // key-point bit: not kept
+                (0, 28),      // class 28: not overlap
+                (0, 12),      // class 12 is not overlap in formats 6-10
+                (0b1101, 18), // all three
+            ],
+        );
+        let flags: Vec<u8> = las_flags(&pd).collect();
+        assert_eq!(
+            flags,
+            [
+                XyzRecord::OVERLAP,
+                XyzRecord::SYNTHETIC,
+                XyzRecord::WITHHELD,
+                0,
+                0,
+                0,
+                XyzRecord::WITHHELD | XyzRecord::SYNTHETIC | XyzRecord::OVERLAP
+            ]
+        );
     }
 }

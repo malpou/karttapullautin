@@ -13,6 +13,8 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Return**: One recorded laser echo with position, class and echo order. _Avoid_: point record, xyz, r3/r4/r5
 **Echo order**: A return's position among the echoes of one pulse, first through last. _Avoid_: return number, first/last flag
 **Ground return**: A return the data supplier classified as terrain. See also: Return.
+**Class**: The ASPRS code the data supplier gave a return, such as ground 2, water 9, and low and high noise 7 and 18; `LasClass` in code. _Avoid_: classification (the DXF feature kind), r3
+**Return flag**: A supplier marker on a return: withheld (to be left out of any use), synthetic (not measured by the laser) or overlap (inside the overlap of two or more swaths). _Avoid_: padding, classification flags
 **Vector mapping**: A rule file that assigns a symbol code to shapefile records by their attributes, one `name|symbol code|conditions` rule per line; named by the `vectorconf` ini key. _Avoid_: vectorconf (the key), osm.txt (one such file)
 **Pulse density**: Laser pulses per square metre of ground in a tile. _Avoid_: point density, return density
 

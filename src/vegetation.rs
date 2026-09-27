@@ -11,7 +11,7 @@ use crate::config::{Config, Zone};
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::io::xyz::XyzInternalReader;
+use crate::io::xyz::{LasClass, XyzInternalReader};
 use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, PX_PER_METRE, WorldFile};
 use crate::palette::{Palette, PaletteColorEnum, PalettedImage};
 use crate::vec2d::Vec2D;
@@ -87,7 +87,7 @@ pub fn makevege(
                 let x: f64 = r.x;
                 let y: f64 = r.y;
                 let h: f64 = r.z as f64;
-                let r3 = r.classification;
+                let r3 = r.class();
                 let r4 = r.number_of_returns;
                 let r5 = r.return_number;
 
@@ -100,7 +100,7 @@ pub fn makevege(
                 let xx = ((x - xmin) / 3.0) as usize;
                 let yy = ((y - ymin) / 3.0) as usize;
 
-                if r3 == 2
+                if r3 == LasClass::Ground
                     || h < yellowheight
                         + xyz[(((x - xmin) / size) as usize, ((y - ymin) / size) as usize)]
                 {
@@ -143,7 +143,7 @@ pub fn makevege(
                 let x: f64 = r.x;
                 let y: f64 = r.y;
                 let h: f64 = r.z as f64 - zoffset;
-                let r3 = r.classification;
+                let r3 = r.class();
                 let r4 = r.number_of_returns;
                 let r5 = r.return_number;
 
@@ -189,7 +189,7 @@ pub fn makevege(
                 let hh = h - thelele;
                 let ug_entry = &mut ug[(xx, yy)];
                 if hh <= 1.2 {
-                    if r3 == 2 {
+                    if r3 == LasClass::Ground {
                         ug_entry.ugg += 1.0;
                     } else if hh > 0.25 {
                         ug_entry.ug += 1;
@@ -202,7 +202,7 @@ pub fn makevege(
 
                 let xx = ((x - xmin) / block) as usize;
                 let yy = ((y - ymin) / block) as usize;
-                if r3 == 2 || greenground >= hh {
+                if r3 == LasClass::Ground || greenground >= hh {
                     if r4 == 1 && r5 == 1 {
                         ghit[(xx, yy)] += firstandlastreturnasground;
                     } else {

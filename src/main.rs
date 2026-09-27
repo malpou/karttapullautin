@@ -202,7 +202,7 @@ fn main() {
     }
 
     if command == "blocks" {
-        pullauta::blocks::blocks(&fs, &tmpfolder).unwrap();
+        pullauta::blocks::blocks(&fs, &config, &tmpfolder).unwrap();
         return;
     }
 
