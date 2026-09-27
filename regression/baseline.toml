@@ -1,5 +1,5 @@
 # The commit whose output CI compares this branch's output with
 # (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
 # How to move it: CHANGES.md.
-ref = "ddd4d068d0466c74a9b4ddbddd7f2f80fca0a371"
-note = "pr/ring-quirks commit 1: ring and join quirks fixed (knoll lift, about 0.08 % px)"
+ref = "6e13d16fa613afbe1dc1c464447f5f177cbb8221"
+note = "pr/las-class commit 1: LAS classes and return flags declared (xyz.bin version byte only, 0 px)"

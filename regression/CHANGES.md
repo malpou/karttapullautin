@@ -113,3 +113,23 @@ replaced. Baseline moves to ddd4d06.
   111 points 400, 2 with changed properties (299 -> 300 points in the
   combined export's `knolls_points.geojson`).
   Every other code is identical.
+
+### 2026-09-27: pr/las-class
+
+The `.xyz.bin` point file moves to version 2 (magic `XYZB` -> `XYZ2`):
+the record's spare padding byte becomes the withheld, synthetic and
+overlap flags, filled at ingest. Version 1 files are rejected with an
+error asking to regenerate them. `blocks` excludes `waterclass` (default
+9) instead of a literal 9, so with a non-default `waterclass` the blocks
+change; the regression jobs use the default. Baseline moves to 6e13d16.
+
+- Pixels: 0 on every rendered PNG, single job and batch job.
+- Files: each of these differs in one byte, the version byte of the
+  magic, at an unchanged size:
+  `single/temp/xyztemp.xyz.bin` (171 145 236 bytes),
+  `batch/temp1.xyz.bin` (171 145 236 bytes),
+  `batch/temp1/xyztemp.xyz.bin` (171 145 236 bytes),
+  `batch/temp_test_file_dir/xyztemp.xyz.bin` (171 145 236 bytes).
+  The regression tile has no withheld, synthetic or overlap returns, so
+  every flags byte is 0.
+- Per code: every code is identical.
