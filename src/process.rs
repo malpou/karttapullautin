@@ -33,7 +33,7 @@ use crate::render;
 use crate::util::Consumer;
 use crate::util::Timing;
 use crate::util::read_lines_no_alloc;
-use crate::util::seeded_rng;
+use crate::util::thinning_rng;
 use crate::vegetation;
 
 // compute the number of elements we can buffer for 50MB of memory usage during LAZ -> XyzRecord conversion
@@ -160,13 +160,7 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
                     };
                     let mut rngs: Vec<_> = to
                         .iter()
-                        .map(|&to_i| {
-                            if to_i == from {
-                                seeded_rng(&tile(to_i))
-                            } else {
-                                seeded_rng(&format!("{}<{}", tile(to_i), tile(from)))
-                            }
-                        })
+                        .map(|&to_i| thinning_rng(&tile(to_i), &tile(from)))
                         .collect();
 
                     loop {
@@ -400,7 +394,7 @@ pub fn process_tile(
             info!("Using thinning factor {thinfactor}");
         }
 
-        let mut rng = seeded_rng(tile);
+        let mut rng = thinning_rng(tile, tile);
         let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
 
         let options = las::ReaderOptions::default().with_laz_parallelism(if config.laz_parallel {

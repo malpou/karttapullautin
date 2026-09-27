@@ -11,7 +11,7 @@ use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::XyzInternalReader;
-use crate::util::seeded_rng;
+use crate::util::cliff_thinning_rng;
 use crate::vec2d::Vec2D;
 
 /// `tile` (the tile name) seeds the `cliffthin` sampling.
@@ -94,8 +94,7 @@ pub fn makecliffs(
 
     let xyz_file_in = tmpfolder.join("xyztemp.xyz.bin");
 
-    // seeded apart from the point thinning, which uses the tile name alone
-    let mut rng = seeded_rng(&format!("{tile} cliffs"));
+    let mut rng = cliff_thinning_rng(tile);
     let randdist = rand::distr::Bernoulli::new(cliff_thin).unwrap();
 
     let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?)?;

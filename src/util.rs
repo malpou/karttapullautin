@@ -156,11 +156,29 @@ pub fn write_object<W: std::io::Write, O: serde::Serialize>(
     Ok(())
 }
 
-/// A random number generator seeded from `key` (a tile name), so that thinning
-/// (`thinfactor`, `cliffthin`) picks the same points on every run. The seed is the 64-bit
-/// FNV-1a hash of `key`: std's hashers are not stable across Rust versions. The generator
-/// is named, not `SmallRng`, whose algorithm differs by platform and rand version.
-pub fn seeded_rng(key: &str) -> Xoshiro256PlusPlus {
+/// The generator for `thinfactor` thinning of the points `source` contributes to `tile`
+/// (both tile names). A tile's own points use the tile name alone, so the batch job thins
+/// them exactly as the single job does; a neighbour's padding gets its own stream, so the
+/// result does not depend on the order the tiles are read in.
+pub fn thinning_rng(tile: &str, source: &str) -> Xoshiro256PlusPlus {
+    if source == tile {
+        seeded_rng(tile)
+    } else {
+        seeded_rng(&format!("{tile}<{source}"))
+    }
+}
+
+/// The generator for `cliffthin` sampling in `tile`, apart from its point thinning.
+pub fn cliff_thinning_rng(tile: &str) -> Xoshiro256PlusPlus {
+    seeded_rng(&format!("{tile} cliffs"))
+}
+
+/// A random number generator seeded from `key`, so that thinning picks the same points on
+/// every run of one build (rand keeps sampled values stable only within a minor
+/// version). The seed is the 64-bit FNV-1a hash of `key`: std's hashers are not stable
+/// across Rust versions. The generator is named, not `SmallRng`, whose algorithm differs
+/// by platform and rand version.
+fn seeded_rng(key: &str) -> Xoshiro256PlusPlus {
     let hash = key.bytes().fold(0xcbf29ce484222325_u64, |h, b| {
         (h ^ b as u64).wrapping_mul(0x100000001b3)
     });
@@ -267,6 +285,19 @@ mod tests {
         };
         assert_eq!(draw("tile_a"), draw("tile_a"));
         assert_ne!(draw("tile_a"), draw("tile_b"));
+    }
+
+    #[test]
+    fn thinning_streams_are_keyed_by_tile_and_source() {
+        use rand::Rng;
+        let draw = |mut rng: Xoshiro256PlusPlus| (0..8).map(|_| rng.next_u64()).collect::<Vec<_>>();
+        // a tile's own points: the single job's stream
+        assert_eq!(draw(thinning_rng("a", "a")), draw(seeded_rng("a")));
+        // a neighbour's padding: its own stream per (tile, source) pair, whatever the order
+        assert_eq!(draw(thinning_rng("a", "b")), draw(thinning_rng("a", "b")));
+        assert_ne!(draw(thinning_rng("a", "b")), draw(thinning_rng("a", "a")));
+        assert_ne!(draw(thinning_rng("a", "b")), draw(thinning_rng("b", "a")));
+        assert_ne!(draw(cliff_thinning_rng("a")), draw(thinning_rng("a", "a")));
     }
 
     #[test]
