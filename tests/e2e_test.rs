@@ -144,13 +144,13 @@ fn greenshade_isom() -> Vec<String> {
     line.split('|').map(|c| c.trim().to_string()).collect()
 }
 
-/// Check a feature's `shade` against its symbol: a green area (406/408/410) has its
-/// greenshade index as an integer, mapped to its symbol by `vector_greenshade_isom`;
-/// every other feature has none.
+/// Check a feature's `shade` against its symbol: a green area (a symbol in `map`, the
+/// template's 406/408/410) has its greenshade index as an integer, mapped to its symbol
+/// by `vector_greenshade_isom`; every other feature has none.
 fn assert_shade(f: &Value, map: &[String]) {
     let p = &f["properties"];
     match p["symbol"].as_str().unwrap_or_default() {
-        symbol @ ("406" | "408" | "410") => {
+        symbol if map.iter().any(|m| m == symbol) => {
             let shade = p["shade"]
                 .as_u64()
                 .unwrap_or_else(|| panic!("no shade: {f}"));
@@ -163,9 +163,9 @@ fn assert_shade(f: &Value, map: &[String]) {
 }
 
 /// Check vegetation features: Polygons whose rings are closed, and properties that are
-/// only a vegetation `symbol`, plus the greenshade index when `shade` (see
-/// [`assert_shade`]). Returns the symbols present.
-fn assert_vegetation_features(path: &Path, shade: bool) -> BTreeSet<String> {
+/// only a vegetation `symbol`, plus the greenshade index on green areas when the run had
+/// `vector_shade=1` (see [`assert_shade`]). Returns the symbols present.
+fn assert_vegetation_features(path: &Path, vector_shade: bool) -> BTreeSet<String> {
     let map = greenshade_isom();
     let mut symbols = BTreeSet::new();
     for f in feature_collection(path) {
@@ -181,7 +181,7 @@ fn assert_vegetation_features(path: &Path, shade: bool) -> BTreeSet<String> {
             "{}: {f}",
             path.display()
         );
-        if shade {
+        if vector_shade {
             assert_shade(&f, &map);
         } else {
             assert!(p.get("shade").is_none(), "{}: {f}", path.display());

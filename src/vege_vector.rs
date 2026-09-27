@@ -506,8 +506,9 @@ fn write_geojson_file(
     let features = polygons
         .iter()
         .map(|p| {
-            // traced components are never background, so the class is non-zero
-            let shade = shade.then(|| NonZeroU64::new(p.class.into())).flatten();
+            let shade = shade.then(|| {
+                NonZeroU64::new(p.class.into()).expect("traced components are never background")
+            });
             geojson::vegetation_area(p.symbol, shade, &p.rings)
         })
         .collect();
