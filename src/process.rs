@@ -36,6 +36,7 @@ use crate::util::Consumer;
 use crate::util::Timing;
 use crate::util::read_lines_no_alloc;
 use crate::util::thinning_rng;
+use crate::vege_vector;
 use crate::vegetation;
 
 // compute the number of elements we can buffer for 50MB of memory usage during LAZ -> XyzRecord conversion
@@ -629,7 +630,10 @@ pub fn process_tile(
     if !cliffsonly && !contoursonly {
         info!("Vegetation generation");
         timing.start_section("vegetation generation");
-        vegetation::makevege(fs, config, tmpfolder).unwrap();
+        let classes = vegetation::makevege(fs, &config.vegetation, tmpfolder).unwrap();
+        if config.vector_vege {
+            vege_vector::export_all(fs, config, tmpfolder, &classes).unwrap();
+        }
     }
 
     if !vegeonly && !contoursonly {

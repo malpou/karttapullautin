@@ -243,7 +243,10 @@ fn main() {
     }
 
     if command == "makevege" {
-        pullauta::vegetation::makevege(&fs, &config, &tmpfolder).unwrap();
+        let classes = pullauta::vegetation::makevege(&fs, &config.vegetation, &tmpfolder).unwrap();
+        if config.vector_vege {
+            pullauta::vege_vector::export_all(&fs, &config, &tmpfolder, &classes).unwrap();
+        }
     }
 
     if command == "pngmerge" || command == "pngmergedepr" {

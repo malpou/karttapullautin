@@ -14,9 +14,10 @@ use imageproc::region_labelling::{Connectivity, connected_components};
 use crate::config::Config;
 use crate::geojson;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode as Code;
-use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines, signed_area};
+use crate::geometry::{BinaryDxf, Classification, Point2, Polylines, signed_area};
 use crate::io::fs::FileSystem;
 use crate::vec2d::Vec2D;
+use crate::vegetation::VegetationClasses;
 
 /// ISOM 2017-2 minimum footprint area (m²) of a vegetation area symbol, from the spec's
 /// "Minimum area" parameters (footprints at 1:15,000, 1 mm = 15 m).
@@ -496,22 +497,23 @@ fn area_features(
     })
 }
 
-/// Vectorize and write all vegetation vector outputs. Called from `makevege` when
-/// `vector_vege=1`; with `vector_shade=1` the green areas also carry their greenshade
-/// index. Grids: `green` = greenshade index per block cell, `open_land` = 0/1
-/// per 3 m cell (origin shifted +1.5 m, see makevege's 2x2 sum window), `undergrowth` = 0/1 per
-/// block*6 cell.
-#[allow(clippy::too_many_arguments)]
+/// Vectorize and write all vegetation vector outputs from the classes `makevege` drew
+/// (`vector_vege=1`); with `vector_shade=1` the green areas also carry their greenshade
+/// index. The open land grid's origin is shifted +1.5 m (makevege's 2x2 sum window).
 pub fn export_all(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
-    green: &Vec2D<u8>,
-    open_land: &Vec2D<u8>,
-    undergrowth: &Vec2D<u8>,
-    bounds: Bounds,
-    block: f64,
+    classes: &VegetationClasses,
 ) -> Result<(), Box<dyn Error>> {
+    let VegetationClasses {
+        green,
+        open_land,
+        undergrowth,
+        bounds,
+        block,
+    } = classes;
+    let block = *block;
     log::info!("Vectorizing vegetation...");
     let eps = config.vector_simplify;
 
@@ -523,11 +525,12 @@ pub fn export_all(
             0
         }
     };
-    let green_med = [radius(config.med, block), radius(config.med2, block)];
-    let open_land_med = if config.proceed_yellows {
-        [radius(config.med, 3.0), radius(config.med2, 3.0)]
+    let vege = &config.vegetation;
+    let green_med = [radius(vege.med, block), radius(vege.med2, block)];
+    let open_land_med = if vege.proceed_yellows {
+        [radius(vege.med, 3.0), radius(vege.med2, 3.0)]
     } else {
-        [radius(config.medyellow, 3.0), 0]
+        [radius(vege.medyellow, 3.0), 0]
     };
 
     let map = &config.vector_greenshade_isom;
@@ -592,7 +595,7 @@ pub fn export_all(
             lines.push(closed, class);
         }
     }
-    let dxf = BinaryDxf::new(bounds, vec![lines.into()]);
+    let dxf = BinaryDxf::new(bounds.clone(), vec![lines.into()]);
     dxf.to_writer(&mut fs.create(tmpfolder.join("vegetation.dxf.bin"))?)?;
     if config.output_dxf {
         dxf.to_dxf(&mut fs.create(tmpfolder.join("vegetation.dxf"))?)?;

@@ -7,7 +7,7 @@ use std::error::Error;
 use std::f32::consts::SQRT_2;
 use std::path::Path;
 
-use crate::config::{Config, Zone};
+use crate::geometry::Bounds;
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
@@ -16,11 +16,124 @@ use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, PX_PER_METRE, WorldFile};
 use crate::palette::{Palette, PaletteColorEnum, PalettedImage};
 use crate::vec2d::Vec2D;
 
+/// Parameters of [`makevege`], which classifies the returns into vegetation, open land
+/// and undergrowth and draws the vegetation rasters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VegetationParams {
+    /// Scales the map: pixel size of the undergrowth raster (ini `scalefactor`). Stays
+    /// here until the scalefactor split.
+    pub scalefactor: f64,
+    /// Also write the one-channel `*_bit.png` rasters (ini `vege_bitmode`).
+    pub vege_bitmode: bool,
+    /// LAS class of water returns (ini `waterclass`), drawn blue with `water_blue`.
+    pub water_class: u8,
+    /// Draw the `water_class` returns blue in `blueblack.png` (ini `water_blue`).
+    pub water_blue: bool,
+
+    // green: returns counted per `greendetectsize` cell
+    /// Height bands above ground whose returns count towards green; the first matching
+    /// stratum counts (ini `stratum1`, `stratum2`, ...).
+    pub strata: Vec<Stratum>,
+    /// Per band of canopy height (`roof_low..roof_high` m): the green-to-ground ratio at
+    /// which the green factor is 1 (ini `thresold1`, ..., each `low|high|ratio`).
+    pub thresholds: Vec<(f64, f64, f64)>,
+    /// Green factor at which each shade is drawn, lightest first (ini `greenshades`).
+    pub greenshades: Vec<f64>,
+    /// Red and blue of the lightest green shade, 0-255 (ini `lightgreentone`).
+    pub greentone: f64,
+    /// Returns less than this many metres above ground count as ground (ini `greenground`).
+    pub greenground: f64,
+    /// Returns more than this many metres above ground count as high hits (ini `greenhigh`).
+    pub greenhigh: f64,
+    /// Weight of the high-hit share in the green factor, 0-1 (ini `topweight`).
+    pub topweight: f64,
+    /// Point density balancing: the factor is `(1 - pointvolumefactor * density /
+    /// average density) ^ pointvolumeexponent` (ini `pointvolumefactor`); 0 is off.
+    pub pointvolumefactor: f64,
+    /// The exponent of that balancing (ini `pointvolumeexponent`).
+    pub pointvolumeexponent: f64,
+    /// Metres subtracted from every return's height before the green count (ini
+    /// `vegezoffset`).
+    pub vegezoffset: f64,
+    /// Pixels added to each side of a green cell's square (ini `greendotsize`).
+    pub addition: i32,
+    /// Ground hits a single-return ground point counts as (ini
+    /// `firstandlastreturnasground`).
+    pub firstandlastreturnasground: u32,
+    /// Green weight of a single return below 5 m, usually a boulder (ini
+    /// `firstandlastreturnfactor`).
+    pub firstandlastfactor: f64,
+    /// Green weight of a last return (ini `lastreturnfactor`).
+    pub lastfactor: f64,
+    /// Use every n-th return only; 0 or 1 uses all (ini `vegethin`).
+    pub vegethin: u32,
+    /// Side of the green cell in metres (ini `greendetectsize`).
+    pub greendetectsize: f64,
+    /// Median filter box sizes of the green raster, two rounds; 1 or less is off (ini
+    /// `medianboxsize`, `medianboxsize2`).
+    pub med: u32,
+    pub med2: u32,
+
+    // yellow: returns counted per 3 m cell
+    /// Returns less than this many metres above ground count as open (ini `yellowheight`).
+    pub yellowheight: f64,
+    /// Share of open returns above which a cell is open land (ini `yellowthresold`).
+    pub yellowthreshold: f64,
+    /// Non-open hits a single return counts as (ini `yellowfirstlast`).
+    pub yellowfirstlast: u32,
+    /// Filter the yellow raster with the green's median boxes (ini `yellow_smoothing`).
+    pub proceed_yellows: bool,
+    /// Median filter box size of the yellow raster without `proceed_yellows`; 1 or less
+    /// is off (ini `yellowmedianboxsize`).
+    pub medyellow: u32,
+
+    // undergrowth: returns 0.25-1.2 m above ground, per 6 green cells
+    /// Undergrowth share above which normal undergrowth is drawn (ini `undergrowth`).
+    pub uglimit: f64,
+    /// Undergrowth share above which undergrowth walk is drawn (ini `undergrowth2`).
+    pub uglimit2: f64,
+
+    // blueblack.png
+    /// LAS class drawn black as buildings; 0 is off (ini `buildingsclass`).
+    pub buildings: u8,
+    /// Ground below this elevation in metres is drawn blue (ini `waterelevation`).
+    pub waterele: f64,
+}
+
+/// A height band above ground whose returns count towards green (ini `stratum{i}` =
+/// `low|high|roof|factor`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stratum {
+    /// Lower bound in metres above ground, inclusive.
+    pub low: f64,
+    /// Upper bound in metres above ground, exclusive.
+    pub high: f64,
+    /// Counts only where the tallest return in the cell is lower than this, in metres
+    /// above ground.
+    pub roof: f64,
+    /// Green hits a return in this stratum counts as.
+    pub factor: f64,
+}
+
+/// The per-cell classes [`makevege`] drew, for the vector export.
+pub struct VegetationClasses {
+    /// Greenshade index (1-based, 0 = none) per `block` cell.
+    pub green: Vec2D<u8>,
+    /// 1 where open land is drawn, per 3 m cell.
+    pub open_land: Vec2D<u8>,
+    /// 1 where undergrowth is drawn, per `block * 6` cell.
+    pub undergrowth: Vec2D<u8>,
+    /// The height map's extent.
+    pub bounds: Bounds,
+    /// Side of the green cell in metres (`greendetectsize`).
+    pub block: f64,
+}
+
 pub fn makevege(
     fs: &impl FileSystem,
-    config: &Config,
+    params: &VegetationParams,
     tmpfolder: &Path,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<VegetationClasses, Box<dyn Error>> {
     info!("Generating vegetation...");
 
     let heightmap_in = tmpfolder.join("xyz2.hmap");
@@ -31,12 +144,12 @@ pub fn makevege(
     let size = hmap.scale;
     let xyz = &hmap.grid;
 
-    let palette = Palette::new(config);
+    let palette = Palette::new(params);
 
-    let thresholds = &config.thresholds;
-    let block = config.greendetectsize;
+    let thresholds = &params.thresholds;
+    let block = params.greendetectsize;
 
-    let &Config {
+    let &VegetationParams {
         vege_bitmode,
         yellowheight,
         yellowthreshold,
@@ -55,8 +168,8 @@ pub fn makevege(
         yellowfirstlast,
         vegethin,
         ..
-    } = config;
-    let greenshades = &config.greenshades;
+    } = params;
+    let greenshades = &params.greenshades;
 
     let xyz_file_in = tmpfolder.join("xyztemp.xyz.bin");
 
@@ -219,12 +332,12 @@ pub fn makevege(
 
                     // NOTE: the use of top here means that we cannot combine the two processing loops into one
                     let top_val = top[(xx, yy)];
-                    for &Zone {
+                    for &Stratum {
                         low,
                         high,
                         roof,
                         factor,
-                    } in config.zones.iter()
+                    } in params.strata.iter()
                     {
                         if hh >= low && hh < high && top_val - thelele < roof {
                             greenhit[(xx, yy)] += (factor * last) as f32;
@@ -253,7 +366,7 @@ pub fn makevege(
         img_height,
         PaletteColorEnum::BackgroundWhite.to_color(),
     );
-    // per 3 m cell: 1 where open land is drawn, for vector_vege
+    // per 3 m cell: 1 where open land is drawn
     let mut open_land_class = Vec2D::new(w_3, h_3, 0u8);
     for x in 0..(w_3 - 2) {
         for y in 0..(h_3 - 2) {
@@ -298,7 +411,7 @@ pub fn makevege(
         img_height,
         PaletteColorEnum::BackgroundWhite.to_color(),
     );
-    // per block cell: the greenshade index (1-based, 0 = none), for vector_vege
+    // per block cell: the greenshade index (1-based, 0 = none)
     let mut green_class = Vec2D::new(w_block, h_block, 0u8);
     for x in 0..w_block {
         for y in 0..h_block {
@@ -365,10 +478,10 @@ pub fn makevege(
     // drop all used resources to free memory early
     drop((top, firsthit, ghit, greenhit, highit, yhit, noyhit));
 
-    let proceed_yellows: bool = config.proceed_yellows;
-    let med: u32 = config.med;
-    let med2 = config.med2;
-    let medyellow = config.medyellow;
+    let proceed_yellows: bool = params.proceed_yellows;
+    let med: u32 = params.med;
+    let med2 = params.med2;
+    let medyellow = params.medyellow;
 
     if med > 1 {
         imggr1 = imggr1.median_filter(med / 2, med / 2);
@@ -487,8 +600,8 @@ pub fn makevege(
         img_height,
         PaletteColorEnum::BackgroundWhite.to_color(),
     );
-    let buildings = config.buildings;
-    let water = config.water_blue.then_some(config.water_class);
+    let buildings = params.buildings;
+    let water = params.water_blue.then_some(params.water_class);
     if buildings > 0 || water.is_some() {
         let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?)?;
         while let Some(chunk) = reader.next_chunk()? {
@@ -515,7 +628,7 @@ pub fn makevege(
     }
 
     for (x, y, hh) in hmap.iter() {
-        if hh < config.waterele {
+        if hh < params.waterele {
             draw_filled_rect_mut(
                 &mut imgwater,
                 Rect::at((x - xmin) as i32 - 1, (ymax - y) as i32 - 1).of_size(3, 3),
@@ -535,7 +648,7 @@ pub fn makevege(
 
     drop(imgwater); // explicitly drop imgwater to free memory
 
-    let scalefactor = config.scalefactor;
+    let scalefactor = params.scalefactor;
 
     // factor to convert from coordinates to pixels
     let tmpfactor = (PX_PER_METRE / scalefactor) as f32;
@@ -704,30 +817,24 @@ pub fn makevege(
         .write(&mut writer)
         .expect("Cannot write pgw file");
 
-    if config.vector_vege {
-        // per block*step cell: 1 where undergrowth is drawn (same test as the raster)
-        let mut undergrowth_class = Vec2D::new(w_block_step, h_block_step, 0u8);
-        for x in 0..w_block_step {
-            for y in 0..h_block_step {
-                let ug_entry = &ug[(x, y)];
-                let value = ug_entry.ug as f64 / (ug_entry.ug as f64 + ug_entry.ugg as f64 + 0.01);
-                if value > uglimit {
-                    undergrowth_class[(x, y)] = 1;
-                }
+    // per block*step cell: 1 where undergrowth is drawn (same test as the raster)
+    let mut undergrowth_class = Vec2D::new(w_block_step, h_block_step, 0u8);
+    for x in 0..w_block_step {
+        for y in 0..h_block_step {
+            let ug_entry = &ug[(x, y)];
+            let value = ug_entry.ug as f64 / (ug_entry.ug as f64 + ug_entry.ugg as f64 + 0.01);
+            if value > uglimit {
+                undergrowth_class[(x, y)] = 1;
             }
         }
-        crate::vege_vector::export_all(
-            fs,
-            config,
-            tmpfolder,
-            &green_class,
-            &open_land_class,
-            &undergrowth_class,
-            crate::geometry::Bounds::new(xmin, xmax, ymin, ymax),
-            block,
-        )?;
     }
 
     info!("Done");
-    Ok(())
+    Ok(VegetationClasses {
+        green: green_class,
+        open_land: open_land_class,
+        undergrowth: undergrowth_class,
+        bounds: Bounds::new(xmin, xmax, ymin, ymax),
+        block,
+    })
 }

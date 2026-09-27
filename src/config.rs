@@ -7,6 +7,7 @@ use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
 use crate::merge::{FormLineMode, SmoothJoinParams};
 use crate::render::CurveRenderParams;
+use crate::vegetation::{Stratum, VegetationParams};
 
 /// The config parsed from the .ini configuration file.
 pub struct Config {
@@ -67,8 +68,6 @@ pub struct Config {
     /// LAS class of water returns (`waterclass`, default 9, ASPRS water): contours, the
     /// ground model and the blocks treat returns of this class as water.
     pub water_class: u8,
-    /// Draw the `water_class` returns blue in the vegetation map (`water_blue`, default off).
-    pub water_blue: bool,
 
     // cliffs
     pub c1_limit: f64,
@@ -78,34 +77,8 @@ pub struct Config {
     pub flat_place: f64,
     pub no_small_ciffs: f64,
 
-    // vegetation
-    pub zones: Vec<Zone>,
-    pub thresholds: Vec<(f64, f64, f64)>,
-    pub greenshades: Vec<f64>,
-    pub yellowheight: f64,
-    pub yellowthreshold: f64,
-    pub greenground: f64,
-    pub pointvolumefactor: f64,
-    pub pointvolumeexponent: f64,
-    pub greenhigh: f64,
-    pub topweight: f64,
-    pub greentone: f64,
-    pub vegezoffset: f64,
-    pub uglimit: f64,
-    pub uglimit2: f64,
-    pub addition: i32,
-    pub firstandlastreturnasground: u32,
-    pub firstandlastfactor: f64,
-    pub lastfactor: f64,
-    pub yellowfirstlast: u32,
-    pub vegethin: u32,
-    pub greendetectsize: f64,
-    pub proceed_yellows: bool,
-    pub med: u32,
-    pub med2: u32,
-    pub medyellow: u32,
-    pub buildings: u8,
-    pub waterele: f64,
+    /// makevege's parameters, with `scalefactor`, `vege_bitmode` and `water_class`.
+    pub vegetation: VegetationParams,
 
     // vector export
     /// Vectorize the vegetation, yellow and undergrowth grids into GeoJSON and DXF areas,
@@ -130,13 +103,6 @@ pub struct Config {
     pub vectorconf: String,
     pub mtkskiplayers: Vec<String>,
     pub cliffdebug: bool,
-}
-
-pub struct Zone {
-    pub low: f64,
-    pub high: f64,
-    pub roof: f64,
-    pub factor: f64,
 }
 
 const DEFAULT_CONFIG_FILE: &str = "pullauta.ini";
@@ -304,16 +270,16 @@ impl Config {
 
         // vegetation
 
-        let mut zones = vec![];
+        let mut strata = vec![];
         let mut i: u32 = 1;
         loop {
-            let zone = gs.get(format!("zone{i}")).unwrap_or("");
-            if zone.is_empty() {
+            let stratum = gs.get(format!("stratum{i}")).unwrap_or("");
+            if stratum.is_empty() {
                 break;
             }
 
-            let [low, high, roof, factor] = parse_numbers(&format!("zone{i}"), zone)?;
-            zones.push(Zone {
+            let [low, high, roof, factor] = parse_numbers(&format!("stratum{i}"), stratum)?;
+            strata.push(Stratum {
                 low,
                 high,
                 roof,
@@ -346,32 +312,39 @@ impl Config {
                 })
             })
             .collect::<Result<Vec<f64>, String>>()?;
-        let yellowheight: f64 = parse_typed(gs, "yellowheight", 0.9);
-        let yellowthreshold: f64 = parse_typed(gs, "yellowthresold", 0.9);
-        let greenground: f64 = parse_typed(gs, "greenground", 0.9);
-        let pointvolumefactor: f64 = parse_typed(gs, "pointvolumefactor", 0.1);
-        let pointvolumeexponent: f64 = parse_typed(gs, "pointvolumeexponent", 1.0);
-        let greenhigh: f64 = parse_typed(gs, "greenhigh", 2.0);
-        let topweight: f64 = parse_typed(gs, "topweight", 0.8);
-        let greentone: f64 = parse_typed(gs, "lightgreentone", 200.0);
-        let vegezoffset: f64 = parse_typed(gs, "vegezoffset", 0.0);
-        let uglimit: f64 = parse_typed(gs, "undergrowth", 0.35);
-        let uglimit2: f64 = parse_typed(gs, "undergrowth2", 0.56);
-        let addition: i32 = parse_typed(gs, "greendotsize", 0);
-        let firstandlastreturnasground = parse_typed(gs, "firstandlastreturnasground", 1);
-        let firstandlastfactor = parse_typed(gs, "firstandlastreturnfactor", 0.0);
-        let lastfactor = parse_typed(gs, "lastreturnfactor", 0.0);
-
-        let yellowfirstlast = parse_typed(gs, "yellowfirstlast", 1);
-        let vegethin: u32 = parse_typed(gs, "vegethin", 0);
-
-        let greendetectsize: f64 = parse_typed(gs, "greendetectsize", 3.0);
-        let proceed_yellows: bool = gs.get("yellow_smoothing").unwrap_or("0") == "1";
-        let med: u32 = parse_typed(gs, "medianboxsize", 0);
-        let med2: u32 = parse_typed(gs, "medianboxsize2", 0);
-        let medyellow: u32 = parse_typed(gs, "yellowmedianboxsize", 0);
-        let buildings = parse_typed(gs, "buildingsclass", 0);
-        let waterele = parse_typed(gs, "waterelevation", -999999.0);
+        let vegetation = VegetationParams {
+            scalefactor,
+            vege_bitmode,
+            water_class,
+            water_blue,
+            strata,
+            thresholds,
+            greenshades,
+            greentone: parse_typed(gs, "lightgreentone", 200.0),
+            greenground: parse_typed(gs, "greenground", 0.9),
+            greenhigh: parse_typed(gs, "greenhigh", 2.0),
+            topweight: parse_typed(gs, "topweight", 0.8),
+            pointvolumefactor: parse_typed(gs, "pointvolumefactor", 0.1),
+            pointvolumeexponent: parse_typed(gs, "pointvolumeexponent", 1.0),
+            vegezoffset: parse_typed(gs, "vegezoffset", 0.0),
+            addition: parse_typed(gs, "greendotsize", 0),
+            firstandlastreturnasground: parse_typed(gs, "firstandlastreturnasground", 1),
+            firstandlastfactor: parse_typed(gs, "firstandlastreturnfactor", 0.0),
+            lastfactor: parse_typed(gs, "lastreturnfactor", 0.0),
+            vegethin: parse_typed(gs, "vegethin", 0),
+            greendetectsize: parse_typed(gs, "greendetectsize", 3.0),
+            med: parse_typed(gs, "medianboxsize", 0),
+            med2: parse_typed(gs, "medianboxsize2", 0),
+            yellowheight: parse_typed(gs, "yellowheight", 0.9),
+            yellowthreshold: parse_typed(gs, "yellowthresold", 0.9),
+            yellowfirstlast: parse_typed(gs, "yellowfirstlast", 1),
+            proceed_yellows: gs.get("yellow_smoothing").unwrap_or("0") == "1",
+            medyellow: parse_typed(gs, "yellowmedianboxsize", 0),
+            uglimit: parse_typed(gs, "undergrowth", 0.35),
+            uglimit2: parse_typed(gs, "undergrowth2", 0.56),
+            buildings: parse_typed(gs, "buildingsclass", 0),
+            waterele: parse_typed(gs, "waterelevation", -999999.0),
+        };
 
         // vector export
         let vector_vege = flag(gs, "vector_vege", Some(false))?;
@@ -523,40 +496,13 @@ impl Config {
             basemapcontours,
             detectbuildings,
             water_class,
-            water_blue,
             c1_limit,
             c2_limit,
             cliff_thin,
             steep_factor,
             flat_place,
             no_small_ciffs,
-            zones,
-            thresholds,
-            greenshades,
-            yellowheight,
-            yellowthreshold,
-            greenground,
-            pointvolumefactor,
-            pointvolumeexponent,
-            greenhigh,
-            topweight,
-            greentone,
-            vegezoffset,
-            uglimit,
-            uglimit2,
-            addition,
-            firstandlastreturnasground,
-            firstandlastfactor,
-            lastfactor,
-            yellowfirstlast,
-            vegethin,
-            greendetectsize,
-            proceed_yellows,
-            med,
-            med2,
-            medyellow,
-            buildings,
-            waterele,
+            vegetation,
             vector_vege,
             vector_greenshade_isom,
             vector_simplify,
@@ -607,7 +553,7 @@ impl<'a> Keys<'a> {
         let described: Vec<String> = unknown
             .iter()
             .map(|key| {
-                if let Some((_, why)) = REMOVED_KEYS.iter().find(|(removed, _)| removed == key) {
+                if let Some(why) = removed_key(key) {
                     return format!("`{key}` (removed: {why})");
                 }
                 let nearest = asked
@@ -630,8 +576,8 @@ impl<'a> Keys<'a> {
 }
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
-/// unknown.
-const REMOVED_KEYS: [(&str, &str); 6] = [
+/// unknown. A key ending in `{i}` stands for that prefix and a number.
+const REMOVED_KEYS: [(&str, &str); 7] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
@@ -648,9 +594,24 @@ const REMOVED_KEYS: [(&str, &str); 6] = [
         "indexcontours",
         "index contours are every fifth contour; delete it",
     ),
+    ("zone{i}", "renamed to `stratum{i}`, same value"),
 ];
 
-/// Parse a pipe-separated `key` value of exactly `N` numbers, such as `zone1=1.0|2.65|99|1`.
+/// What to do instead of `key`, when it is one of the [`REMOVED_KEYS`]; a `{i}` in the
+/// advice is replaced by the key's number.
+fn removed_key(key: &str) -> Option<String> {
+    REMOVED_KEYS
+        .iter()
+        .find_map(|&(removed, why)| match removed.strip_suffix("{i}") {
+            Some(prefix) => key
+                .strip_prefix(prefix)
+                .filter(|i| !i.is_empty() && i.bytes().all(|b| b.is_ascii_digit()))
+                .map(|i| why.replace("{i}", i)),
+            None => (removed == key).then(|| why.to_string()),
+        })
+}
+
+/// Parse a pipe-separated `key` value of exactly `N` numbers, such as `stratum1=1.0|2.65|99|1`.
 fn parse_numbers<const N: usize>(key: &str, value: &str) -> Result<[f64; N], String> {
     let numbers: Vec<f64> = value
         .split('|')
@@ -813,6 +774,7 @@ mod test {
             "parallell_laz_decompression",
             "formline",
             "indexcontours",
+            "zone1",
         ] {
             let err = load_appended(&format!("{key}=1")).err().unwrap();
             assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
@@ -848,7 +810,7 @@ mod test {
         for (settings, class, blue) in cases {
             let config = load_with(settings).unwrap();
             assert_eq!(
-                (config.water_class, config.water_blue),
+                (config.water_class, config.vegetation.water_blue),
                 (class, blue),
                 "{settings:?}"
             );
@@ -865,12 +827,10 @@ mod test {
 
     #[test]
     fn malformed_vegetation_lists_error_naming_the_key() {
-        let config = load_with(&[("zone1", "1|2|99|1")]).unwrap();
-        assert_eq!(config.zones[0].high, 2.0);
         for (key, bad) in [
-            ("zone1", "1|2"),
-            ("zone2", "1|2|x|1"),
-            ("zone3", "1|2|3|4|5"),
+            ("stratum1", "1|2"),
+            ("stratum2", "1|2|x|1"),
+            ("stratum3", "1|2|3|4|5"),
             ("thresold1", "0.2|3"),
             ("thresold2", "a|b|c"),
             ("greenshades", "0.2|x|0.5"),
@@ -878,6 +838,48 @@ mod test {
             let err = load_with(&[(key, bad)]).err().unwrap();
             assert!(err.contains(&format!("`{key}`")), "{key}={bad}: {err}");
         }
+    }
+
+    /// The template's strata, in order; the stratum loop stops at the first missing key.
+    #[test]
+    fn strata_parse_in_order() {
+        use crate::vegetation::Stratum;
+        let stratum = |low, high, roof, factor| Stratum {
+            low,
+            high,
+            roof,
+            factor,
+        };
+        let config = load_with(&[("stratum2", "2|3|11|0.75")]).unwrap();
+        assert_eq!(
+            config.vegetation.strata,
+            [
+                stratum(1.0, 2.65, 99.0, 1.0),
+                stratum(2.0, 3.0, 11.0, 0.75),
+                stratum(3.4, 5.5, 8.0, 0.2),
+            ]
+        );
+        let err = load_without("stratum2").err().unwrap();
+        assert!(err.contains("unknown key `stratum3`"), "{err}");
+    }
+
+    /// `zone{i}` is `stratum{i}` now; every number is reported, not other `zone` keys.
+    #[test]
+    fn zone_keys_are_removed_in_favour_of_strata() {
+        let err = load_appended("zone1=1|2|99|1\nzone12=1|2|99|1")
+            .err()
+            .unwrap();
+        for i in [1, 12] {
+            assert!(
+                err.contains(&format!(
+                    "`zone{i}` (removed: renamed to `stratum{i}`, same value)"
+                )),
+                "{err}"
+            );
+        }
+        assert_eq!(super::removed_key("zones"), None);
+        assert_eq!(super::removed_key("zone"), None);
+        assert_eq!(super::removed_key("zone1x"), None);
     }
 
     #[test]

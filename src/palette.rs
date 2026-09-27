@@ -1,6 +1,6 @@
 use image::{Luma, Rgba};
 
-use crate::config::Config;
+use crate::vegetation::VegetationParams;
 
 /// Our own wrapper around and image buffer that automatically handles drawing with a palette.
 #[derive(Clone)]
@@ -118,7 +118,7 @@ impl std::ops::IndexMut<PaletteColorEnum> for Palette {
 }
 
 impl Palette {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(params: &VegetationParams) -> Self {
         let colors = [image::Rgba([0, 0, 0, 0]); 256];
 
         let mut palette = Self { colors };
@@ -130,8 +130,8 @@ impl Palette {
         palette[PaletteColorEnum::Yellow2] = Rgba([255, 219, 166, 255]);
 
         {
-            let num_greenshades = config.greenshades.len();
-            let greentone = config.greentone;
+            let num_greenshades = params.greenshades.len();
+            let greentone = params.greentone;
 
             assert!(
                 num_greenshades <= 64,
