@@ -1,0 +1,5 @@
+# The commit whose output CI compares this branch's output with
+# (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
+# How to move it: CHANGES.md.
+ref = "cd2e55d13180d4da5135cfd0af0f31862cfd1670"
+note = "pr/eval-command-v2 tip: the first baseline, no output change"

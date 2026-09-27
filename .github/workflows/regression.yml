@@ -1,242 +1,135 @@
 on:
   pull_request:
     branches: [ "master" ]
+  # the fork opens no pull requests: every stack branch is checked on push
+  push:
+    branches: [ "pr/**" ]
   workflow_dispatch:
 
 name: "Regression"
+
+concurrency:
+  group: regression-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # always emit backtraces on crashes (to help debugging)
   RUST_BACKTRACE: 1
   # cargo should always emit color
   CARGO_TERM_COLOR: always
-  # always output detailed logs with color
-  RUST_LOG: trace
-  RUST_LOG_STYLE: always
+  # pullauta logs go to runs/*/logs/, uploaded with the report
+  RUST_LOG: info
 
 jobs:
-  compare-results:
+  regression:
+    name: Output against the baseline ref
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout PR branch
+    - name: Checkout branch
+      uses: actions/checkout@v6
+
+    - name: Read the baseline ref
+      id: baseline
+      run: |
+        ref=$(sed -n 's/^ref *= *"\([0-9a-f]\{40\}\)".*$/\1/p' regression/baseline.toml)
+        if [ -z "$ref" ]; then
+          echo "::error file=regression/baseline.toml::ref must be a full 40-character commit sha"
+          exit 1
+        fi
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+        printf "Baseline: \`%s\` (%s)\n\n" "$ref" \
+          "$(sed -n 's/^note *= *"\(.*\)"$/\1/p' regression/baseline.toml)" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Checkout baseline
       uses: actions/checkout@v6
       with:
-        fetch-depth: 2
+        ref: ${{ steps.baseline.outputs.ref }}
+        path: baseline
 
     - uses: dtolnay/rust-toolchain@1.97
     - uses: Swatinem/rust-cache@v2
 
-    - name: Download LAZ file
-      run: curl -L "https://cdn.routechoic.es/test.laz" -o test_file.laz
+    - name: Cache the baseline build
+      id: baseline-build
+      uses: actions/cache@v5
+      with:
+        path: baseline-bin/pullauta
+        key: regression-baseline-${{ runner.os }}-${{ steps.baseline.outputs.ref }}
 
-    - name: Run code on PR branch
-      id: run_pr_branch
+    - name: Build baseline
+      if: steps.baseline-build.outputs.cache-hit != 'true'
       run: |
-        echo "Running code on PR branch"
-        RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-gnu
-        env time -o time_pr.txt target/x86_64-unknown-linux-gnu/release/pullauta test_file.laz
-        mv pullautus.png pullautus_pr.png
-        mv pullautus_depr.png pullautus_depr_pr.png
-        mv temp/ temp_pr/
+        # shares target/ (and the cached dependencies) with the branch build below
+        cargo build --release --manifest-path baseline/Cargo.toml --target-dir target
+        mkdir -p baseline-bin
+        cp target/release/pullauta baseline-bin/pullauta
 
-    - name: Download, extract and run latest release
+    - name: Build branch
+      run: cargo build --release
+
+    - name: Download inputs
       run: |
-        # in a new folder to make sure we have a clean environment
-        mkdir latest_release && cd latest_release
-        curl -L https://github.com/karttapullautin/karttapullautin/releases/latest/download/karttapullautin-x86_64-linux.tar.gz | tar xvz
-        env time -o ../time_main.txt ./pullauta ../test_file.laz
-        mv pullautus.png ../pullautus_main.png
-        mv pullautus_depr.png ../pullautus_depr_main.png
-        mv temp/ ../temp_main/
+        mkdir regression-data
+        curl -Lf --retry 3 "https://cdn.routechoic.es/test.laz" -o regression-data/test_file.laz
+        curl -Lf --retry 3 "https://cdn.routechoic.es/test-osm.shp.zip" -o regression-data/test_file.shp.zip
 
-    - name: Compare results (pngcomp)
-      id: compare
+    # each build runs with its own pullauta.default.ini and osm.txt (run.sh's
+    # second argument); both use this branch's run.sh
+    - name: Run baseline twice
+      env:
+        REGRESSION_DATA: ${{ github.workspace }}/regression-data
       run: |
-        # Compare the results from both branches, output results as step summary
-        sudo apt install pngnq 
-        printf "\n\n### Comparing without depressions:\n" | tee -a $GITHUB_STEP_SUMMARY
-        pngcomp pullautus_main.png pullautus_pr.png | tee -a pngcomp.txt $GITHUB_STEP_SUMMARY
-        printf "\n\n### Comparing with depressions:\n" | tee -a $GITHUB_STEP_SUMMARY
-        pngcomp pullautus_depr_main.png pullautus_depr_pr.png | tee -a pngcomp_depr.txt $GITHUB_STEP_SUMMARY
+        regression/run.sh baseline-bin/pullauta baseline runs/base
+        regression/run.sh baseline-bin/pullauta baseline runs/base-again
 
-        printf "\n\n### Comparing directory contents using diff:\n" | tee -a $GITHUB_STEP_SUMMARY
-        diff -q temp_main/ temp_pr/ | tee -a pngcomp_depr.txt $GITHUB_STEP_SUMMARY || true
-        # do another one that will show all the changes, but as a file instead
-        diff temp_main/ temp_pr/ > diff.patch || true
+    - name: Run branch
+      env:
+        REGRESSION_DATA: ${{ github.workspace }}/regression-data
+      run: regression/run.sh target/release/pullauta . runs/head
 
-        printf "\n\n### Execution time comparison:\n" | tee -a $GITHUB_STEP_SUMMARY
-        printf "**Latest Release**\n" | tee -a $GITHUB_STEP_SUMMARY
-        cat time_main.txt | tee -a $GITHUB_STEP_SUMMARY
-        printf "\n**PR**\n" | tee -a $GITHUB_STEP_SUMMARY
-        cat time_pr.txt | tee -a $GITHUB_STEP_SUMMARY
+    # this branch's eval compares all runs: the baseline's may predate a feature
+    - name: Check the baseline is deterministic
+      run: |
+        if ! target/release/pullauta eval runs/base/output runs/base-again/output --fail-on-change > determinism.txt; then
+          echo "::error::Two runs of the baseline build differ, so the comparison cannot be trusted: see determinism.txt"
+          printf "### Two baseline runs differ\n\n\`\`\`\n%s\n\`\`\`\n" "$(head -n 100 determinism.txt)" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
 
+    - name: Compare branch with baseline
+      run: |
+        target/release/pullauta eval runs/base/output runs/head/output --diff-dir diffs > report.txt
+        printf "### eval baseline branch\n\n\`\`\`\n%s\n\`\`\`\n" "$(head -n 200 report.txt)" >> "$GITHUB_STEP_SUMMARY"
+        if [ -f regression/expected.json ]; then
+          gate=(--expected regression/expected.json)
+        else
+          gate=(--fail-on-change)
+        fi
+        status=0
+        target/release/pullauta eval runs/base/output runs/head/output --format json "${gate[@]}" > report.json || status=$?
+        if [ "$status" -ne 0 ]; then
+          echo "::error::Output changed (eval ${gate[*]} exited $status): see report.txt, report.json and diffs/ in the artifact, and regression/CHANGES.md"
+          exit 1
+        fi
 
     - name: Upload results
       id: upload
+      if: always()
       uses: actions/upload-artifact@v7
       with:
         name: regression-results
         path: |
-          pullautus_main.png
-          pullautus_pr.png
-          pngcomp.txt
-          pullautus_depr_main.png
-          pullautus_depr_pr.png
-          pngcomp_depr.txt
-          diff.patch
-          time_pr.txt
-          time_main.txt
+          report.txt
+          report.json
+          determinism.txt
+          diffs/
+          runs/*/logs/
+          runs/*/output/single/pullautus*.png
+          runs/*/output/batch/out/merged*.png
+        if-no-files-found: ignore
         overwrite: true # we need subsequent runs to overwrite the result
 
     - name: Output Artifact URL
-      run: echo 'Artifacts can be downloaded [here](${{ steps.upload.outputs.artifact-url }})' >> $GITHUB_STEP_SUMMARY
-
-    - name: Check for differences
-      run: |
-        # Analyze metrics: if there is a change this step should fail!
-
-        # Here we could check any of the metrics output by pngcomp. for now we check the
-        # percentage of overlapping/correct pixels and fail the job if it is less than 100%
-        value=$(sed -rn 's/Percentage correct pixels: ([0-9]+\.[0-9]+)$/\1/p' pngcomp.txt)
-        value_depr=$(sed -rn 's/Percentage correct pixels: ([0-9]+\.[0-9]+)$/\1/p' pngcomp_depr.txt)
-
-        if (( $(echo "$value < 100.0" | bc -l) )); then
-          echo "Percentage of correct pixels (without depressions) is $value < 100%. Output has changed!" | tee -a $GITHUB_STEP_SUMMARY
-          exit 1
-        fi
-
-        if (( $(echo "$value_depr < 100.0" | bc -l) )); then
-          echo "Percentage of correct pixels (with depressions) is $value_depr < 100%. Output has changed!" | tee -a $GITHUB_STEP_SUMMARY
-          exit 1
-        fi
-
-  compare-results-batch:
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout PR branch
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: 2
-
-    - uses: dtolnay/rust-toolchain@1.97
-    - uses: Swatinem/rust-cache@v2
-
-    - name: Download LAZ file
-      run: |
-        curl -Lf "https://cdn.routechoic.es/test.laz" -o test_file.laz
-        curl -Lf "https://cdn.routechoic.es/test-osm.shp.zip" -o test_file.shp.zip
-
-    - name: Run code on PR branch
-      id: run_pr_branch
-      run: |
-        echo "Running code on PR branch"
-        RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-gnu
-        # prepare
-        cp pullauta.default.ini pullauta.ini
-        mkdir in && mkdir out
-        cp test_file.laz in/test_file.laz
-        cp test_file.shp.zip in/test_file.shp.zip
-        sed -i 's/batch=0/batch=1/g' pullauta.ini
-        sed -i 's/output_dxf=0/output_dxf=1/g' pullauta.ini
-        sed -i 's/^vectorconf=/vectorconf=osm.txt/g' pullauta.ini
-
-        # run and store results
-        env time -o time_pr.txt target/x86_64-unknown-linux-gnu/release/pullauta
-        echo "**pngmerge**: " >> time_pr.txt
-        env time -a -o time_pr.txt target/x86_64-unknown-linux-gnu/release/pullauta pngmerge 1
-        echo "**pngmergedepr**: " >> time_pr.txt
-        env time -a -o time_pr.txt target/x86_64-unknown-linux-gnu/release/pullauta pngmergedepr 1
-        mkdir output_pr
-        mv out/ output_pr/
-        mv temp*/ output_pr/
-        # the PR branch writes the merged rasters into the batch output folder; the
-        # latest release still writes them to the working directory (below)
-        mv output_pr/out/merged* output_pr/
-
-    - name: Download, extract and run latest release
-      run: |
-        # in a new folder to make sure we have a clean environment
-        mkdir latest_release && cd latest_release
-        curl -L https://github.com/karttapullautin/karttapullautin/releases/latest/download/karttapullautin-x86_64-linux.tar.gz | tar xvz
-
-        # prepare
-        mkdir in && mkdir out
-        cp ../test_file.laz in/test_file.laz
-        cp ../test_file.shp.zip in/test_file.shp.zip
-        # since the default config does not come bundled, we will copy the existing one for now
-        # (not ideal if we want to test out-of-the-box behavior but it is better than nothing)
-        cp ../pullauta.ini pullauta.ini
-
-        # run and store results
-        env time -o ../time_main.txt ./pullauta
-        echo "**pngmerge**: " >> ../time_main.txt
-        env time -a -o ../time_main.txt ./pullauta pngmerge 1
-        echo "**pngmergedepr**: " >> ../time_main.txt
-        env time -a -o ../time_main.txt ./pullauta pngmergedepr 1
-        mkdir ../output_main
-        mv out/ ../output_main/
-        mv temp*/ ../output_main/
-        mv merged* ../output_main/
-
-    - name: Compare results (pngcomp)
-      id: compare
-      run: |
-        # Compare the results from both branches, output results as step summary
-        sudo apt install pngnq
-        printf "\n\n### Comparing without depressions:\n" | tee -a $GITHUB_STEP_SUMMARY
-        pngcomp output_main/merged.png output_pr/merged.png | tee -a pngcomp.txt $GITHUB_STEP_SUMMARY
-        printf "\n\n### Comparing with depressions:\n" | tee -a $GITHUB_STEP_SUMMARY
-        pngcomp output_main/merged_depr.png output_pr/merged_depr.png | tee -a pngcomp_depr.txt $GITHUB_STEP_SUMMARY
-
-        printf "\n\n### Comparing directory contents using diff:\n" | tee -a $GITHUB_STEP_SUMMARY
-        diff -qr output_main/ output_pr/ | tee -a pngcomp_depr.txt $GITHUB_STEP_SUMMARY || true
-        # do another one that will show all the changes, but as a file instead
-        diff -r output_main/ output_pr/ > diff.patch || true
-
-        printf "\n\n### Execution time comparison:\n" | tee -a $GITHUB_STEP_SUMMARY
-        printf "**Latest Release**\n" | tee -a $GITHUB_STEP_SUMMARY
-        cat time_main.txt | tee -a $GITHUB_STEP_SUMMARY
-        printf "\n**PR**\n" | tee -a $GITHUB_STEP_SUMMARY
-        cat time_pr.txt | tee -a $GITHUB_STEP_SUMMARY
-
-    - name: Upload results
-      id: upload
-      uses: actions/upload-artifact@v7
-      with:
-        name: regression-results-batch
-        path: |
-          output_main/merged.png
-          output_pr/merged.png
-          pngcomp.txt
-          output_main/merged_depr.png
-          output_pr/merged_depr.png
-          pngcomp_depr.txt
-          diff.patch
-          time_pr.txt
-          time_main.txt
-        overwrite: true # we need subsequent runs to overwrite the result
-
-    - name: Output Artifact URL
-      run: echo 'Artifacts can be downloaded [here](${{ steps.upload.outputs.artifact-url }})' >> $GITHUB_STEP_SUMMARY
-
-    - name: Check for differences
-      run: |
-        # Analyze metrics: if there is a change this step should fail!
-
-        # Here we could check any of the metrics output by pngcomp. for now we check the
-        # percentage of overlapping/correct pixels and fail the job if it is less than 100%
-        value=$(sed -rn 's/Percentage correct pixels: ([0-9]+\.[0-9]+)$/\1/p' pngcomp.txt)
-        value_depr=$(sed -rn 's/Percentage correct pixels: ([0-9]+\.[0-9]+)$/\1/p' pngcomp_depr.txt)
-
-        if (( $(echo "$value < 100.0" | bc -l) )); then
-          echo "Percentage of correct pixels (without depressions) is $value < 100%. Output has changed!" | tee -a $GITHUB_STEP_SUMMARY
-          exit 1
-        fi
-
-        if (( $(echo "$value_depr < 100.0" | bc -l) )); then
-          echo "Percentage of correct pixels (with depressions) is $value_depr < 100%. Output has changed!" | tee -a $GITHUB_STEP_SUMMARY
-          exit 1
-        fi
-
+      if: always()
+      run: echo 'Artifacts can be downloaded [here](${{ steps.upload.outputs.artifact-url }})' >> "$GITHUB_STEP_SUMMARY"

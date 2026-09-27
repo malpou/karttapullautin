@@ -5,7 +5,7 @@
 //!   cargo test --release --test e2e_test -- --ignored
 //!
 //! Inputs are the regression tile and OSM shapefile zip (same as
-//! .github/workflows/regression.yml). They are read from `$PULLAUTA_E2E_DATA` (a
+//! regression/run.sh). They are read from `$PULLAUTA_E2E_DATA` (a
 //! directory holding `test_file.laz` and `test_file.shp.zip`) when set, otherwise
 //! downloaded once into cargo's per-target temp directory. Each run works in a fresh
 //! directory under that temp directory, never in the repository.
@@ -355,7 +355,7 @@ fn assert_terrain_outputs(tile: &Path) {
     );
 }
 
-/// Single job on the regression tile, as in the regression workflow's single run: the
+/// Single job on the regression tile, as in regression/run.sh with vector_vege=1: the
 /// terrain and vegetation tables land in temp/, declaring the tile's CRS, the green
 /// areas without `shade` (vector_shade=0).
 #[test]
@@ -389,7 +389,7 @@ fn run_single_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
     dir
 }
 
-/// Batch job as in the regression workflow: one tile plus the OSM shapefile zip, with
+/// Batch job as in regression/run.sh: one tile plus the OSM shapefile zip, with
 /// `vectorconf=osm.txt`, and vegetation vectorization on, with the greenshade index
 /// (`vector_shade=1`). `savetempfolders=1` keeps the
 /// tile's temp folder as `temp_test_file_dir/`. `batchmerge=1` runs the merges and the
