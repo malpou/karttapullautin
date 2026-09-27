@@ -13,42 +13,42 @@ use imageproc::region_labelling::{Connectivity, connected_components};
 
 use crate::config::Config;
 use crate::geojson;
-use crate::geojson::geojson_types::VegetationPropertiesIsomCode as Symbol;
+use crate::geojson::geojson_types::VegetationPropertiesIsomCode as Code;
 use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
 use crate::io::fs::FileSystem;
 use crate::vec2d::Vec2D;
 
 /// ISOM 2017-2 minimum footprint area (m²) of a vegetation area symbol, from the spec's
 /// "Minimum area" parameters (footprints at 1:15,000, 1 mm = 15 m).
-fn min_area_m2(symbol: Symbol) -> f64 {
-    match symbol {
-        Symbol::X403000 => 225.0,  // Rough open land: 1 x 1 mm (15 x 15 m)
-        Symbol::X406000 => 225.0,  // Vegetation, slow running: 1 x 1 mm (15 x 15 m)
-        Symbol::X407000 => 337.5,  // Slow running, good visibility: 1.5 x 1 mm (22.5 x 15 m)
-        Symbol::X408000 => 110.25, // Vegetation, walk: 0.7 x 0.7 mm (10.5 x 10.5 m)
-        Symbol::X410000 => 64.0,   // Vegetation, fight: 0.55 x 0.55 mm (8 x 8 m)
+fn min_area_m2(code: Code) -> f64 {
+    match code {
+        Code::X403000 => 225.0,  // Rough open land: 1 x 1 mm (15 x 15 m)
+        Code::X406000 => 225.0,  // Vegetation, slow running: 1 x 1 mm (15 x 15 m)
+        Code::X407000 => 337.5,  // Slow running, good visibility: 1.5 x 1 mm (22.5 x 15 m)
+        Code::X408000 => 110.25, // Vegetation, walk: 0.7 x 0.7 mm (10.5 x 10.5 m)
+        Code::X410000 => 64.0,   // Vegetation, fight: 0.55 x 0.55 mm (8 x 8 m)
     }
 }
 
 /// The DXF classification of a vegetation symbol.
-fn classification(symbol: Symbol) -> Classification {
-    match symbol {
-        Symbol::X403000 => Classification::Veg403,
-        Symbol::X406000 => Classification::Veg406,
-        Symbol::X407000 => Classification::Veg407,
-        Symbol::X408000 => Classification::Veg408,
-        Symbol::X410000 => Classification::Veg410,
+fn classification(code: Code) -> Classification {
+    match code {
+        Code::X403000 => Classification::Veg403,
+        Code::X406000 => Classification::Veg406,
+        Code::X407000 => Classification::Veg407,
+        Code::X408000 => Classification::Veg408,
+        Code::X410000 => Classification::Veg410,
     }
 }
 
 /// DXF draw order, light to dark, so map programs stack the areas the way the raster does.
-fn draw_order(symbol: Symbol) -> usize {
-    match symbol {
-        Symbol::X403000 => 0,
-        Symbol::X406000 => 1,
-        Symbol::X408000 => 2,
-        Symbol::X410000 => 3,
-        Symbol::X407000 => 4,
+fn draw_order(code: Code) -> usize {
+    match code {
+        Code::X403000 => 0,
+        Code::X406000 => 1,
+        Code::X408000 => 2,
+        Code::X410000 => 3,
+        Code::X407000 => 4,
     }
 }
 
@@ -57,7 +57,7 @@ fn draw_order(symbol: Symbol) -> usize {
 struct VegPolygon {
     /// The grid value of the component (for the green grid: the greenshade index).
     value: u8,
-    symbol: Symbol,
+    code: Code,
     /// First = exterior CCW, rest = holes CW. Open (first point not repeated).
     rings: Vec<Vec<Point2>>,
 }
@@ -75,7 +75,7 @@ fn grid_to_polygons(
     grid: &Vec2D<u8>,
     origin: (f64, f64),
     cell: f64,
-    code_of: &dyn Fn(u8) -> Symbol,
+    code_of: &dyn Fn(u8) -> Code,
     median_radii: [u32; 2],
     epsilon: f64,
 ) -> Vec<VegPolygon> {
@@ -235,7 +235,7 @@ fn grid_to_polygons(
     let mut comp_edges: Vec<_> = comp_edges.into_iter().collect();
     comp_edges.sort_unstable_by_key(|(label, _)| *label);
     for (label, (class, edges)) in comp_edges {
-        let symbol = code_of(class);
+        let code = code_of(class);
         let mut exteriors: Vec<Vec<Point2>> = Vec::new();
         let mut holes: Vec<Vec<Point2>> = Vec::new();
         for (vs, others) in chain_rings(edges) {
@@ -326,15 +326,15 @@ fn grid_to_polygons(
         rings.extend(holes);
         polygons.push(VegPolygon {
             value: class,
-            symbol,
+            code,
             rings,
         });
         for extra in it {
             // pinch fragments below the ISOM minimum are dropped, not emitted
-            if signed_area(&extra) >= min_area_m2(symbol) {
+            if signed_area(&extra) >= min_area_m2(code) {
                 polygons.push(VegPolygon {
                     value: class,
-                    symbol,
+                    code,
                     rings: vec![extra],
                 });
             }
@@ -504,7 +504,7 @@ fn area_features(
         let shade = shade.then(|| {
             NonZeroU64::new(p.value.into()).expect("traced components are never background")
         });
-        geojson::vegetation_area(p.symbol, shade, &p.rings)
+        geojson::vegetation_area(p.code, shade, &p.rings)
     })
 }
 
@@ -543,7 +543,7 @@ pub fn export_all(
     };
 
     let map = &config.vector_greenshade_isom;
-    let green_code = |c: u8| -> Symbol {
+    let green_code = |c: u8| -> Code {
         *map.get((c as usize).saturating_sub(1))
             .or(map.last())
             .expect("vector_greenshade_isom is validated non-empty at config load")
@@ -561,7 +561,7 @@ pub fn export_all(
         open_land,
         (bounds.xmin + 1.5, bounds.ymin + 1.5),
         3.0,
-        &|_| Symbol::X403000,
+        &|_| Code::X403000,
         open_land_med,
         eps,
     );
@@ -569,7 +569,7 @@ pub fn export_all(
         undergrowth,
         (bounds.xmin, bounds.ymin),
         block * 6.0,
-        &|_| Symbol::X407000,
+        &|_| Code::X407000,
         [0, 0],
         eps,
     );
@@ -593,11 +593,11 @@ pub fn export_all(
         .chain(&open_land_polys)
         .chain(&undergrowth_polys)
         .collect();
-    all.sort_by_key(|p| draw_order(p.symbol));
+    all.sort_by_key(|p| draw_order(p.code));
 
     let mut lines: Polylines<Point2, Classification> = Polylines::new();
     for p in all {
-        let class = classification(p.symbol);
+        let class = classification(p.code);
         for ring in &p.rings {
             let mut closed = ring.clone();
             closed.push(ring[0].clone());
@@ -634,7 +634,7 @@ mod tests {
         // no isolated patch here; dissolve tested separately
 
         // min area tiny so nothing dissolves (cell=10 -> 100 m² per cell)
-        let polys = grid_to_polygons(&grid, (0.0, 0.0), 10.0, &|_| Symbol::X410000, [0, 0], 0.0);
+        let polys = grid_to_polygons(&grid, (0.0, 0.0), 10.0, &|_| Code::X410000, [0, 0], 0.0);
 
         // the diagonal cell is its own component -> 2 polygons
         assert_eq!(polys.len(), 2, "expected big region + diagonal cell");
@@ -661,15 +661,15 @@ mod tests {
         }
         // single-cell class-2 island inside it: 9 m² << min area, must dissolve into 1
         grid[(4, 2)] = 2;
-        let code_of = |c: u8| -> Symbol {
+        let code_of = |c: u8| -> Code {
             match c {
-                1 => Symbol::X410000,
-                _ => Symbol::X406000,
+                1 => Code::X410000,
+                _ => Code::X406000,
             }
         };
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 3.0, &code_of, [0, 0], 0.0);
         assert_eq!(polys.len(), 1);
-        assert_eq!(polys[0].symbol, Symbol::X410000);
+        assert_eq!(polys[0].code, Code::X410000);
         assert_eq!(polys[0].rings.len(), 1, "island dissolved, no hole");
     }
 
@@ -689,11 +689,11 @@ mod tests {
                 grid[(x, y)] = ((x * 7 + y * 13) % 4) as u8; // 0..=3 speckle
             }
         }
-        let code_of = |c: u8| -> Symbol {
+        let code_of = |c: u8| -> Code {
             match c {
-                1 => Symbol::X406000,
-                2 => Symbol::X408000,
-                _ => Symbol::X410000,
+                1 => Code::X406000,
+                2 => Code::X408000,
+                _ => Code::X410000,
             }
         };
         // cell 3 m => 9 m² per cell, minimums are 225/110.25/64 m²
@@ -702,9 +702,9 @@ mod tests {
         for p in &polys {
             let a = signed_area(&p.rings[0]);
             assert!(
-                a >= min_area_m2(p.symbol),
-                "polygon of symbol {} below minimum: {a} m²",
-                p.symbol
+                a >= min_area_m2(p.code),
+                "polygon of code {} below minimum: {a} m²",
+                p.code
             );
         }
     }
@@ -724,10 +724,10 @@ mod tests {
                 grid[(x, y)] = 2;
             }
         }
-        let code_of = |c: u8| -> Symbol {
+        let code_of = |c: u8| -> Code {
             match c {
-                1 => Symbol::X406000,
-                _ => Symbol::X410000,
+                1 => Code::X406000,
+                _ => Code::X410000,
             }
         };
         let polys = grid_to_polygons(&grid, (0.0, 0.0), 5.0, &code_of, [0, 0], 2.0);
@@ -783,11 +783,11 @@ mod tests {
         grid
     }
 
-    fn speckle_code(c: u8) -> Symbol {
+    fn speckle_code(c: u8) -> Code {
         match c {
-            1 => Symbol::X406000,
-            2 => Symbol::X408000,
-            _ => Symbol::X410000,
+            1 => Code::X406000,
+            2 => Code::X408000,
+            _ => Code::X410000,
         }
     }
 
@@ -830,7 +830,7 @@ mod tests {
             let FeatureProperties::VegetationProperties(props) = &feature.properties else {
                 panic!("not vegetation properties: {:?}", feature.properties);
             };
-            assert_eq!(props.isom_code, p.symbol);
+            assert_eq!(props.isom_code, p.code);
             assert!(props.shade.is_none());
             // GeoJSON rings are closed: one more position than the open ring
             assert_eq!(feature.geometry.coordinates.len(), p.rings.len());

@@ -131,8 +131,8 @@ pub fn render(
     };
 
     // vector export of the matched features, in world coordinates
-    let mut osm_lines = Vec::new();
-    let mut osm_areas = Vec::new();
+    let mut mapped_lines = Vec::new();
+    let mut mapped_areas = Vec::new();
 
     let mut shp_files: Vec<PathBuf> = Vec::new();
 
@@ -555,7 +555,7 @@ pub fn render(
                 if !area && shapetype == ShapeType::Polyline {
                     let polyline = Polyline::try_from(shape).unwrap();
                     if let Some(m) = matched {
-                        osm_lines.extend(polyline.parts().iter().map(|part| {
+                        mapped_lines.extend(polyline.parts().iter().map(|part| {
                             let line: Vec<[f64; 2]> = part.iter().map(|pt| [pt.x, pt.y]).collect();
                             geojson::osm_line(m.isom_code, &m.category, m.upper_level, &line)
                         }));
@@ -654,7 +654,7 @@ pub fn render(
                                 _ => polys.push(vec![pts]),
                             }
                         }
-                        osm_areas.extend(polys.iter().map(|rings| {
+                        mapped_areas.extend(polys.iter().map(|rings| {
                             geojson::osm_area(m.isom_code, &m.category, m.upper_level, rings)
                         }));
                     }
@@ -767,12 +767,13 @@ pub fn render(
         .expect("could not save low.png");
 
     if !vectorconf_mappings.is_empty() {
-        osm_lines.append(&mut osm_areas);
+        mapped_lines.append(&mut mapped_areas);
+        let features = mapped_lines;
         geojson::write_tables(
             fs,
             tmpfolder,
             geojson::Source::VectorMapping,
-            osm_lines,
+            features,
             config.epsg,
         )?;
     }
