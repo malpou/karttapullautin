@@ -93,22 +93,23 @@ pub fn resolve_epsg(
 
 /// Write the GDAL PAM sidecar `<raster>.aux.xml` naming `epsg`, the CRS of the
 /// coordinates in the raster's world file, which has no CRS of its own. GDAL and QGIS
-/// read it. Without a code a sidecar left by an earlier run is removed.
+/// read it. Without a code nothing is written and a sidecar already there is kept: a
+/// merge command run after the batch, with its tiles gone, rewrites the same raster of
+/// the same ground.
 pub fn write_raster_crs(
     fs: &impl FileSystem,
     raster: impl AsRef<Path>,
     epsg: Option<u32>,
 ) -> std::io::Result<()> {
+    let Some(code) = epsg else {
+        return Ok(());
+    };
     let mut path = raster.as_ref().as_os_str().to_owned();
     path.push(".aux.xml");
-    match epsg {
-        Some(code) => write!(
-            fs.create(&path)?,
-            "<PAMDataset>\n  <SRS>EPSG:{code}</SRS>\n</PAMDataset>\n"
-        ),
-        None if fs.exists(&path) => fs.remove_file(&path),
-        None => Ok(()),
-    }
+    write!(
+        fs.create(&path)?,
+        "<PAMDataset>\n  <SRS>EPSG:{code}</SRS>\n</PAMDataset>\n"
+    )
 }
 
 /// The EPSG code of the projected CRS a LAS header declares: from the WKT record when
@@ -471,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn raster_crs_sidecar_names_the_code_or_is_removed() {
+    fn raster_crs_sidecar_names_the_code_or_is_kept() {
         let fs = MemoryFileSystem::new();
         write_raster_crs(&fs, "pullautus.png", Some(3067)).unwrap();
         assert_eq!(
@@ -479,7 +480,8 @@ mod tests {
             "<PAMDataset>\n  <SRS>EPSG:3067</SRS>\n</PAMDataset>\n"
         );
         write_raster_crs(&fs, "pullautus.png", None).unwrap();
-        assert!(!fs.exists("pullautus.png.aux.xml"));
-        write_raster_crs(&fs, "pullautus.png", None).unwrap();
+        assert!(fs.exists("pullautus.png.aux.xml"));
+        write_raster_crs(&fs, "other.png", None).unwrap();
+        assert!(!fs.exists("other.png.aux.xml"));
     }
 }

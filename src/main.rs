@@ -68,8 +68,9 @@ fn main() {
 
     let batch: bool = config.batch;
 
-    // the input tiles' CRS, unless the `epsg` ini key overrides it
-    let inputs = if command.is_empty() && batch {
+    // the input tiles' CRS, unless the `epsg` ini key overrides it; the png merge
+    // commands merge the batch's tiles
+    let inputs = if (command.is_empty() && batch) || command.starts_with("pngmerge") {
         pullauta::process::batch_tiles(&fs, &config.lazfolder).unwrap_or_default()
     } else if command_lowercase.ends_with(".las") || command_lowercase.ends_with(".laz") {
         vec![PathBuf::from(&command)]
