@@ -60,3 +60,28 @@ fetch it.
 
 First baseline: `pr/eval-command-v2` at cd2e55d. No output change; the jobs
 replace the release-vs-PR pixel comparison and the `temp/` diff.
+
+### 2026-09-27: pr/worldfile-normalise
+
+Every world file is written by `WorldFile::write`, and the form-line
+transform uses one operator order for x and y (ticket 18 items 5-6).
+Baseline moves to d6590ca.
+
+- Pixels: 0 changed in the single job and the batch job.
+- Per-code metrics: identical for every code in every GeoJSON; code 103
+  length delta 0 m. The old and new form-line operator orders differ in
+  the last ulp only when `scalefactor` is not a power of two, so form
+  lines do not change at the jobs' `scalefactor=1`.
+- World-file text, 8 files, origins unchanged: `vegetation.pgw`
+  (`temp/`, `temp1/`, `temp_test_file_dir/`) writes `1`, `0`, `0`, `-1`
+  for `1.0`, `0.0`, `0.0`, `-1.0` (38 -> 30 bytes); `undergrowth.pgw`
+  (same three folders) writes `0.42333332155810494` and
+  `-0.42333332155810494` (the f64 reciprocal of the f32 draw factor)
+  for the f32-printed `0.42333332` and `-0.42333332`, and `0` for `0.0`
+  (52 -> 66 bytes);
+  `single/pullautus.pgw` and `pullautus_depr.pgw` write `0` for the
+  copied `0.0` rotation lines (70 -> 66 bytes).
+- Not produced on the regression tile: `{laz}_undergrowth.pgw` and
+  `{laz}_vege.pgw` in `out/` (they need `savetempfiles=1`). They change
+  the same way; `_undergrowth.pgw`'s origin takes half its pixel size,
+  so it moves in the last digits.
