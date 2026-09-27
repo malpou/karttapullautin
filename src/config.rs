@@ -114,7 +114,9 @@ pub struct Config {
     /// Give each green vegetation area its greenshade index as a `shade` property.
     pub vector_shade: bool,
     /// EPSG code of the input data's projected CRS, declared in every GeoJSON output.
-    /// None (key empty or missing) leaves the declaration out.
+    /// The key overrides the CRS the input tiles declare; with the key empty or missing,
+    /// `main` fills this from the tiles (see [`crate::crs::resolve_epsg`]), and None
+    /// leaves the declaration out.
     pub epsg: Option<u32>,
 
     // render

@@ -356,8 +356,8 @@ fn assert_terrain_outputs(tile: &Path) {
 }
 
 /// Single job on the regression tile, as in the regression workflow's single run: the
-/// terrain and vegetation tables land in temp/, the green areas without `shade`
-/// (vector_shade=0).
+/// terrain and vegetation tables land in temp/, declaring the tile's CRS, the green
+/// areas without `shade` (vector_shade=0).
 #[test]
 #[ignore]
 fn single_job_writes_terrain_geojson() {
@@ -365,6 +365,7 @@ fn single_job_writes_terrain_geojson() {
 
     let temp = dir.join("temp");
     assert_terrain_outputs(&temp);
+    assert_crs(&table_path(&temp, IsomTable::Contours));
     let vegetation = table_path(&temp, IsomTable::VegetationAreas);
     let green = assert_vegetation_features(&vegetation, false);
     assert!(green.contains("406.000"), "{green:?}");
@@ -389,7 +390,8 @@ fn run_single_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
 /// `vectorconf=osm.txt`, and vegetation vectorization on, with the greenshade index
 /// (`vector_shade=1`). `savetempfolders=1` keeps the
 /// tile's temp folder as `temp_test_file_dir/`. `batchmerge=1` runs the merges and the
-/// combined export into `out/`, with `epsg` declared in every GeoJSON file.
+/// combined export into `out/`. `epsg` is unset: every GeoJSON file declares the EPSG
+/// code the tile's GeoTIFF CRS keys name.
 #[test]
 #[ignore]
 fn batch_with_osm_vectorconf() {
@@ -494,7 +496,6 @@ fn run_batch_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
         ("output_dxf", "1"),
         ("savetempfolders", "1"),
         ("batchmerge", "1"),
-        ("epsg", EPSG),
     ];
     write_ini(&dir, &[&batch, settings].concat());
 
@@ -550,6 +551,7 @@ fn template_has_no_old_vector_keys() {
     }
 }
 
+/// The regression tile's CRS (ETRS-TM35FIN), from its GeoTIFF ProjectedCSTypeGeoKey.
 const EPSG: &str = "3067";
 
 /// Check the GeoJSON `crs` member names [`EPSG`].

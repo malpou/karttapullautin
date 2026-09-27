@@ -97,7 +97,7 @@ impl Source {
 
 /// Legacy GeoJSON `crs` member for a projected EPSG code. RFC 7946 dropped `crs`, but
 /// GIS tools still read it, and without it projected coordinates load misplaced.
-/// None (no `epsg` config key) omits the member.
+/// None (no `epsg` config key and no CRS declared by the input) omits the member.
 fn crs(epsg: Option<u32>) -> Option<geojson_types::Crs> {
     epsg.map(|code| geojson_types::Crs {
         properties: geojson_types::CrsProperties {

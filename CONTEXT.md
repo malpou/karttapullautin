@@ -8,6 +8,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 
 **Point cloud**: The set of returns in one survey or tile. _Avoid_: LAS, LAZ, points
 **Tile**: One input point-cloud file and the square of ground it covers. _Avoid_: laz, file, thread
+**Declared CRS**: The coordinate reference system a tile names in its LAS projection records (OGC WKT, or GeoTIFF keys in older files), used as the EPSG code the GeoJSON outputs declare unless the `epsg` ini key overrides it; the tiles of a batch must agree. _Avoid_: projection, VLR, SRS
 **Padding**: The strip of neighbouring ground processed with a tile so features meet at its edges. _Avoid_: buffer, margin
 **Return**: One recorded laser echo with position, class and echo order. _Avoid_: point record, xyz, r3/r4/r5
 **Echo order**: A return's position among the echoes of one pulse, first through last. _Avoid_: return number, first/last flag

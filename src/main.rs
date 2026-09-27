@@ -1,4 +1,5 @@
 use log::debug;
+use log::error;
 use log::info;
 use pullauta::config::Config;
 use pullauta::io::fs::FileSystem;
@@ -34,8 +35,8 @@ fn main() {
 
     let mut thread: String = String::new();
 
-    let config =
-        Arc::new(Config::load_or_create_default().expect("Could not open or create config file"));
+    let mut config =
+        Config::load_or_create_default().expect("Could not open or create config file");
 
     let fs = pullauta::io::fs::local::LocalFileSystem;
 
@@ -66,6 +67,18 @@ fn main() {
     }
 
     let batch: bool = config.batch;
+
+    // the input tiles' CRS, unless the `epsg` ini key overrides it
+    let inputs = if command.is_empty() && batch {
+        fs.list(&config.lazfolder).unwrap_or_default()
+    } else {
+        vec![PathBuf::from(&command)]
+    };
+    config.epsg = pullauta::crs::resolve_epsg(&fs, config.epsg, &inputs).unwrap_or_else(|e| {
+        error!("{e:#}");
+        std::process::exit(1);
+    });
+    let config = Arc::new(config);
 
     let tmpfolder = PathBuf::from(format!("temp{thread}"));
     fs::create_dir_all(&tmpfolder).expect("Could not create tmp folder");
