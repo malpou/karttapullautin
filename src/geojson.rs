@@ -408,8 +408,12 @@ pub fn bindxf_to_tables(
     write_tables(fs, folder, source, features, epsg)
 }
 
+fn point2([x, y]: [f64; 2]) -> Point2 {
+    Point2::new(x, y)
+}
+
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+    point2(a).distance(point2(b))
 }
 
 // The ISOM 2017-2 contour and point-symbol rules below are applied by the combined
@@ -430,13 +434,7 @@ const MAX_DETOUR_M: f64 = 24.0;
 
 /// Distance from `p` to the segment `a`-`b`.
 fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
-    let len2 = vx * vx + vy * vy;
-    if len2 == 0.0 {
-        return dist(p, a);
-    }
-    let t = (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2).clamp(0.0, 1.0);
-    dist(p, [a[0] + t * vx, a[1] + t * vy])
+    point2(p).distance_to_segment(point2(a), point2(b))
 }
 
 /// Splice out excursions that leave and return within MIN_MOUTH_M *and* never depart

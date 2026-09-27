@@ -187,15 +187,19 @@ The new binary will be accessible in the `target/release/` directory
 A change that alters the map should say by how much. `eval` compares two
 outputs and prints a report:
 
-    ./pullauta eval <baseline> <candidate> [--tolerance <metres>] [--diff-dir <dir>] [--format text|json] [--fail-on-change] [--expected <report.json>]
+    ./pullauta eval <baseline> <candidate> [--tolerance <metres>] [--diff-dir <dir>] [--format text|json] [--ignore <suffix>]... [--fail-on-change] [--expected <report.json>]
 
 `baseline` and `candidate` are two files or two directories. Directories are
-walked recursively and files are paired by relative path; files of any kind
-present on only one side are listed. The baseline can be the base branch's output or a
-reference map in the same formats. A reference map in one GeoJSON file can also be
-compared with a directory: the directory's `<table>.geojson` files (`contours`,
-`cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`, as in
-`temp/` or the combined export) are read as one map.
+walked recursively and files are paired by relative path; files present on
+only one side are listed. `--ignore <suffix>` (repeatable) leaves out files
+whose relative path ends with the suffix, such as `log.txt`. Two directories
+holding no `.png` or `.geojson` file at all are an error, so a run that
+crashed before writing its map cannot pass. The baseline can be the base
+branch's output or a reference map in the same formats. A reference map in
+one GeoJSON file can also be compared with a directory: the directory's
+`<table>.geojson` files (`contours`, `cliffs`, `knolls_points`,
+`vegetation_areas`, `water`, `paths`, `manmade`, as in `temp/` or the combined
+export) are read as one map.
 
 - `*.png`: changed pixels (count and percentage). When the two images hold at
   most 32 colours between them (such as `temp/vegetation.png`), every colour
@@ -207,37 +211,50 @@ compared with a directory: the directory's `<table>.geojson` files (`contours`,
   `NNN.NNN`). Features with no code, or a code the symbol table does not list,
   are counted by the value found; a different count is a change.
   Per code: feature, point, line and polygon counts, total line length, total
-  polygon area and proper line crossings on each side; for lines, the share of
-  candidate length within the tolerance of a baseline line (precision), the
-  share of baseline length within the tolerance of a candidate line (recall),
-  the Hausdorff distance and the mean distance each way; for points, the share
-  on each side with a counterpart within the tolerance and the Hausdorff
-  distance; for polygons, the same line measures over their rings, so a moved
-  polygon shows even when its area does not change. The tolerance defaults to
-  1 m. Coordinates are read as projected metres, as the pipeline writes them.
+  polygon area and proper crossings between lines of that code (lines of
+  different codes are not tested) on each side; the number of features whose
+  other properties (`level_m`, `shade`, `category`, ...) match no feature on
+  the other side; for lines, the share of candidate length within the
+  tolerance of a baseline line (precision), the share of baseline length
+  within the tolerance of a candidate line (recall), the Hausdorff distance
+  and the mean distance each way; for points, the share on each side with a
+  counterpart within the tolerance and the Hausdorff distance; for polygons,
+  the same line measures over their rings, so a moved polygon shows even when
+  its area does not change. Collection members such as `crs` are compared too.
+  The tolerance defaults to 1 m and must be at least 0.01 m; a tolerance that
+  would take more than 20 million distance samples is refused. Coordinates are
+  read as projected metres, as the pipeline writes them. A malformed file, or
+  a geometry type other than Point, LineString, MultiLineString, Polygon and
+  MultiPolygon, is an error naming the feature.
+- Every other file (world files, DXF, `.aux.xml`, `.ocdCrt`, ...): compared
+  byte for byte.
 
 A typical check runs both builds in separate directories on the same input,
 then compares them:
 
     (cd base && /path/to/base/pullauta ../test_file.laz)
     (cd branch && /path/to/branch/pullauta ../test_file.laz)
-    ./pullauta eval base branch --diff-dir diffs
+    ./pullauta eval base branch --diff-dir diffs --ignore log.txt
 
 `--format json` prints the report as JSON. It is deterministic, so it can be
 committed and diffed: keys are sorted, the input and diff-image paths are left
-out, and every measure is rounded to six decimals.
+out, sums are taken in a sorted order, and every measure is rounded to six
+decimals.
 
-Two options make `eval` a gate that exits with status 2 on failure (1 is
-kept for errors such as unreadable input):
+Without a gate option `eval` only reports and exits with status 0, even when a
+pair could not be read (the report says so). Two options make it a gate that
+exits with status 2 on failure; status 1 is kept for errors such as bad
+arguments, nothing to compare, an unreadable directory or expected report:
 
-- `--fail-on-change` fails when any pair differs: a changed pixel, a changed
-  per-code total, a non-zero Hausdorff distance, a file that cannot be read,
-  or a PNG or GeoJSON file present on one side only. Other unpaired files are
-  listed but do not fail the gate.
+- `--fail-on-change` fails when anything differs: a changed pixel, a changed
+  per-code total or property, a non-zero Hausdorff distance, changed bytes, a
+  pair that cannot be read, or a file present on one side only.
 - `--expected <report.json>` passes when nothing differs or when the JSON
   report equals the given file, and it decides alone when both options are
-  given. Commit the report of an intended change and
-  the gate accepts exactly that change:
+  given. A pair that cannot be read always fails, and an expected report that
+  records one is an error. When nothing differs, a warning says the expected
+  report is stale. Commit the report of an intended change and the gate
+  accepts exactly that change:
 
       ./pullauta eval base branch --format json > expected.json
       ./pullauta eval base branch --expected expected.json

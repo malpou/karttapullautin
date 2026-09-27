@@ -4,10 +4,11 @@
 //! `pullauta eval <baseline> <candidate>` takes two files or two directories.
 //! Directories are walked recursively and files are paired by relative path:
 //! `*.png` pairs get a pixel comparison ([`raster`]), `*.geojson` pairs get
-//! per-symbol-code metrics ([`vector`]). Pairing by path covers every layout
-//! the pipeline writes: the tables in `temp/` (`contours.geojson`, ...), a
-//! batch folder's `<tile>_<table>.geojson` and `merged_<table>.geojson`, and
-//! the combined export's `<table>.geojson`.
+//! per-symbol-code metrics ([`vector`]), and every other pair (world files,
+//! DXF, `.aux.xml`, `.ocdCrt`, ...) is compared byte for byte. Pairing by path
+//! covers every layout the pipeline writes: the tables in `temp/`
+//! (`contours.geojson`, ...), a batch folder's `<tile>_<table>.geojson` and
+//! `merged_<table>.geojson`, and the combined export's `<table>.geojson`.
 //!
 //! The baseline can be the output of the base branch or a reference map, so
 //! the same report serves "what did this change do" and "how close is this to
@@ -24,31 +25,46 @@ pub mod raster;
 pub mod vector;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{Context, bail, ensure};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::geojson;
+use crate::io::fs::FileSystem;
 use crate::isom::IsomTable;
 
-pub const USAGE: &str = "USAGE: pullauta eval <baseline> <candidate> [--tolerance <metres>] [--diff-dir <dir>] [--format text|json] [--fail-on-change] [--expected <report.json>]
+pub const USAGE: &str = "USAGE: pullauta eval <baseline> <candidate> [--tolerance <metres>] [--diff-dir <dir>] [--format text|json] [--ignore <suffix>]... [--fail-on-change] [--expected <report.json>]
 
 Compares two files, two directories paired by relative path, or one GeoJSON
 file with a directory's <table>.geojson files read as one map.
   *.png      changed pixels; per-colour IoU when both hold at most 32 colours
   *.geojson  per symbol code (isom_code): counts, length, area, crossings,
-             line precision/recall/Hausdorff/mean distance and point
-             precision/recall/Hausdorff; unknown codes are counted
-  --tolerance       match distance in metres for GeoJSON geometry (default 1)
+             unmatched properties, line precision/recall/Hausdorff/mean
+             distance and point precision/recall/Hausdorff; unknown codes
+             are counted
+  other      byte comparison
+  --tolerance       match distance in metres for GeoJSON geometry (default 1,
+                    at least 0.01)
   --diff-dir        write <name>.diff.png for every PNG pair that differs
   --format          text (default) or json
-  --fail-on-change  exit with status 2 when anything differs
-  --expected        exit with status 2 when anything differs and the JSON report
-                    is not equal to this file";
+  --ignore          skip files whose relative path ends with this (repeatable),
+                    such as log.txt
+  --fail-on-change  exit with status 2 when anything differs or cannot be read
+  --expected        exit with status 2 when anything cannot be read, or differs
+                    and the JSON report is not equal to this file
+Exit status: 0 passed (always, without a gate option), 2 the gate failed,
+1 an error (bad arguments, nothing to compare, an unreadable directory or
+expected report).";
 
 /// Exit status of the `eval` command when the gate fails.
 pub const EXIT_CHANGED: i32 = 2;
+
+/// The smallest `--tolerance`: finer than any coordinate the pipeline writes
+/// means something, and it bounds the sample count.
+pub const MIN_TOLERANCE_M: f64 = 0.01;
 
 /// Round a measure to six decimals (micrometres, or parts per million), so
 /// last-bit noise does not reach the report.
@@ -64,6 +80,8 @@ pub struct Options {
     pub json: bool,
     pub fail_on_change: bool,
     pub expected: Option<PathBuf>,
+    /// Relative-path suffixes of files left out of a directory comparison.
+    pub ignore: Vec<String>,
 }
 
 impl Default for Options {
@@ -74,6 +92,7 @@ impl Default for Options {
             json: false,
             fail_on_change: false,
             expected: None,
+            ignore: Vec::new(),
         }
     }
 }
@@ -84,6 +103,20 @@ impl Default for Options {
 pub enum Outcome<T> {
     Ok(T),
     Err { error: String },
+}
+
+impl<T> Outcome<T> {
+    fn is_err(&self) -> bool {
+        matches!(self, Outcome::Err { .. })
+    }
+
+    /// True when the pair failed to compare or `changed` holds.
+    fn changed(&self, changed: impl Fn(&T) -> bool) -> bool {
+        match self {
+            Outcome::Ok(v) => changed(v),
+            Outcome::Err { .. } => true,
+        }
+    }
 }
 
 impl<T> From<anyhow::Result<T>> for Outcome<T> {
@@ -106,6 +139,14 @@ pub struct RasterEntry {
     pub diff_image: Option<PathBuf>,
 }
 
+/// A byte comparison of a pair eval cannot measure otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct FileEntry {
+    pub identical: bool,
+    pub baseline_bytes: u64,
+    pub candidate_bytes: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Report {
     /// The two inputs, shown in the text report only: the JSON report must
@@ -117,30 +158,30 @@ pub struct Report {
     pub tolerance_m: f64,
     pub rasters: BTreeMap<String, Outcome<RasterEntry>>,
     pub vectors: BTreeMap<String, Outcome<vector::VectorComparison>>,
-    /// Files of any kind present only in the baseline directory.
+    /// Every other pair, compared byte for byte.
+    pub files: BTreeMap<String, Outcome<FileEntry>>,
+    /// Files present only in the baseline directory.
     pub baseline_only: Vec<String>,
-    /// Files of any kind present only in the candidate directory.
+    /// Files present only in the candidate directory.
     pub candidate_only: Vec<String>,
 }
 
 impl Report {
-    /// True when any pair differs or fails to compare, or a PNG or GeoJSON
-    /// file has no partner. Other unpaired files are listed but are not a
-    /// change: eval cannot measure them.
+    /// True when any pair differs or fails to compare, or any file has no
+    /// partner.
     pub fn has_change(&self) -> bool {
-        let measurable = |f: &String| kind(Path::new(f)).is_some();
-        let raster_changed = |r: &Outcome<RasterEntry>| match r {
-            Outcome::Ok(e) => e.comparison.changed_pixels > 0,
-            Outcome::Err { .. } => true,
-        };
-        let vector_changed = |v: &Outcome<vector::VectorComparison>| match v {
-            Outcome::Ok(v) => v.has_change(),
-            Outcome::Err { .. } => true,
-        };
-        self.baseline_only.iter().any(measurable)
-            || self.candidate_only.iter().any(measurable)
-            || self.rasters.values().any(raster_changed)
-            || self.vectors.values().any(vector_changed)
+        !self.baseline_only.is_empty()
+            || !self.candidate_only.is_empty()
+            || (self.rasters.values()).any(|r| r.changed(|e| e.comparison.changed_pixels > 0))
+            || (self.vectors.values()).any(|v| v.changed(vector::VectorComparison::has_change))
+            || (self.files.values()).any(|f| f.changed(|f| !f.identical))
+    }
+
+    /// True when any pair could not be compared.
+    pub fn has_error(&self) -> bool {
+        self.rasters.values().any(Outcome::is_err)
+            || self.vectors.values().any(Outcome::is_err)
+            || self.files.values().any(Outcome::is_err)
     }
 }
 
@@ -148,18 +189,23 @@ impl Report {
 enum Kind {
     Raster,
     Vector,
+    Bytes,
 }
 
-fn kind(path: &Path) -> Option<Kind> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "png" => Some(Kind::Raster),
-        "geojson" => Some(Kind::Vector),
-        _ => None,
+fn kind(path: &Path) -> Kind {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("png") => Kind::Raster,
+        Some("geojson") => Kind::Vector,
+        _ => Kind::Bytes,
     }
 }
 
-/// Every file under `dir`, relative to it, with `/` separators.
+/// Every file under `dir`, relative to it, with `/` separators. Walks with
+/// `std::fs`: [`FileSystem`] cannot tell a directory from a file.
 fn walk(dir: &Path) -> anyhow::Result<BTreeSet<String>> {
     let mut out = BTreeSet::new();
     let mut stack = vec![PathBuf::new()];
@@ -181,7 +227,19 @@ fn walk(dir: &Path) -> anyhow::Result<BTreeSet<String>> {
     Ok(out)
 }
 
+/// Read and parse a JSON file.
+fn read_json(fs: &impl FileSystem, path: &Path) -> anyhow::Result<Value> {
+    Ok(serde_json::from_str(&fs.read_to_string(path)?)?)
+}
+
+fn read_png(fs: &impl FileSystem, path: &Path) -> anyhow::Result<image::RgbaImage> {
+    let mut reader = image::ImageReader::new(fs.open(path)?);
+    reader.set_format(image::ImageFormat::Png);
+    Ok(reader.decode()?.to_rgba8())
+}
+
 fn compare_raster(
+    fs: &impl FileSystem,
     baseline: &Path,
     candidate: &Path,
     name: &str,
@@ -189,12 +247,8 @@ fn compare_raster(
 ) -> anyhow::Result<RasterEntry> {
     // errors name the side, not the path, so the JSON report stays the same
     // wherever the runs were written
-    let open = |p: &Path, side: &str| {
-        image::open(p)
-            .with_context(|| format!("reading the {side} image"))
-            .map(|i| i.to_rgba8())
-    };
-    let (b, c) = (open(baseline, "baseline")?, open(candidate, "candidate")?);
+    let b = read_png(fs, baseline).context("reading the baseline image")?;
+    let c = read_png(fs, candidate).context("reading the candidate image")?;
     let comparison = raster::compare(&b, &c)?;
     let mut diff_image = None;
     if let Some(dir) = diff_dir
@@ -202,16 +256,53 @@ fn compare_raster(
     {
         let path = dir.join(format!("{name}.diff.png"));
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs.create_dir_all(parent)?;
         }
-        raster::diff_image(&b, &c)
-            .save(&path)
-            .context("writing the diff image")?;
+        {
+            let mut out = fs.create(&path).context("writing the diff image")?;
+            raster::diff_image(&b, &c)
+                .write_to(&mut out, image::ImageFormat::Png)
+                .context("writing the diff image")?;
+        }
         diff_image = Some(path);
     }
     Ok(RasterEntry {
         comparison,
         diff_image,
+    })
+}
+
+fn compare_bytes(
+    fs: &impl FileSystem,
+    baseline: &Path,
+    candidate: &Path,
+) -> anyhow::Result<FileEntry> {
+    let size = |p: &Path, side: &str| {
+        fs.file_size(p)
+            .with_context(|| format!("reading the {side} file"))
+    };
+    let (baseline_bytes, candidate_bytes) =
+        (size(baseline, "baseline")?, size(candidate, "candidate")?);
+    let mut identical = baseline_bytes == candidate_bytes;
+    if identical {
+        let (mut b, mut c) = (fs.open(baseline)?, fs.open(candidate)?);
+        let (mut bb, mut cb) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+        loop {
+            let n = b.read(&mut bb)?;
+            if n == 0 {
+                break;
+            }
+            c.read_exact(&mut cb[..n])?;
+            if bb[..n] != cb[..n] {
+                identical = false;
+                break;
+            }
+        }
+    }
+    Ok(FileEntry {
+        identical,
+        baseline_bytes,
+        candidate_bytes,
     })
 }
 
@@ -223,25 +314,26 @@ enum VectorSide<'a> {
 }
 
 impl VectorSide<'_> {
-    fn load(&self, side: &str) -> anyhow::Result<vector::FileGeometry> {
+    fn load(&self, fs: &impl FileSystem, side: &str) -> anyhow::Result<vector::MapGeometry> {
+        let read = |path: &Path| read_json(fs, path).and_then(|v| vector::group_by_code(&v));
         match self {
             VectorSide::File(path) => {
-                vector::load(path).with_context(|| format!("reading the {side} GeoJSON"))
+                read(path).with_context(|| format!("reading the {side} GeoJSON"))
             }
             VectorSide::Tables(dir) => {
-                let mut all = vector::FileGeometry::default();
+                let mut all = vector::MapGeometry::default();
                 let mut found = false;
                 for &table in IsomTable::ALL {
                     let path = dir.join(geojson::file_name(table));
-                    if path.is_file() {
-                        let file = vector::load(&path).with_context(|| {
+                    if fs.exists(&path) {
+                        let map = read(&path).with_context(|| {
                             format!("reading the {side} {}", geojson::file_name(table))
                         })?;
-                        all.append(file);
+                        all.append(map);
                         found = true;
                     }
                 }
-                anyhow::ensure!(found, "the {side} directory holds no <table>.geojson");
+                ensure!(found, "the {side} directory holds no <table>.geojson");
                 Ok(all)
             }
         }
@@ -249,13 +341,14 @@ impl VectorSide<'_> {
 }
 
 fn compare_vector(
+    fs: &impl FileSystem,
     baseline: VectorSide,
     candidate: VectorSide,
     tolerance: f64,
 ) -> anyhow::Result<vector::VectorComparison> {
-    let b = baseline.load("baseline")?;
-    let c = candidate.load("candidate")?;
-    Ok(vector::compare(&b, &c, tolerance))
+    let b = baseline.load(fs, "baseline")?;
+    let c = candidate.load(fs, "candidate")?;
+    vector::compare(&b, &c, tolerance)
 }
 
 fn file_name(path: &Path) -> String {
@@ -263,34 +356,61 @@ fn file_name(path: &Path) -> String {
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
 }
 
-/// Compare `baseline` with `candidate` (two files, or two directories).
-pub fn evaluate(baseline: &Path, candidate: &Path, opts: &Options) -> anyhow::Result<Report> {
+/// Compare `baseline` with `candidate` (two files, two directories, or a
+/// GeoJSON file and a directory of tables).
+pub fn evaluate(
+    fs: &impl FileSystem,
+    baseline: &Path,
+    candidate: &Path,
+    opts: &Options,
+) -> anyhow::Result<Report> {
     let mut report = Report {
         baseline: baseline.to_path_buf(),
         candidate: candidate.to_path_buf(),
         tolerance_m: opts.tolerance_m,
         rasters: BTreeMap::new(),
         vectors: BTreeMap::new(),
+        files: BTreeMap::new(),
         baseline_only: Vec::new(),
         candidate_only: Vec::new(),
     };
-    // (report key, baseline file, candidate file)
-    let pairs: Vec<(String, PathBuf, PathBuf)> = match (baseline.is_dir(), candidate.is_dir()) {
+    // (report key, kind, baseline file, candidate file)
+    let pairs: Vec<(String, Kind, PathBuf, PathBuf)> = match (baseline.is_dir(), candidate.is_dir())
+    {
         (true, true) => {
-            let (b, c) = (walk(baseline)?, walk(candidate)?);
+            let kept = |files: BTreeSet<String>| -> BTreeSet<String> {
+                files
+                    .into_iter()
+                    .filter(|f| !opts.ignore.iter().any(|s| f.ends_with(s.as_str())))
+                    .collect()
+            };
+            let (b, c) = (kept(walk(baseline)?), kept(walk(candidate)?));
+            // a run that crashed before writing any map output must not pass
+            ensure!(
+                b.union(&c).any(|f| kind(Path::new(f)) != Kind::Bytes),
+                "nothing to compare: neither directory holds a .png or .geojson file"
+            );
             report.baseline_only = b.difference(&c).cloned().collect();
             report.candidate_only = c.difference(&b).cloned().collect();
             b.intersection(&c)
-                .filter(|f| kind(Path::new(f)).is_some())
-                .map(|f| (f.clone(), baseline.join(f), candidate.join(f)))
+                .map(|f| {
+                    (
+                        f.clone(),
+                        kind(Path::new(f)),
+                        baseline.join(f),
+                        candidate.join(f),
+                    )
+                })
                 .collect()
         }
         (false, false) => {
-            if kind(baseline).is_none() || kind(baseline) != kind(candidate) {
+            let k = kind(baseline);
+            if k == Kind::Bytes || k != kind(candidate) {
                 bail!("both files must be .png or both .geojson");
             }
             vec![(
                 file_name(candidate),
+                k,
                 baseline.to_path_buf(),
                 candidate.to_path_buf(),
             )]
@@ -310,26 +430,32 @@ pub fn evaluate(baseline: &Path, candidate: &Path, opts: &Options) -> anyhow::Re
                     VectorSide::Tables(candidate),
                 )
             };
-            if kind(file) != Some(Kind::Vector) {
+            if kind(file) != Kind::Vector {
                 bail!("a file compared with a directory must be .geojson");
             }
-            let entry = compare_vector(b, c, opts.tolerance_m);
+            let entry = compare_vector(fs, b, c, opts.tolerance_m);
             report.vectors.insert(file_name(file), entry.into());
             return Ok(report);
         }
     };
-    for (name, b, c) in pairs {
-        match kind(&c) {
-            Some(Kind::Raster) => {
-                let entry = compare_raster(&b, &c, &name, opts.diff_dir.as_deref());
+    for (name, k, b, c) in pairs {
+        match k {
+            Kind::Raster => {
+                let entry = compare_raster(fs, &b, &c, &name, opts.diff_dir.as_deref());
                 report.rasters.insert(name, entry.into());
             }
-            Some(Kind::Vector) => {
-                let entry =
-                    compare_vector(VectorSide::File(&b), VectorSide::File(&c), opts.tolerance_m);
+            Kind::Vector => {
+                let entry = compare_vector(
+                    fs,
+                    VectorSide::File(&b),
+                    VectorSide::File(&c),
+                    opts.tolerance_m,
+                );
                 report.vectors.insert(name, entry.into());
             }
-            None => unreachable!("pairs hold only .png and .geojson files"),
+            Kind::Bytes => {
+                report.files.insert(name, compare_bytes(fs, &b, &c).into());
+            }
         }
     }
     Ok(report)
@@ -348,11 +474,16 @@ pub fn parse_args(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, Options)
                 opts.tolerance_m = v
                     .parse()
                     .ok()
-                    .filter(|t: &f64| *t > 0.0 && t.is_finite())
-                    .with_context(|| format!("--tolerance must be a positive number, got {v}"))?;
+                    .filter(|t: &f64| *t >= MIN_TOLERANCE_M && t.is_finite())
+                    .with_context(|| {
+                        format!(
+                            "--tolerance must be a number of at least {MIN_TOLERANCE_M} m, got {v}"
+                        )
+                    })?;
             }
             "--diff-dir" => opts.diff_dir = Some(PathBuf::from(value()?)),
             "--expected" => opts.expected = Some(PathBuf::from(value()?)),
+            "--ignore" => opts.ignore.push(value()?.clone()),
             "--fail-on-change" => opts.fail_on_change = true,
             "--format" => {
                 opts.json = match value()?.as_str() {
@@ -371,16 +502,32 @@ pub fn parse_args(args: &[String]) -> anyhow::Result<(PathBuf, PathBuf, Options)
     Ok((baseline, candidate, opts))
 }
 
+/// True when a JSON report records a pair that could not be compared.
+fn records_error(v: &Value) -> bool {
+    match v {
+        Value::Object(m) => m.contains_key("error") || m.values().any(records_error),
+        Value::Array(a) => a.iter().any(records_error),
+        _ => false,
+    }
+}
+
 /// Entry point for `pullauta eval ...`: prints the report to stdout and
 /// returns whether the gate passed (always true without a gate option).
 pub fn run(args: &[String]) -> anyhow::Result<bool> {
+    let fs = crate::io::fs::local::LocalFileSystem;
     let (baseline, candidate, opts) =
         parse_args(args).map_err(|e| anyhow::anyhow!("{e:#}\n\n{USAGE}"))?;
-    let report = evaluate(&baseline, &candidate, &opts)?;
+    let report = evaluate(&fs, &baseline, &candidate, &opts)?;
     // read the expected report first, so a bad path fails even without change
     let expected = match &opts.expected {
         Some(path) => {
-            Some(vector::read_json(path).with_context(|| format!("reading {}", path.display()))?)
+            let v = read_json(&fs, path).with_context(|| format!("reading {}", path.display()))?;
+            ensure!(
+                !records_error(&v),
+                "{} records a pair that could not be compared; an expected report cannot accept an error",
+                path.display()
+            );
+            Some(v)
         }
         None => None,
     };
@@ -390,7 +537,18 @@ pub fn run(args: &[String]) -> anyhow::Result<bool> {
     } else {
         print!("{}", text(&report));
     }
+    let gated = opts.fail_on_change || expected.is_some();
+    if gated && report.has_error() {
+        eprintln!("eval: a pair could not be compared");
+        return Ok(false);
+    }
     if !report.has_change() {
+        if let Some(path) = &opts.expected {
+            eprintln!(
+                "eval: warning: nothing changed, so {} is stale; delete it",
+                path.display()
+            );
+        }
         return Ok(true);
     }
     // --expected decides alone: it accepts exactly the committed change
@@ -409,7 +567,7 @@ pub fn run(args: &[String]) -> anyhow::Result<bool> {
 }
 
 /// Before and after, or just the value when both sides agree.
-fn pair(b: f64, c: f64, decimals: usize) -> String {
+fn before_after(b: f64, c: f64, decimals: usize) -> String {
     if b == c {
         format!("{b:.decimals$}")
     } else {
@@ -441,12 +599,12 @@ pub fn text(r: &Report) -> String {
                     "{} of {}x{} pixels changed ({:.4}%)",
                     c.changed_pixels, c.width, c.height, c.changed_percent
                 );
-                for (colour, k) in c.classes.iter().flatten() {
+                for (colour, class) in c.classes.iter().flatten() {
                     let _ = writeln!(
                         s,
                         "  {colour}  px {:>10}  IoU {:.4}",
-                        pair(k.baseline_px as f64, k.candidate_px as f64, 0),
-                        k.iou
+                        before_after(class.baseline_px as f64, class.candidate_px as f64, 0),
+                        class.iou
                     );
                 }
                 if let Some(p) = &e.diff_image {
@@ -464,53 +622,63 @@ pub fn text(r: &Report) -> String {
             }
             Outcome::Ok(v) => v,
         };
+        if v.collection_changed {
+            let _ = writeln!(s, "  collection members (such as crs) differ");
+        }
         for (code, u) in &v.unknown_codes {
             let _ = writeln!(
                 s,
                 "  unknown isom_code {code}: features {}",
-                pair(u.baseline as f64, u.candidate as f64, 0)
+                before_after(u.baseline as f64, u.candidate as f64, 0)
             );
         }
-        for (code, c) in &v.codes {
-            let (b, k) = (&c.baseline, &c.candidate); // k: candidate
+        for (code, cmp) in &v.codes {
+            let (b, c) = (&cmp.baseline, &cmp.candidate);
             let _ = write!(
                 s,
                 "  {:<8} features {}",
                 code.as_str(),
-                pair(b.features as f64, k.features as f64, 0)
+                before_after(b.features as f64, c.features as f64, 0)
             );
-            if b.points + k.points > 0 {
-                let _ = write!(s, "  points {}", pair(b.points as f64, k.points as f64, 0));
+            if b.points + c.points > 0 {
+                let _ = write!(
+                    s,
+                    "  points {}",
+                    before_after(b.points as f64, c.points as f64, 0)
+                );
             }
-            if b.length_m + k.length_m > 0.0 {
-                let _ = write!(s, "  length {} m", pair(b.length_m, k.length_m, 1));
+            if b.length_m + c.length_m > 0.0 {
+                let _ = write!(s, "  length {} m", before_after(b.length_m, c.length_m, 1));
             }
-            if b.polygons + k.polygons > 0 {
-                let _ = write!(s, "  area {} m2", pair(b.area_m2, k.area_m2, 1));
+            if b.polygons + c.polygons > 0 {
+                let _ = write!(s, "  area {} m2", before_after(b.area_m2, c.area_m2, 1));
             }
-            if b.crossings + k.crossings > 0 {
+            if b.crossings + c.crossings > 0 {
                 let _ = write!(
                     s,
                     "  crossings {}",
-                    pair(b.crossings as f64, k.crossings as f64, 0)
+                    before_after(b.crossings as f64, c.crossings as f64, 0)
                 );
             }
+            if cmp.properties_unmatched > 0 {
+                let _ = write!(s, "  unmatched properties {}", cmp.properties_unmatched);
+            }
             let _ = writeln!(s);
-            if let Some(l) = &c.lines {
+            if let Some(l) = &cmp.lines {
                 let _ = writeln!(
                     s,
                     "           lines  precision {:.4}  recall {:.4}  hausdorff {:.2} m  mean {:.3} / {:.3} m",
                     l.precision, l.recall, l.hausdorff_m, l.mean_distance_m, l.mean_distance_back_m
                 );
             }
-            if let Some(l) = &c.boundaries {
+            if let Some(l) = &cmp.boundaries {
                 let _ = writeln!(
                     s,
                     "           rings  precision {:.4}  recall {:.4}  hausdorff {:.2} m  mean {:.3} / {:.3} m",
                     l.precision, l.recall, l.hausdorff_m, l.mean_distance_m, l.mean_distance_back_m
                 );
             }
-            if let Some(p) = &c.points {
+            if let Some(p) = &cmp.points {
                 let _ = writeln!(
                     s,
                     "           points precision {:.4}  recall {:.4}",
@@ -518,6 +686,25 @@ pub fn text(r: &Report) -> String {
                 );
             }
         }
+    }
+    let mut identical = 0;
+    for (name, entry) in &r.files {
+        match entry {
+            Outcome::Ok(f) if f.identical => identical += 1,
+            Outcome::Ok(f) => {
+                let _ = writeln!(
+                    s,
+                    "\n{name}: bytes differ ({} -> {} bytes)",
+                    f.baseline_bytes, f.candidate_bytes
+                );
+            }
+            Outcome::Err { error } => {
+                let _ = writeln!(s, "\n{name}: error: {error}");
+            }
+        }
+    }
+    if identical > 0 {
+        let _ = writeln!(s, "\n{identical} other files identical");
     }
     for (label, files) in [
         ("only in baseline", &r.baseline_only),
@@ -533,6 +720,7 @@ pub fn text(r: &Report) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::fs::local::LocalFileSystem;
     use crate::isom::IsomCode;
     use image::{Rgba, RgbaImage};
 
@@ -543,7 +731,7 @@ mod tests {
     #[test]
     fn parses_paths_and_options() {
         let (b, c, o) = parse_args(&args(
-            "base cand --tolerance 2.5 --diff-dir d --format json --fail-on-change --expected e.json",
+            "base cand --tolerance 2.5 --diff-dir d --format json --fail-on-change --expected e.json --ignore log.txt --ignore .ini",
         ))
         .unwrap();
         assert_eq!((b, c), (PathBuf::from("base"), PathBuf::from("cand")));
@@ -555,6 +743,7 @@ mod tests {
                 json: true,
                 fail_on_change: true,
                 expected: Some(PathBuf::from("e.json")),
+                ignore: vec!["log.txt".into(), ".ini".into()],
             }
         );
     }
@@ -566,6 +755,9 @@ mod tests {
             "a b c",
             "a b --tolerance",
             "a b --tolerance -1",
+            "a b --tolerance 0.001",
+            "a b --tolerance inf",
+            "a b --ignore",
             "a b --format xml",
             "a b --bogus",
             "a b --expected",
@@ -607,7 +799,7 @@ mod tests {
             diff_dir: Some(diffs.clone()),
             ..Options::default()
         };
-        let r = evaluate(&base, &cand, &opts).unwrap();
+        let r = evaluate(&LocalFileSystem, &base, &cand, &opts).unwrap();
 
         let Outcome::Ok(same) = &r.rasters["same.png"] else {
             panic!("same.png failed");
@@ -648,7 +840,7 @@ mod tests {
         assert!(r.has_change());
 
         // a run compared with itself passes every gate
-        let same = evaluate(&base, &base, &Options::default()).unwrap();
+        let same = evaluate(&LocalFileSystem, &base, &base, &Options::default()).unwrap();
         assert!(!same.has_change());
         let dirs = format!("{} {}", base.display(), cand.display());
         assert!(
@@ -674,9 +866,10 @@ mod tests {
         );
         assert!(run(&args(&missing)).is_err());
 
-        // files eval cannot measure are listed but are not a change
+        // an unpaired file of any kind is a change
         std::fs::create_dir_all(root.join("other")).unwrap();
         let only = evaluate(
+            &LocalFileSystem,
             &root.join("base").join("temp"),
             &root.join("other"),
             &Options::default(),
@@ -684,18 +877,100 @@ mod tests {
         let only = only.unwrap();
         assert_eq!(only.baseline_only, ["contours.geojson", "vegetation.png"]);
         assert!(only.has_change());
-        std::fs::remove_file(root.join("base/temp/vegetation.png")).unwrap();
-        std::fs::remove_file(root.join("base/temp/contours.geojson")).unwrap();
         std::fs::write(root.join("base/temp/x.pgw"), "1").unwrap();
-        let unmeasured = evaluate(
+        std::fs::write(root.join("other/x.pgw"), "1").unwrap();
+        std::fs::write(root.join("other/y.pgw"), "1").unwrap();
+        let pgw = evaluate(
+            &LocalFileSystem,
             &root.join("base/temp"),
             &root.join("other"),
             &Options::default(),
         )
         .unwrap();
-        assert_eq!(unmeasured.baseline_only, ["x.pgw"]);
-        assert!(!unmeasured.has_change());
+        assert!(matches!(
+            pgw.files["x.pgw"],
+            Outcome::Ok(FileEntry {
+                identical: true,
+                ..
+            })
+        ));
+        assert_eq!(pgw.candidate_only, ["y.pgw"]);
 
+        // nothing to compare is an error, not a pass: a run that crashed
+        std::fs::remove_file(root.join("base/temp/vegetation.png")).unwrap();
+        std::fs::remove_file(root.join("base/temp/contours.geojson")).unwrap();
+        let crashed = evaluate(
+            &LocalFileSystem,
+            &root.join("base/temp"),
+            &root.join("other"),
+            &Options::default(),
+        );
+        assert!(crashed.is_err());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// World files and other outputs are compared byte for byte; `--ignore`
+    /// leaves files out.
+    #[test]
+    fn other_files_are_compared_byte_for_byte() {
+        let root = std::env::temp_dir().join(format!("pullauta-eval-bytes-{}", std::process::id()));
+        let (base, cand) = (root.join("base"), root.join("cand"));
+        for d in [&base, &cand] {
+            std::fs::create_dir_all(d).unwrap();
+            RgbaImage::new(2, 2).save(d.join("map.png")).unwrap();
+            std::fs::write(d.join("same.dxf"), "0\nEOF\n").unwrap();
+        }
+        std::fs::write(base.join("map.pgw"), "1.0\n0\n").unwrap();
+        std::fs::write(cand.join("map.pgw"), "1.5\n0\n").unwrap();
+        std::fs::write(base.join("log.txt"), "12:00").unwrap();
+        std::fs::write(cand.join("log.txt"), "12:01").unwrap();
+        let r = evaluate(&LocalFileSystem, &base, &cand, &Options::default()).unwrap();
+        let Outcome::Ok(pgw) = r.files["map.pgw"] else {
+            panic!("map.pgw failed");
+        };
+        assert_eq!(
+            pgw,
+            FileEntry {
+                identical: false,
+                baseline_bytes: 6,
+                candidate_bytes: 6
+            }
+        );
+        assert!(r.has_change());
+        assert!(text(&r).contains("map.pgw: bytes differ"), "{}", text(&r));
+
+        let opts = Options {
+            ignore: vec!["log.txt".into(), ".pgw".into()],
+            ..Options::default()
+        };
+        let r = evaluate(&LocalFileSystem, &base, &cand, &opts).unwrap();
+        assert_eq!(r.files.keys().collect::<Vec<_>>(), ["same.dxf"]);
+        assert!(!r.has_change());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// An unreadable pair fails every gate, and an expected report cannot
+    /// accept one.
+    #[test]
+    fn errors_fail_the_gates() {
+        let root = std::env::temp_dir().join(format!("pullauta-eval-err-{}", std::process::id()));
+        let (base, cand) = (root.join("base"), root.join("cand"));
+        for d in [&base, &cand] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("broken.geojson"), "{").unwrap();
+        }
+        let dirs = format!("{} {}", base.display(), cand.display());
+        assert!(
+            run(&args(&dirs)).unwrap(),
+            "without a gate eval only reports"
+        );
+        assert!(!run(&args(&format!("{dirs} --fail-on-change"))).unwrap());
+        let r = evaluate(&LocalFileSystem, &base, &cand, &Options::default()).unwrap();
+        let expected = root.join("expected.json");
+        let json = serde_json::to_value(&r).unwrap();
+        std::fs::write(&expected, json.to_string()).unwrap();
+        assert!(run(&args(&format!("{dirs} --expected {}", expected.display()))).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -738,7 +1013,7 @@ mod tests {
         .unwrap();
 
         for (b, c) in [(&reference, &run), (&run, &reference)] {
-            let r = evaluate(b, c, &Options::default()).unwrap();
+            let r = evaluate(&LocalFileSystem, b, c, &Options::default()).unwrap();
             let Outcome::Ok(v) = &r.vectors["reference.geojson"] else {
                 panic!("reference.geojson failed");
             };
@@ -756,13 +1031,13 @@ mod tests {
 
         let empty = root.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
-        let r = evaluate(&reference, &empty, &Options::default()).unwrap();
+        let r = evaluate(&LocalFileSystem, &reference, &empty, &Options::default()).unwrap();
         assert!(matches!(
             r.vectors["reference.geojson"],
             Outcome::Err { .. }
         ));
         let png = root.join("map.png");
-        assert!(evaluate(&png, &run, &Options::default()).is_err());
+        assert!(evaluate(&LocalFileSystem, &png, &run, &Options::default()).is_err());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -773,7 +1048,7 @@ mod tests {
         let (a, b) = (root.join("a.png"), root.join("b.png"));
         std::fs::write(&a, b"junk").unwrap();
         std::fs::write(&b, b"junk").unwrap();
-        let r = evaluate(&a, &b, &Options::default()).unwrap();
+        let r = evaluate(&LocalFileSystem, &a, &b, &Options::default()).unwrap();
         assert!(matches!(r.rasters["b.png"], Outcome::Err { .. }));
         std::fs::remove_dir_all(&root).unwrap();
     }
