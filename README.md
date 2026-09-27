@@ -60,7 +60,7 @@ Karttapullautin can also render zip files containing shape files downloaded from
 
     ./pullauta yourzipfile1.zip yourzipfile2.zip yourzipfile3.zip yourzipfile4.zip
 
-The configuration file has one rule per line, `name|symbol code|conditions`, for example `road|502T|highway=primary&bridge=yes`. Conditions are `field=value` or `field!=value` on the shape file's attributes, joined with `&`; the first rule whose conditions all hold and whose symbol code Karttapullautin can draw wins. Symbol codes are ISOM 2017-2 numbers (502 wide road, 503 road, 504 vehicle track, 506 small footpath, 509 railway, 510 power line, 518 impassable fence, 521 building, 520 area that shall not be entered, 501 paved area, 501.2 its bounding line, 401 open land, 415 cultivation boundary, 301 water, 301.4 bank line, 305 watercourse, 308 marsh). A `T` suffix (e.g. `502T`) marks an upper level, such as a bridge, drawn on top of other features. The matched features are also written as GeoJSON, `osm_lines.geojson` and `osm_areas.geojson` in the temp folder, with the properties `symbol`, `category` (the rule's name) and `upper_level` (only when true).
+The configuration file has one rule per line, `name|symbol code|conditions`, for example `road|502.000T|highway=primary&bridge=yes`. Conditions are `field=value` or `field!=value` on the shape file's attributes, joined with `&`; the first rule whose conditions all hold and whose symbol code Karttapullautin can draw wins. Symbol codes are the ISOM 2017-2 codes of the [isom-maplibre](https://github.com/MetsaApp/isom-maplibre) symbol table, written "NNN.NNN"; a code the table does not list is an error. Karttapullautin draws 502.000 wide road, 503.000 road, 504.000 vehicle track, 506.000 small footpath, 509.000 railway, 510.000 power line, 516.000 fence, 521.000 building, 520.000 area that shall not be entered, 501.000 paved area, 401.000 open land, 415.000 cultivation boundary, 301.000 water, 305.000 watercourse and 308.000 marsh. A `T` suffix (e.g. `502.000T`) marks an upper level, such as a bridge, drawn on top of other features. The matched features are also written as GeoJSON in the temp folder, each to the table of its code (`paths.geojson`, `manmade.geojson`, `water.geojson`, `vegetation_areas.geojson`), with the properties `isom_code`, `category` (the rule's name) and `upper_level` (only when true).
 
 For Finns: Karttapullautin render Maastotietokanta zip files (shape files) downloaded from the download site of Maanmittauslaitos without setting a configuration file. Just leave `vectorconf` parameter empty.
 
@@ -124,6 +124,7 @@ In additon to the png raster map imges, Karttapullautin makes also vector contou
 - `c1g.dxf`: small cliffs
 - `c2g.dxf`: big cliffs
 - `vegetation.png + vegetation.pgw`: generalized green/yellow as raster, same as at the background of final map png files.
+- `<table>.geojson` (with `vector_vege=1`): the vector output for the [isom-maplibre](https://github.com/MetsaApp/isom-maplibre) style, one file per table it reads (`contours`, `knolls_points`, `cliffs`, `vegetation_areas`, and with a `vectorconf` also `water`, `paths`, `manmade`), each feature with its ISOM 2017-2 symbol code as `isom_code` (`"101.000"`).
 
 For importing Maastotietokanta, try reading shape filed directly to your mapping app. Note that the `dxf` files need to be converted from the internal `.bin.dxf` format using the command `bin2dxf` as mentioned above.
 
@@ -154,7 +155,7 @@ You can also merge dxf files (if saved, there is parameter for saving there)
 
     ./pullauta dxfmerge
 
-With `batchmerge=1` the batch run does all of the merging itself when the tiles are done: the png merges, the dxf merge, and, for the vector outputs (`vector_vege=1`, or a `vectorconf`), each tile's GeoJSON cropped to the tile, merged into `merged_*.geojson`, and published as one `output.geojson`, one `output.dxf` (symbol codes as DXF layers) and `output.ocdCrt` (the cross reference table for OCAD's DXF import), all in the batch output folder. Set `epsg` to declare the coordinate system in the GeoJSON files.
+With `batchmerge=1` the batch run does all of the merging itself when the tiles are done: the png merges, the dxf merge, and, for the vector outputs (`vector_vege=1`, or a `vectorconf`), each tile's tables cropped to the tile, merged into `merged_<table>.geojson`, and published as one `<table>.geojson` per table, one `output.dxf` (symbol codes as DXF layers) and `output.ocdCrt` (the cross reference table for OCAD's DXF import), all in the batch output folder. Set `epsg` to declare the coordinate system in the GeoJSON files.
 
 ### Note:
 
