@@ -549,9 +549,10 @@ impl Ring {
         self.points.len()
     }
 
-    /// Even-odd ray cast towards -x over consecutive edges (prev -> cur). Exact for concave
-    /// shapes. Uses exactly the legacy arithmetic so results are bit-identical to the inline
-    /// loops it replaces. An empty ring contains nothing.
+    /// Even-odd ray cast towards +x over consecutive edges (prev -> cur). Exact for concave
+    /// shapes. Every edge is tested, the first and the closing one included. An edge counts
+    /// when `y0 <= p.y < y1` (either direction) and `p.x` lies strictly left of the crossing,
+    /// so points on edges follow that half-open convention. An empty ring contains nothing.
     pub fn contains(&self, p: Point2) -> bool {
         let mut hit = 0;
         for w in self.points.windows(2) {
@@ -595,10 +596,12 @@ pub fn signed_area(ring: &[Point2]) -> f64 {
 /// Returns one `Vec<Point2>` per input slot, same length and order: absorbed donors and
 /// dropped lines come back empty so callers keep indexing by input position.
 ///
-/// Slot 0 is never chosen as a join partner: the lookup tables use index 0 as "no line".
-/// This is a legacy quirk kept deliberately so output stays identical; see ticket 18.
+/// Each quantized endpoint registers up to two lines: the first to reach it in `heads1`, the
+/// last in `heads2`. A missing entry means "no line", so every slot, 0 included, can be a
+/// join partner.
 pub fn join_polylines<C>(lines: &Polylines<Point2, C>, max_vertices: usize) -> Vec<Vec<Point2>> {
     use rustc_hash::FxHashMap;
+    use std::collections::hash_map::Entry;
 
     // Internal type used to index into the hashmaps and vectors.
     // Since using f64 coordinates directly has problems with rounding (and do not impl Eq and
@@ -617,19 +620,33 @@ pub fn join_polylines<C>(lines: &Polylines<Point2, C>, max_vertices: usize) -> V
                 y: (y * 1000.0) as i64,
             }
         }
-        /// Just a unique key for the case where we don't have a valid point.
-        fn none() -> Self {
-            Self {
-                x: i64::MAX,
-                y: i64::MAX,
-            }
-        }
+    }
+
+    /// The first candidate `usable` accepts, looked up in this order: the head in the first
+    /// and second tables, then the tail in the second and first.
+    fn join_partner(
+        heads1: &FxHashMap<Key, usize>,
+        heads2: &FxHashMap<Key, usize>,
+        head: Key,
+        tail: Key,
+        usable: impl Fn(usize) -> bool,
+    ) -> Option<usize> {
+        [
+            heads1.get(&head),
+            heads2.get(&head),
+            heads2.get(&tail),
+            heads1.get(&tail),
+        ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .find(|&j| usable(j))
     }
 
     let mut heads1: FxHashMap<Key, usize> = FxHashMap::default();
     let mut heads2: FxHashMap<Key, usize> = FxHashMap::default();
-    let mut heads = Vec::<Key>::with_capacity(lines.len());
-    let mut tails = Vec::<Key>::with_capacity(lines.len());
+    // (head, tail) of each slot's current line; None for a dropped line.
+    let mut ends = Vec::<Option<(Key, Key)>>::with_capacity(lines.len());
     let mut out = Vec::<Vec<Point2>>::with_capacity(lines.len());
 
     for (j, (line, _c)) in lines.iter().enumerate() {
@@ -640,88 +657,67 @@ pub fn join_polylines<C>(lines: &Polylines<Point2, C>, max_vertices: usize) -> V
             let head = Key::new(first.x, first.y);
             let tail = Key::new(last.x, last.y);
 
-            heads.push(head);
-            tails.push(tail);
+            ends.push(Some((head, tail)));
             out.push(line.clone());
 
-            if *heads1.get(&head).unwrap_or(&0) == 0 {
-                heads1.insert(head, j);
-            } else {
-                heads2.insert(head, j);
-            }
-            if *heads1.get(&tail).unwrap_or(&0) == 0 {
-                heads1.insert(tail, j);
-            } else {
-                heads2.insert(tail, j);
+            for key in [head, tail] {
+                if let Entry::Vacant(e) = heads1.entry(key) {
+                    e.insert(j);
+                } else {
+                    heads2.insert(key, j);
+                }
             }
         } else {
-            heads.push(Key::none());
-            tails.push(Key::none());
+            ends.push(None);
             out.push(vec![]);
         }
     }
 
     for l in 0..lines.len() {
-        let mut to_join = 0;
-        if !out[l].is_empty() {
-            let mut end_loop = false;
-            while !end_loop {
-                let tmp = *heads1.get(&heads[l]).unwrap_or(&0);
-                if tmp != 0 && tmp != l && !out[tmp].is_empty() {
-                    to_join = tmp;
-                } else {
-                    let tmp = *heads2.get(&heads[l]).unwrap_or(&0);
-                    if tmp != 0 && tmp != l && !out[tmp].is_empty() {
-                        to_join = tmp;
-                    } else {
-                        let tmp = *heads2.get(&tails[l]).unwrap_or(&0);
-                        if tmp != 0 && tmp != l && !out[tmp].is_empty() {
-                            to_join = tmp;
-                        } else {
-                            let tmp = *heads1.get(&tails[l]).unwrap_or(&0);
-                            if tmp != 0 && tmp != l && !out[tmp].is_empty() {
-                                to_join = tmp;
-                            } else {
-                                end_loop = true;
-                            }
-                        }
-                    }
-                }
-                if !end_loop {
-                    if tails[l] == heads[to_join] {
-                        heads2.insert(tails[l], 0);
-                        heads1.insert(tails[l], 0);
-                        let mut donor = out[to_join].clone();
-                        out[l].append(&mut donor);
-                        tails[l] = tails[to_join];
-                        out[to_join].clear();
-                    } else if tails[l] == tails[to_join] {
-                        heads2.insert(tails[l], 0);
-                        heads1.insert(tails[l], 0);
-                        let mut donor = out[to_join].clone();
-                        donor.reverse();
-                        out[l].append(&mut donor);
-                        tails[l] = heads[to_join];
-                        out[to_join].clear();
-                    } else if heads[l] == tails[to_join] {
-                        heads2.insert(heads[l], 0);
-                        heads1.insert(heads[l], 0);
-                        let donor = out[to_join].clone();
-                        out[l].splice(0..0, donor);
-                        heads[l] = heads[to_join];
-                        out[to_join].clear();
-                    } else if heads[l] == heads[to_join] {
-                        heads2.insert(heads[l], 0);
-                        heads1.insert(heads[l], 0);
-                        let mut donor = out[to_join].clone();
-                        donor.reverse();
-                        out[l].splice(0..0, donor);
-                        heads[l] = tails[to_join];
-                        out[to_join].clear();
-                    }
-                }
+        let Some((mut head, mut tail)) = ends[l] else {
+            continue;
+        };
+        if out[l].is_empty() {
+            continue;
+        }
+        while let Some(to_join) = join_partner(&heads1, &heads2, head, tail, |j| {
+            j != l && !out[j].is_empty()
+        }) {
+            // only kept lines are registered, so a partner always has ends
+            let (join_head, join_tail) = ends[to_join].expect("a join partner is a kept line");
+            if tail == join_head {
+                heads1.remove(&tail);
+                heads2.remove(&tail);
+                let mut donor = out[to_join].clone();
+                out[l].append(&mut donor);
+                tail = join_tail;
+                out[to_join].clear();
+            } else if tail == join_tail {
+                heads1.remove(&tail);
+                heads2.remove(&tail);
+                let mut donor = out[to_join].clone();
+                donor.reverse();
+                out[l].append(&mut donor);
+                tail = join_head;
+                out[to_join].clear();
+            } else if head == join_tail {
+                heads1.remove(&head);
+                heads2.remove(&head);
+                let donor = out[to_join].clone();
+                out[l].splice(0..0, donor);
+                head = join_head;
+                out[to_join].clear();
+            } else if head == join_head {
+                heads1.remove(&head);
+                heads2.remove(&head);
+                let mut donor = out[to_join].clone();
+                donor.reverse();
+                out[l].splice(0..0, donor);
+                head = join_tail;
+                out[to_join].clear();
             }
         }
+        ends[l] = Some((head, tail));
     }
 
     out
@@ -776,6 +772,24 @@ mod tests {
         let ring = unit_square_closed();
         assert!(ring.contains(Point2::new(0.5, 0.0)));
         assert!(!ring.contains(Point2::new(1.0, 0.5)));
+    }
+
+    /// The unit square started at (1, 1), so its right edge is the closing edge: the only
+    /// edge the ray from (0.5, 0.5) crosses. The knoll detector's elevation pass once skipped
+    /// the closing edge and called this point outside.
+    #[test]
+    fn ring_contains_counts_the_closing_edge() {
+        let ring = Ring::from_xy(&[1.0, 0.0, 0.0, 1.0, 1.0], &[1.0, 1.0, 0.0, 0.0, 1.0]);
+        assert!(ring.contains(Point2::new(0.5, 0.5)));
+    }
+
+    /// The unit square started at (1, 0), so its right edge is the first edge: the only edge
+    /// the ray from (0.5, 0.5) crosses. The knoll lift once skipped the first edge and called
+    /// this point outside.
+    #[test]
+    fn ring_contains_counts_the_first_edge() {
+        let ring = Ring::from_xy(&[1.0, 1.0, 0.0, 0.0, 1.0], &[0.0, 1.0, 1.0, 0.0, 0.0]);
+        assert!(ring.contains(Point2::new(0.5, 0.5)));
     }
 
     #[test]
@@ -868,11 +882,12 @@ mod tests {
         assert!(join_polylines(&lines, usize::MAX).is_empty());
     }
 
-    /// Pins the legacy sentinel: slot 0 is "no line" in the lookup tables, so line 0's
-    /// registration at K is overwritten by line 1, line 2 lands in the second table, and
-    /// after line 0 absorbs line 1 the key K is retired, leaving line 2 untouched.
+    /// Slot 0 registers like any other: line 0 takes K in the first table, line 1 lands in the
+    /// second and line 2 overwrites it there. At l = 0 the first-table hit is line 0 itself
+    /// (skipped) and the second-table hit is line 2; the heads meet, so line 2 is reversed and
+    /// spliced in front of line 0 and K is retired, leaving line 1 untouched.
     #[test]
-    fn join_polylines_slot_zero_sentinel() {
+    fn join_polylines_slot_zero_is_a_join_partner() {
         let lines = pl(&[
             &[(0.0, 0.0), (-1.0, 0.0)],
             &[(0.0, 0.0), (0.0, 1.0)],
@@ -881,10 +896,10 @@ mod tests {
         let joined = join_polylines(&lines, usize::MAX);
         assert_eq!(
             xy(&joined[0]),
-            vec![(0.0, 1.0), (0.0, 0.0), (0.0, 0.0), (-1.0, 0.0)]
+            vec![(1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (-1.0, 0.0)]
         );
-        assert!(joined[1].is_empty());
-        assert_eq!(xy(&joined[2]), vec![(0.0, 0.0), (1.0, 1.0)]);
+        assert_eq!(xy(&joined[1]), vec![(0.0, 0.0), (0.0, 1.0)]);
+        assert!(joined[2].is_empty());
     }
 
     #[test]

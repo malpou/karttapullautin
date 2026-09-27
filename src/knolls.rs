@@ -13,6 +13,7 @@ use crate::geometry::{
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
+use crate::vec2d::Vec2D;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Dotknolls {
@@ -293,29 +294,11 @@ pub fn knolldetector(
                     ))
                     .copied()
                     .unwrap_or(0.0);
-                // Legacy ray cast kept inline: it skips the closing edge (n < len - 1), so Ring::contains would not be output-identical. See ticket 18.
-                let mut hit = 0;
                 let xtest = ((xa - xstart) / size).floor() * size + xstart + 0.000000001;
                 let ytest = ((ya - ystart) / size).floor() * size + ystart + 0.000000001;
+                let inside = Ring::from_xy(&el_x[l], &el_y[l]).contains(Point2::new(xtest, ytest));
 
-                let mut n = 0;
-                let mut y0 = 0.0;
-                let mut x0 = 0.0;
-                while n < (el_x_len - 1) {
-                    let x1 = el_x[l][n];
-                    let y1 = el_y[l][n];
-                    if n > 0
-                        && ((y0 <= ytest && ytest < y1) || (y1 <= ytest && ytest < y0))
-                        && (xtest < ((x1 - x0) * (ytest - y0) / (y1 - y0) + x0))
-                    {
-                        hit += 1;
-                    }
-                    n += 1;
-                    x0 = x1;
-                    y0 = y1;
-                }
-
-                if (h_center < h) && (hit % 2 == 1) || (h_center > h) && (hit % 2 != 1) {
+                if (h_center < h) && inside || (h_center > h) && !inside {
                     skip = true;
                     el_x[l].clear();
                     el_y[l].clear();
@@ -794,56 +777,18 @@ pub fn xyzknolls(
         let xx = ((xx - xstart) / size).floor();
         let yy = ((yy - ystart) / size).floor();
 
-        let mut x0 = 0.0;
-        let mut y0 = 0.0;
-
-        // Legacy ray cast kept inline: `n > 1` skips the first edge v0->v1, so Ring::contains would not be output-identical. See ticket 18.
+        let ring = Ring::from_xy(&x, &y);
         for ii in minx as usize..(maxx as usize + 1) {
             for jj in miny as usize..(maxy as usize + 1) {
-                let mut hit = 0;
-                let xtest = ii as f64;
-                let ytest = jj as f64;
-                for n in 0..x.len() {
-                    let x1 = x[n];
-                    let y1 = y[n];
-                    if n > 1
-                        && ((y0 <= ytest && ytest < y1) || (y1 <= ytest && ytest < y0))
-                        && xtest < (x1 - x0) * (ytest - y0) / (y1 - y0) + x0
-                    {
-                        hit += 1;
-                    }
-                    x0 = x1;
-                    y0 = y1;
-                }
-                if hit % 2 == 1 {
-                    let tmp = xyz2.grid[(ii, jj)] + move1;
-                    xyz2.grid[(ii, jj)] = tmp;
+                if ring.contains(Point2::new(ii as f64, jj as f64)) {
+                    xyz2.grid[(ii, jj)] += move1;
                     touched.insert((ii, jj));
                 }
             }
         }
         let mut range = *dist.get(&l).unwrap_or(&0.0) * 0.8 - 1.0;
         range = range.clamp(1.0, 12.0);
-
-        for iii in 0..((range * 2.0 + 1.0) as usize) {
-            for jjj in 0..((range * 2.0 + 1.0) as usize) {
-                let ii: f64 = xx - range + iii as f64;
-                let jj: f64 = yy - range + jjj as f64;
-                if ii > 0.0 && ii < xmax as f64 && jj > 0.0 && jj < ymax as f64 {
-                    // The legacy lookup compared `format!("{ii}_{jj}")` strings, which only match
-                    // the integer keys inserted above when ii and jj are whole numbers (range is
-                    // fractional whenever dist * 0.8 - 1.0 is not clamped). Kept so output is identical.
-                    if !(ii.fract() == 0.0
-                        && jj.fract() == 0.0
-                        && touched.contains(&(ii as usize, jj as usize)))
-                    {
-                        xyz2.grid[(ii as usize, jj as usize)] +=
-                            (range - (xx - ii).abs()) / range * (range - (yy - jj).abs()) / range
-                                * move2;
-                    }
-                }
-            }
-        }
+        smooth_around_pin(&mut xyz2.grid, &touched, (xx, yy), range, move2);
     }
 
     // As per https://github.com/karttapullautin/karttapullautin/discussions/154#discussioncomment-11393907
@@ -870,4 +815,52 @@ pub fn xyzknolls(
 
     info!("Done");
     Ok(())
+}
+
+/// Knoll-lift smoothing around one pin: adds `move2` to the (2 * range + 1)² cells centred on
+/// `centre` (cell coordinates), tapering linearly to zero at `range`. Cells the lift already
+/// raised (`touched`) and the grid border are left alone. `range` may be fractional, so the
+/// visited coordinates may be too; each one writes the cell it truncates to.
+fn smooth_around_pin(
+    grid: &mut Vec2D<f64>,
+    touched: &FxHashSet<(usize, usize)>,
+    centre: (f64, f64),
+    range: f64,
+    move2: f64,
+) {
+    let (xx, yy) = centre;
+    let xmax = (grid.width() - 1) as f64;
+    let ymax = (grid.height() - 1) as f64;
+    let steps = (range * 2.0 + 1.0) as usize;
+    for iii in 0..steps {
+        for jjj in 0..steps {
+            let ii = xx - range + iii as f64;
+            let jj = yy - range + jjj as f64;
+            if ii > 0.0 && ii < xmax && jj > 0.0 && jj < ymax {
+                let cell = (ii as usize, jj as usize);
+                if !touched.contains(&cell) {
+                    grid[cell] += (range - (xx - ii).abs()) / range * (range - (yy - jj).abs())
+                        / range
+                        * move2;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Range 1.5 visits x, y in {3.5, 4.5, 5.5, 6.5} around (5, 5): fractional coordinates.
+    /// (5.5, 5.5) truncates to the lifted cell (5, 5), which must be skipped; the neighbour
+    /// (4.5, 5.5) writes (4, 5) with weight (1 / 1.5)².
+    #[test]
+    fn smooth_around_pin_skips_lifted_cell_at_fractional_coordinates() {
+        let mut grid = Vec2D::new(12, 12, 0.0);
+        let touched: FxHashSet<(usize, usize)> = [(5, 5)].into_iter().collect();
+        smooth_around_pin(&mut grid, &touched, (5.0, 5.0), 1.5, 1.0);
+        assert_eq!(grid[(5, 5)], 0.0);
+        assert!((grid[(4, 5)] - 4.0 / 9.0).abs() < 1e-12);
+    }
 }
