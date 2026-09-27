@@ -1,6 +1,8 @@
 on:
   pull_request:
     branches: [ "master" ]
+  push:
+    branches: [ "pr/**" ]
   workflow_dispatch:
 
 name: "E2E"

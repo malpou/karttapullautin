@@ -17,7 +17,9 @@
 # Layout:
 #   <out-dir>/output/single/  the single job's run directory, inputs removed
 #   <out-dir>/output/batch/   the batch job's run directory, inputs removed
-#   <out-dir>/logs/           each job's pullauta.ini and log
+#   <out-dir>/logs/           each job's pullauta.ini and log, and times.txt
+# <out-dir> is replaced; the script refuses one that is or contains the checkout,
+# or an existing non-empty directory without this layout.
 # Compare two runs with `pullauta eval <a>/output <b>/output`; nothing but output
 # is left in output/, so eval needs no --ignore.
 #
@@ -33,6 +35,26 @@ pullauta=$(realpath "$1")
 src=$(realpath "$2")
 out=$3
 data=${REGRESSION_DATA:-$src/target/regression-data}
+
+# refuse to replace anything but an earlier run (or an empty directory)
+if [ -z "$out" ] || [ "$out" = / ] || [ "$out" = . ]; then
+    echo "run.sh: refusing out-dir '$out'" >&2
+    exit 1
+fi
+if [ -e "$out" ]; then
+    abs=$(cd "$out" && pwd -P)
+    prefix=${abs%/}/
+    case "$src/" in
+    "$prefix"*)
+        echo "run.sh: out-dir $out is or contains $src" >&2
+        exit 1
+        ;;
+    esac
+    if [ -n "$(ls -A "$abs")" ] && { [ ! -d "$abs/output" ] || [ ! -d "$abs/logs" ]; }; then
+        echo "run.sh: $out is not empty and holds no earlier run (output/ and logs/)" >&2
+        exit 1
+    fi
+fi
 
 # job settings: key=value, or new|old=value to set whichever name the build's
 # default ini has (for a branch that renames a key; the rebase commit drops old)
@@ -98,7 +120,7 @@ write_ini ${single_settings[@]+"${single_settings[@]}"}
 cp "$data/test_file.laz" .
 SECONDS=0
 run test_file.laz
-echo "single job: ${SECONDS} s"
+echo "single job: ${SECONDS} s" | tee -a "$out/logs/times.txt"
 rm test_file.laz
 mv pullauta.ini "$out/logs/single.ini"
 
@@ -112,6 +134,6 @@ SECONDS=0
 run
 run pngmerge 1
 run pngmergedepr 1
-echo "batch job: ${SECONDS} s"
+echo "batch job: ${SECONDS} s" | tee -a "$out/logs/times.txt"
 rm in/test_file.laz in/test_file.shp.zip osm.txt
 mv pullauta.ini "$out/logs/batch.ini"

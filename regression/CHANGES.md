@@ -34,6 +34,19 @@ or vector feature on the regression tile) lands in two commits:
    reason, the share of changed pixels (single job and batch job) and the
    per-code deltas.
 
+Commit 1 must pass the gate before commit 2 lands, because commit 2 moves the
+baseline past it. A push runs CI only on the branch tip, so:
+
+- run the gate locally on commit 1, with the baseline checkout `<base-src>` at
+  the old `ref`, and require exit status 0:
+
+      regression/run.sh <base-src>/target/release/pullauta <base-src> /tmp/base
+      regression/run.sh target/release/pullauta . /tmp/head
+      target/release/pullauta eval /tmp/base/output /tmp/head/output --format json --expected regression/expected.json
+
+- then push commit 1 alone and wait for a green Regression run on it before
+  committing and pushing commit 2.
+
 A branch that renames or drops a key the jobs set writes the setting as
 `new|old=value` in `run.sh` so the baseline build still gets it, and drops the
 old name when it rebases the baseline.

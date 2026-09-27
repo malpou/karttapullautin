@@ -8,6 +8,9 @@ on:
 
 name: "Regression"
 
+permissions:
+  contents: read
+
 concurrency:
   group: regression-${{ github.ref }}
   cancel-in-progress: true
@@ -24,6 +27,7 @@ jobs:
   regression:
     name: Output against the baseline ref
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
     - name: Checkout branch
@@ -55,7 +59,8 @@ jobs:
       uses: actions/cache@v5
       with:
         path: baseline-bin/pullauta
-        key: regression-baseline-${{ runner.os }}-${{ steps.baseline.outputs.ref }}
+        # the baseline builds with this branch's toolchain (rust-toolchain.toml)
+        key: regression-baseline-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}-${{ steps.baseline.outputs.ref }}
 
     - name: Build baseline
       if: steps.baseline-build.outputs.cache-hit != 'true'
@@ -68,11 +73,13 @@ jobs:
     - name: Build branch
       run: cargo build --release
 
-    - name: Download inputs
-      run: |
-        mkdir regression-data
-        curl -Lf --retry 3 "https://cdn.routechoic.es/test.laz" -o regression-data/test_file.laz
-        curl -Lf --retry 3 "https://cdn.routechoic.es/test-osm.shp.zip" -o regression-data/test_file.shp.zip
+    # run.sh downloads the inputs into REGRESSION_DATA when they are missing
+    - name: Cache inputs
+      uses: actions/cache@v5
+      with:
+        path: regression-data
+        key: regression-data-${{ hashFiles('regression/run.sh') }}
+        restore-keys: regression-data-
 
     # each build runs with its own pullauta.default.ini and osm.txt (run.sh's
     # second argument); both use this branch's run.sh
@@ -83,19 +90,33 @@ jobs:
         regression/run.sh baseline-bin/pullauta baseline runs/base
         regression/run.sh baseline-bin/pullauta baseline runs/base-again
 
+    # this branch's eval compares all runs: the baseline's may predate a feature
+    - name: Check the baseline is deterministic
+      run: |
+        status=0
+        target/release/pullauta eval runs/base/output runs/base-again/output --diff-dir determinism-diffs --fail-on-change > determinism.txt || status=$?
+        # only the first run is compared with the branch; free its disk space
+        rm -rf runs/base-again/output
+        if [ "$status" -ne 0 ]; then
+          echo "::error::Two runs of the baseline build differ, so the comparison cannot be trusted: see determinism.txt"
+          printf "### Two baseline runs differ\n\n\`\`\`\n%s\n\`\`\`\n" "$(head -n 100 determinism.txt)" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+        fi
+
     - name: Run branch
       env:
         REGRESSION_DATA: ${{ github.workspace }}/regression-data
       run: regression/run.sh target/release/pullauta . runs/head
 
-    # this branch's eval compares all runs: the baseline's may predate a feature
-    - name: Check the baseline is deterministic
+    - name: Runtimes
       run: |
-        if ! target/release/pullauta eval runs/base/output runs/base-again/output --fail-on-change > determinism.txt; then
-          echo "::error::Two runs of the baseline build differ, so the comparison cannot be trusted: see determinism.txt"
-          printf "### Two baseline runs differ\n\n\`\`\`\n%s\n\`\`\`\n" "$(head -n 100 determinism.txt)" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-        fi
+        {
+          printf "### Runtimes\n\n| run | job | seconds |\n| --- | --- | --- |\n"
+          for run in base base-again head; do
+            sed -n "s/^\(.*\) job: \([0-9]*\) s$/| $run | \1 | \2 |/p" "runs/$run/logs/times.txt"
+          done
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
 
     - name: Compare branch with baseline
       run: |
@@ -124,9 +145,12 @@ jobs:
           report.json
           determinism.txt
           diffs/
+          determinism-diffs/
           runs/*/logs/
-          runs/*/output/single/pullautus*.png
-          runs/*/output/batch/out/merged*.png
+          runs/base/output/single/pullautus*.png
+          runs/base/output/batch/out/merged*.png
+          runs/head/output/single/pullautus*.png
+          runs/head/output/batch/out/merged*.png
         if-no-files-found: ignore
         overwrite: true # we need subsequent runs to overwrite the result
 

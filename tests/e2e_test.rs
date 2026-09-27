@@ -355,7 +355,7 @@ fn assert_terrain_outputs(tile: &Path) {
     );
 }
 
-/// Single job on the regression tile, as in regression/run.sh with vector_vege=1: the
+/// Single job on the regression tile: run.sh's single job plus vector_vege=1. The
 /// terrain and vegetation tables land in temp/, declaring the tile's CRS, the green
 /// areas without `shade` (vector_shade=0).
 #[test]
