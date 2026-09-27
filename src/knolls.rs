@@ -1,3 +1,4 @@
+use anyhow::Context;
 use image::{GrayImage, Luma};
 use imageproc::drawing::draw_line_segment_mut;
 use log::info;
@@ -149,8 +150,7 @@ pub fn knolldetector(
 
     let contours_ratio = contour_interval / 5.0 * scalefactor;
 
-    let heightmap_in = tmpfolder.join("xyz_03.hmap");
-    let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
+    let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
 
     // in world coordinates
     let xstart = hmap.xoffset;
@@ -162,7 +162,12 @@ pub fn knolldetector(
     let xmax = (hmap.grid.width() - 1) as u64;
     let ymax = (hmap.grid.height() - 1) as u64;
 
-    let data = BinaryDxf::from_reader(&mut fs.open(tmpfolder.join("contours03.dxf.bin"))?)?;
+    let contours_in = tmpfolder.join("contours03.dxf.bin");
+    let data = fs
+        .open(&contours_in)
+        .map_err(anyhow::Error::from)
+        .and_then(|mut f| BinaryDxf::from_reader(&mut f))
+        .with_context(|| format!("reading {}", contours_in.display()))?;
     let Geometry::Polylines3(lines) = data.take_geometry().swap_remove(0) else {
         anyhow::bail!(
             "contours03.dxf.bin holds no 3D contour lines: it is a stale temp file from another build; re-run the full pipeline"
@@ -569,17 +574,26 @@ pub fn knolldetector(
     }
 
     let detected_dxf = BinaryDxf::new(detected_bounds, vec![detected_lines.into()]);
-    detected_dxf.to_writer(&mut fs.create(tmpfolder.join("detected.dxf.bin"))?)?;
+    let detected_out = tmpfolder.join("detected.dxf.bin");
+    fs.create(&detected_out)
+        .map_err(anyhow::Error::from)
+        .and_then(|mut f| detected_dxf.to_writer(&mut f))
+        .with_context(|| format!("writing {}", detected_out.display()))?;
 
     if config.output_dxf {
-        detected_dxf.to_dxf(&mut fs.create(tmpfolder.join("detected.dxf"))?)?;
+        let detected_out = tmpfolder.join("detected.dxf");
+        fs.create(&detected_out)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut f| detected_dxf.to_dxf(&mut f))
+            .with_context(|| format!("writing {}", detected_out.display()))?;
     }
 
     // write pins to file
-    let file_pins = fs
-        .create(tmpfolder.join("pins.bin"))
-        .expect("Unable to create file");
-    crate::util::write_object(file_pins, &pins).expect("Unable to write pins");
+    let pins_out = tmpfolder.join("pins.bin");
+    fs.create(&pins_out)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| crate::util::write_object(f, &pins))
+        .with_context(|| format!("writing {}", pins_out.display()))?;
 
     info!("Done");
     Ok(())
@@ -596,11 +610,7 @@ struct Pin {
     ylist: Vec<f64>,
 }
 
-pub fn xyzknolls(
-    fs: &impl FileSystem,
-    config: &Config,
-    tmpfolder: &Path,
-) -> Result<(), Box<dyn Error>> {
+pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> anyhow::Result<()> {
     info!("Identifying knolls...");
     let scalefactor = config.scalefactor;
     let contour_interval = config.contour_interval;
@@ -608,8 +618,7 @@ pub fn xyzknolls(
     let interval = contour_interval / 2.0 * scalefactor;
 
     // load the binary file
-    let heightmap_in = tmpfolder.join("xyz_03.hmap");
-    let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
+    let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
 
     let xmax = hmap.grid.width() - 1;
     let ymax = hmap.grid.height() - 1;
@@ -650,8 +659,10 @@ pub fn xyzknolls(
     // read pins from file if it exists
     let pins_file_in = tmpfolder.join("pins.bin");
     let pins: Vec<Pin> = if fs.exists(&pins_file_in) {
-        let pins_file_in = fs.open(pins_file_in).expect("Unable to open file");
-        crate::util::read_object(pins_file_in).expect("Unable to write pins")
+        fs.open(&pins_file_in)
+            .map_err(anyhow::Error::from)
+            .and_then(crate::util::read_object)
+            .with_context(|| format!("reading {}", pins_file_in.display()))?
     } else {
         Vec::new()
     };
@@ -771,11 +782,19 @@ pub fn xyzknolls(
 
     // write the updated heightmap
     let heightmap_out = tmpfolder.join("xyz_knolls.hmap");
-    let mut writer = fs.create(heightmap_out)?;
-    xyz2.to_bytes(&mut writer)?;
+    fs.create(&heightmap_out)
+        .and_then(|mut f| xyz2.to_bytes(&mut f))
+        .with_context(|| format!("writing {}", heightmap_out.display()))?;
 
     info!("Done");
     Ok(())
+}
+
+/// Read a heightmap temp file, naming the file in the error.
+fn read_heightmap(fs: &impl FileSystem, path: &Path) -> anyhow::Result<HeightMap> {
+    fs.open(path)
+        .and_then(|mut f| HeightMap::from_bytes(&mut f))
+        .with_context(|| format!("reading {}", path.display()))
 }
 
 /// Knoll-lift smoothing around one pin: adds `move2` to the (2 * range + 1)² cells centred on

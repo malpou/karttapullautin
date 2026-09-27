@@ -49,8 +49,13 @@ fn main() {
 
     let mut thread: String = String::new();
 
-    let mut config =
-        Config::load_or_create_default().expect("Could not open or create config file");
+    let mut config = match Config::load_or_create_default() {
+        Ok(config) => config,
+        Err(e) => {
+            error!("Could not load the config file: {e}");
+            std::process::exit(1);
+        }
+    };
 
     let fs = pullauta::io::fs::local::LocalFileSystem;
 

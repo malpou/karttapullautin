@@ -556,11 +556,22 @@ pub fn process_tile(
         if !skipknolldetection {
             info!("Knoll detection part 2");
             timing.start_section("knoll detection part 2");
-            knolls::knolldetector(fs, config, tmpfolder).unwrap();
+            knolls::knolldetector(fs, config, tmpfolder).map_err(|e| {
+                format!(
+                    "knoll detection (knolldetector) in {}: {e:#}",
+                    tmpfolder.display()
+                )
+            })?;
         }
         info!("Contour generation part 1");
         timing.start_section("contour generation part 1");
-        knolls::xyzknolls(fs, config, tmpfolder).unwrap(); // modifies the heightmap (but does not change dimensions
+        // modifies the heightmap (but does not change dimensions)
+        knolls::xyzknolls(fs, config, tmpfolder).map_err(|e| {
+            format!(
+                "knoll lifting (xyzknolls) in {}: {e:#}",
+                tmpfolder.display()
+            )
+        })?;
 
         info!("Contour generation part 2");
         timing.start_section("contour generation part 2");
@@ -745,7 +756,9 @@ pub fn batch_process(
         }
 
         // Process the tile
-        process_tile(fs, conf, thread, &tmpfolder, &tmp_filename, laz, has_zip).unwrap();
+        if let Err(e) = process_tile(fs, conf, thread, &tmpfolder, &tmp_filename, laz, has_zip) {
+            panic!("processing tile {laz} failed: {e}");
+        }
 
         if has_zip && !vegeonly && !cliffsonly && !contoursonly {
             process_zip(fs, conf, thread, &tmpfolder, &[], true).unwrap();

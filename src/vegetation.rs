@@ -488,22 +488,22 @@ pub fn makevege(
         PaletteColorEnum::BackgroundWhite.to_color(),
     );
     let buildings = config.buildings;
-    let water = config.water;
-    if buildings > 0 || water > 0 {
+    let water = config.water_blue.then_some(config.water_class);
+    if buildings > 0 || water.is_some() {
         let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?)?;
         while let Some(chunk) = reader.next_chunk()? {
             for r in chunk {
                 let (x, y) = (r.x, r.y);
                 let c: u8 = r.classification;
 
-                if c == buildings {
+                if buildings > 0 && c == buildings {
                     draw_filled_rect_mut(
                         &mut imgwater,
                         Rect::at((x - xmin) as i32 - 1, (ymax - y) as i32 - 1).of_size(3, 3),
                         PaletteColorEnum::Black.to_color(),
                     );
                 }
-                if c == water {
+                if Some(c) == water {
                     draw_filled_rect_mut(
                         &mut imgwater,
                         Rect::at((x - xmin) as i32 - 1, (ymax - y) as i32 - 1).of_size(3, 3),

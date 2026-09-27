@@ -1,6 +1,7 @@
-use std::{path::Path, str::FromStr};
+use std::{cell::RefCell, collections::BTreeSet, path::Path, str::FromStr};
 
 use ini::Ini;
+use log::warn;
 
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 
@@ -43,7 +44,6 @@ pub struct Config {
     pub thinfactor: f64,
 
     pub skipknolldetection: bool,
-    pub vegemode: bool,
 
     pub xfactor: f64,
     pub yfactor: f64,
@@ -54,7 +54,11 @@ pub struct Config {
 
     pub detectbuildings: bool,
 
+    /// LAS class of water returns (`waterclass`, default 9, ASPRS water): contours, the
+    /// ground model and the blocks treat returns of this class as water.
     pub water_class: u8,
+    /// Draw the `water_class` returns blue in the vegetation map (`water_blue`, default off).
+    pub water_blue: bool,
 
     // merge
     pub inidotknolls: f64,
@@ -98,7 +102,6 @@ pub struct Config {
     pub med: u32,
     pub med2: u32,
     pub medyellow: u32,
-    pub water: u8,
     pub buildings: u8,
     pub waterele: f64,
 
@@ -160,8 +163,16 @@ impl Config {
 
     fn from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let conf = Ini::load_from_file(path)?;
+        if let Some(name) = conf.sections().flatten().next() {
+            return Err(format!(
+                "{}: section [{name}] is not read; the config file has no sections, put \
+                 every key above the first [section] line",
+                path.display()
+            )
+            .into());
+        }
 
-        let gs = conf.general_section();
+        let gs = &Keys::new(conf.general_section());
 
         // only one can be set at a time
         let vegeonly: bool = gs.get("vegeonly").unwrap_or("0") == "1";
@@ -181,7 +192,7 @@ impl Config {
             );
         }
 
-        fn parse_typed<T: FromStr>(props: &ini::Properties, name: &str, default: T) -> T {
+        fn parse_typed<T: FromStr>(props: &Keys, name: &str, default: T) -> T {
             props
                 .get(name)
                 .and_then(|s| s.parse::<T>().ok())
@@ -194,14 +205,23 @@ impl Config {
         let pnorthlinesangle: f64 = parse_typed(gs, "northlinesangle", 0.0);
         let pnorthlineswidth: usize = parse_typed(gs, "northlineswidth", 0);
 
-        let processes: u64 = gs.get("processes").unwrap().parse::<u64>().unwrap();
+        let processes: u64 = match gs.get("processes") {
+            None => {
+                return Err(
+                    "Key `processes` is missing: the number of tiles processed at once".into(),
+                );
+            }
+            Some(v) => v.parse().map_err(|_| {
+                format!("Value {v} of `processes` must be a whole number, 0 or more")
+            })?,
+        };
         let experimental_use_in_memory_fs: bool =
             gs.get("experimental_use_in_memory_fs").unwrap_or("0") == "1";
 
         let lazfolder = gs.get("lazfolder").unwrap_or("").to_string();
         let batchoutfolder = gs.get("batchoutfolder").unwrap_or("").to_string();
-        let savetempfiles: bool = gs.get("savetempfiles").unwrap() == "1";
-        let savetempfolders: bool = gs.get("savetempfolders").unwrap() == "1";
+        let savetempfiles = flag(gs, "savetempfiles", None)?;
+        let savetempfolders = flag(gs, "savetempfolders", None)?;
         let batchbuffer: f64 = match gs.get("batchbuffer") {
             None => 127.0,
             Some(v) => match v.trim().parse::<f64>() {
@@ -214,11 +234,7 @@ impl Config {
                 }
             },
         };
-        let batchmerge = match gs.get("batchmerge").unwrap_or("0") {
-            "0" => false,
-            "1" => true,
-            v => return Err(format!("Value {v} of `batchmerge` must be 0 or 1").into()),
-        };
+        let batchmerge = flag(gs, "batchmerge", Some(false))?;
 
         let scalefactor: f64 = parse_typed(gs, "scalefactor", 1.0);
         let vege_bitmode: bool = gs.get("vege_bitmode").unwrap_or("0") == "1";
@@ -235,12 +251,6 @@ impl Config {
         }
 
         let skipknolldetection = gs.get("skipknolldetection").unwrap_or("0") == "1";
-        let vegemode: bool = gs.get("vegemode").unwrap_or("0") == "1";
-        if vegemode {
-            return Err("vegemode=1 not implemented, use perl version"
-                .to_string()
-                .into());
-        }
 
         let mut xfactor: f64 = parse_typed(gs, "coordxfactor", 1.0);
         let mut yfactor: f64 = parse_typed(gs, "coordyfactor", 1.0);
@@ -255,13 +265,25 @@ impl Config {
             zfactor = 1.0;
         }
 
-        let contour_interval: f64 = parse_typed(gs, "contour_interval", 5.0);
+        let contour_interval = match gs.get("contour_interval") {
+            None => 5.0,
+            Some(v) => parse_contour_interval(v)?,
+        };
+        if let Some(warning) = contour_interval_warning(contour_interval) {
+            warn!("{warning}");
+        }
 
         let basemapcontours: f64 = parse_typed(gs, "basemapinterval", 0.0);
 
         let detectbuildings: bool = gs.get("detectbuildings").unwrap_or("0") == "1";
 
-        let water_class = parse_typed(gs, "waterclass", 9);
+        let water_class: u8 = match gs.get("waterclass") {
+            None => 9,
+            Some(v) => v
+                .parse()
+                .map_err(|_| format!("Value {v} of `waterclass` must be a LAS class, 0 to 255"))?,
+        };
+        let water_blue = flag(gs, "water_blue", Some(false))?;
 
         let inidotknolls: f64 = parse_typed(gs, "knolls", 0.8);
         let smoothing: f64 = parse_typed(gs, "smoothing", 1.0);
@@ -295,13 +317,12 @@ impl Config {
                 break;
             }
 
-            let mut parts = zone.split('|');
-
+            let [low, high, roof, factor] = parse_numbers(&format!("zone{i}"), zone)?;
             zones.push(Zone {
-                low: parts.next().unwrap().parse::<f64>().unwrap(),
-                high: parts.next().unwrap().parse::<f64>().unwrap(),
-                roof: parts.next().unwrap().parse::<f64>().unwrap(),
-                factor: parts.next().unwrap().parse::<f64>().unwrap(),
+                low,
+                high,
+                roof,
+                factor,
             });
             i += 1;
         }
@@ -313,12 +334,7 @@ impl Config {
                 if last_threshold.is_empty() {
                     break;
                 }
-                // parse the threshold values
-                let mut parts = last_threshold.split('|');
-                let v0: f64 = parts.next().unwrap().parse::<f64>().unwrap();
-                let v1: f64 = parts.next().unwrap().parse::<f64>().unwrap();
-                let v2: f64 = parts.next().unwrap().parse::<f64>().unwrap();
-
+                let [v0, v1, v2] = parse_numbers(&format!("thresold{i}"), last_threshold)?;
                 thresholds.push((v0, v1, v2));
                 i += 1;
             }
@@ -329,8 +345,12 @@ impl Config {
             .get("greenshades")
             .unwrap_or("")
             .split('|')
-            .map(|v| v.parse::<f64>().unwrap())
-            .collect::<Vec<f64>>();
+            .map(|v| {
+                v.trim().parse::<f64>().map_err(|_| {
+                    format!("`greenshades` entry `{v}` must be a number (pipe-separated list)")
+                })
+            })
+            .collect::<Result<Vec<f64>, String>>()?;
         let yellowheight: f64 = parse_typed(gs, "yellowheight", 0.9);
         let yellowthreshold: f64 = parse_typed(gs, "yellowthresold", 0.9);
         let greenground: f64 = parse_typed(gs, "greenground", 0.9);
@@ -355,20 +375,15 @@ impl Config {
         let med: u32 = parse_typed(gs, "medianboxsize", 0);
         let med2: u32 = parse_typed(gs, "medianboxsize2", 0);
         let medyellow: u32 = parse_typed(gs, "yellowmedianboxsize", 0);
-        let water = parse_typed(gs, "waterclass", 0);
         let buildings = parse_typed(gs, "buildingsclass", 0);
         let waterele = parse_typed(gs, "waterelevation", -999999.0);
 
         // vector export
-        let vector_vege = match gs.get("vector_vege").unwrap_or("0") {
-            "0" => false,
-            "1" => true,
-            v => return Err(format!("Value {v} of `vector_vege` must be 0 or 1").into()),
-        };
+        let vector_vege = flag(gs, "vector_vege", Some(false))?;
+        let greenshade_isom = gs.get("vector_greenshade_isom");
         let vector_greenshade_isom = if vector_vege {
             parse_greenshade_isom(
-                gs.get("vector_greenshade_isom")
-                    .unwrap_or("406.000|406.000|408.000|408.000|410.000"),
+                greenshade_isom.unwrap_or("406.000|406.000|408.000|408.000|410.000"),
             )?
         } else {
             Vec::new()
@@ -446,7 +461,7 @@ impl Config {
         };
         let decorate_depressions = gs.get("decorate_depressions").unwrap_or("0") == "1";
 
-        let batch = gs.get("batch").unwrap() == "1";
+        let batch = flag(gs, "batch", None)?;
         if batch && processes == 0 {
             return Err(
                 "Value of `processes` cannot be zero if parameter `batch` is 1"
@@ -457,6 +472,7 @@ impl Config {
         if batchmerge && !batch {
             return Err("Parameter `batchmerge` is 1 but `batch` is not".into());
         }
+        gs.reject_unknown(path)?;
         Ok(Self {
             batch,
             processes,
@@ -479,7 +495,6 @@ impl Config {
             zoff,
             thinfactor,
             skipknolldetection,
-            vegemode,
             xfactor,
             yfactor,
             zfactor,
@@ -487,6 +502,7 @@ impl Config {
             basemapcontours,
             detectbuildings,
             water_class,
+            water_blue,
             inidotknolls,
             smoothing,
             curviness,
@@ -524,7 +540,6 @@ impl Config {
             med,
             med2,
             medyellow,
-            water,
             buildings,
             waterele,
             vector_vege,
@@ -547,6 +562,140 @@ impl Config {
             decorate_depressions,
         })
     }
+}
+
+/// The general section of the config file, recording every key the parser asks for: a
+/// key in the file that was never asked for is unknown ([`Keys::reject_unknown`]).
+struct Keys<'a> {
+    props: &'a ini::Properties,
+    asked: RefCell<BTreeSet<String>>,
+}
+
+impl<'a> Keys<'a> {
+    fn new(props: &'a ini::Properties) -> Self {
+        Self {
+            props,
+            asked: RefCell::default(),
+        }
+    }
+
+    fn get(&self, key: impl AsRef<str>) -> Option<&'a str> {
+        let key = key.as_ref();
+        self.asked.borrow_mut().insert(key.to_string());
+        self.props.get(key)
+    }
+
+    /// An error naming every key in the file the parser never asked for, each with the
+    /// nearest known key when one is a typo away.
+    fn reject_unknown(&self, path: &Path) -> Result<(), String> {
+        let asked = self.asked.borrow();
+        let unknown: BTreeSet<&str> = self
+            .props
+            .iter()
+            .map(|(key, _)| key)
+            .filter(|key| !asked.contains(*key))
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        let described: Vec<String> = unknown
+            .iter()
+            .map(|key| {
+                if let Some((_, why)) = REMOVED_KEYS.iter().find(|(removed, _)| removed == key) {
+                    return format!("`{key}` (removed: {why})");
+                }
+                let nearest = asked
+                    .iter()
+                    .map(|known| (edit_distance(key, known), known))
+                    .min();
+                match nearest {
+                    Some((d, known)) if d <= 2 => format!("`{key}` (did you mean `{known}`?)"),
+                    _ => format!("`{key}`"),
+                }
+            })
+            .collect();
+        Err(format!(
+            "{}: unknown key{} {}",
+            path.display(),
+            if unknown.len() == 1 { "" } else { "s" },
+            described.join(", ")
+        ))
+    }
+}
+
+/// Keys earlier versions read, with what to do instead: reported as removed rather than
+/// unknown.
+const REMOVED_KEYS: [(&str, &str); 4] = [
+    ("groundboxsize", "it was never read; delete it"),
+    ("vegemode", "only vegemode=0 was supported; delete it"),
+    ("draw_slopelines", "renamed to decorate_depressions"),
+    (
+        "parallell_laz_decompression",
+        "renamed to parallel_laz_decompression",
+    ),
+];
+
+/// Parse a pipe-separated `key` value of exactly `N` numbers, such as `zone1=1.0|2.65|99|1`.
+fn parse_numbers<const N: usize>(key: &str, value: &str) -> Result<[f64; N], String> {
+    let numbers: Vec<f64> = value
+        .split('|')
+        .map(|v| v.trim().parse::<f64>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| format!("Value {value} of `{key}` must be {N} pipe-separated numbers"))?;
+    numbers
+        .try_into()
+        .map_err(|_| format!("Value {value} of `{key}` must be {N} pipe-separated numbers"))
+}
+
+/// Levenshtein distance between two keys.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (diagonal + usize::from(ca != cb))
+                .min(row[j] + 1)
+                .min(above + 1);
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// A `0|1` flag: `default` when the key is missing; an error when it is missing without
+/// a default, or has any other value.
+fn flag(gs: &Keys, name: &str, default: Option<bool>) -> Result<bool, String> {
+    match (gs.get(name), default) {
+        (Some("0"), _) => Ok(false),
+        (Some("1"), _) => Ok(true),
+        (None, Some(default)) => Ok(default),
+        (None, None) => Err(format!("Key `{name}` is missing: set it to 0 or 1")),
+        (Some(v), _) => Err(format!("Value {v} of `{name}` must be 0 or 1")),
+    }
+}
+
+/// The contour intervals ISOM 2017-2 allows, in metres.
+const ISOM_CONTOUR_INTERVALS: [f64; 2] = [2.5, 5.0];
+
+/// Parse `contour_interval`: a finite number of metres above 0.
+fn parse_contour_interval(v: &str) -> Result<f64, String> {
+    match v.trim().parse::<f64>() {
+        Ok(interval) if interval.is_finite() && interval > 0.0 => Ok(interval),
+        _ => Err(format!(
+            "Value {v} of `contour_interval` must be a number of metres above 0"
+        )),
+    }
+}
+
+/// The warning for a contour interval ISOM 2017-2 does not allow; any positive interval
+/// is still used (sprint maps use 2-2.5 m).
+fn contour_interval_warning(interval: f64) -> Option<String> {
+    (!ISOM_CONTOUR_INTERVALS.contains(&interval)).then(|| {
+        format!("contour_interval={interval} is not an ISOM 2017-2 contour interval (2.5 or 5 m)")
+    })
 }
 
 /// Parse `vector_greenshade_isom`: pipe-separated vegetation symbol codes, at least one,
@@ -593,15 +742,157 @@ mod test {
                 .unwrap_or_else(|| panic!("{key} is not in pullauta.default.ini"));
             *line = format!("{key}={value}");
         }
+        load_text(&lines.join("\n"))
+    }
+
+    /// Write `text` to a temp file and load it.
+    fn load_text(text: &str) -> Result<Config, String> {
         // tests run in parallel: a unique file per call
         static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path =
             std::env::temp_dir().join(format!("pullauta-config-{}-{call}.ini", std::process::id()));
-        std::fs::write(&path, lines.join("\n")).unwrap();
+        std::fs::write(&path, text).unwrap();
         let config = Config::from_file(&path).map_err(|e| e.to_string());
         std::fs::remove_file(&path).unwrap();
         config
+    }
+
+    /// The default template with `lines` appended.
+    fn load_appended(lines: &str) -> Result<Config, String> {
+        let template = std::fs::read_to_string("pullauta.default.ini").unwrap();
+        load_text(&format!("{template}\n{lines}\n"))
+    }
+
+    /// The default template without the `key=` line.
+    fn load_without(key: &str) -> Result<Config, String> {
+        let template = std::fs::read_to_string("pullauta.default.ini").unwrap();
+        let prefix = format!("{key}=");
+        let lines: Vec<&str> = template.lines().collect();
+        assert!(lines.iter().any(|l| l.starts_with(&prefix)), "{key}");
+        let kept: Vec<&str> = lines
+            .into_iter()
+            .filter(|l| !l.starts_with(&prefix))
+            .collect();
+        load_text(&kept.join("\n"))
+    }
+
+    #[test]
+    fn unknown_keys_are_rejected_with_the_nearest_known_key() {
+        let err = load_appended("vectorvege=1\nfrobnicate=2").err().unwrap();
+        assert!(err.contains("unknown keys"), "{err}");
+        assert!(
+            err.contains("`vectorvege` (did you mean `vector_vege`?)"),
+            "{err}"
+        );
+        assert!(err.contains("`frobnicate`"), "{err}");
+        assert!(!err.contains("`frobnicate` (did you mean"), "{err}");
+    }
+
+    #[test]
+    fn deleted_keys_are_unknown() {
+        for key in [
+            "groundboxsize",
+            "vegemode",
+            "draw_slopelines",
+            "parallell_laz_decompression",
+        ] {
+            let err = load_appended(&format!("{key}=1")).err().unwrap();
+            assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
+        }
+    }
+
+    #[test]
+    fn sections_are_rejected() {
+        let err = load_appended("[extra]\nprocesses=4").err().unwrap();
+        assert!(err.contains("[extra]"), "{err}");
+    }
+
+    #[test]
+    fn required_keys_error_when_missing_or_malformed() {
+        for key in ["processes", "savetempfiles", "savetempfolders", "batch"] {
+            let err = load_without(key).err().unwrap();
+            assert!(err.contains(&format!("`{key}` is missing")), "{err}");
+            let err = load_with(&[(key, "yes")]).err().unwrap();
+            assert!(err.contains(&format!("`{key}`")), "{err}");
+        }
+        assert_eq!(load_with(&[("processes", "7")]).unwrap().processes, 7);
+    }
+
+    #[test]
+    fn waterclass_is_one_class_and_water_blue_draws_it() {
+        let cases = [
+            (&[][..], 9, false),
+            (&[("waterclass", "9")][..], 9, false),
+            (&[("water_blue", "1")][..], 9, true),
+            (&[("waterclass", "7")][..], 7, false),
+            (&[("waterclass", "7"), ("water_blue", "1")][..], 7, true),
+        ];
+        for (settings, class, blue) in cases {
+            let config = load_with(settings).unwrap();
+            assert_eq!(
+                (config.water_class, config.water_blue),
+                (class, blue),
+                "{settings:?}"
+            );
+        }
+        for bad in ["yes", "2", ""] {
+            let err = load_with(&[("water_blue", bad)]).err().unwrap();
+            assert!(err.contains("water_blue"), "{bad}: {err}");
+        }
+        for bad in ["water", "256", "-1", ""] {
+            let err = load_with(&[("waterclass", bad)]).err().unwrap();
+            assert!(err.contains("waterclass"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn malformed_vegetation_lists_error_naming_the_key() {
+        let config = load_with(&[("zone1", "1|2|99|1")]).unwrap();
+        assert_eq!(config.zones[0].high, 2.0);
+        for (key, bad) in [
+            ("zone1", "1|2"),
+            ("zone2", "1|2|x|1"),
+            ("zone3", "1|2|3|4|5"),
+            ("thresold1", "0.2|3"),
+            ("thresold2", "a|b|c"),
+            ("greenshades", "0.2|x|0.5"),
+        ] {
+            let err = load_with(&[(key, bad)]).err().unwrap();
+            assert!(err.contains(&format!("`{key}`")), "{key}={bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn contour_interval_is_a_positive_number() {
+        for (value, interval) in [("5", 5.0), ("2.5", 2.5), ("2", 2.0), ("10", 10.0)] {
+            let config = load_with(&[("contour_interval", value)]).unwrap();
+            assert_eq!(config.contour_interval, interval);
+        }
+        for bad in ["0", "-5", "NaN", "inf", "five", ""] {
+            let err = load_with(&[("contour_interval", bad)]).err().unwrap();
+            assert!(err.contains("contour_interval"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn contour_interval_warns_outside_isom() {
+        use super::contour_interval_warning;
+        assert_eq!(contour_interval_warning(5.0), None);
+        assert_eq!(contour_interval_warning(2.5), None);
+        for interval in [2.0, 1.25, 10.0] {
+            let warning = contour_interval_warning(interval).unwrap();
+            assert!(warning.contains("contour_interval"), "{warning}");
+        }
+    }
+
+    #[test]
+    fn edit_distance_counts_single_character_edits() {
+        use super::edit_distance;
+        assert_eq!(edit_distance("vectorvege", "vector_vege"), 1);
+        assert_eq!(edit_distance("zone1", "zone1"), 0);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("", "abc"), 3);
     }
 
     fn load_with_vectorconf(vectorconf: &str) -> Result<Config, String> {
