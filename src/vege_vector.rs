@@ -56,7 +56,7 @@ fn draw_order(symbol: Symbol) -> usize {
 #[derive(Debug, PartialEq)]
 struct VegPolygon {
     /// The grid value of the component (for the green grid: the greenshade index).
-    class: u8,
+    value: u8,
     symbol: Symbol,
     /// First = exterior CCW, rest = holes CW. Open (first point not repeated).
     rings: Vec<Vec<Point2>>,
@@ -325,7 +325,7 @@ fn grid_to_polygons(
         let mut rings = vec![it.next().unwrap()];
         rings.extend(holes);
         polygons.push(VegPolygon {
-            class,
+            value: class,
             symbol,
             rings,
         });
@@ -333,7 +333,7 @@ fn grid_to_polygons(
             // pinch fragments below the ISOM minimum are dropped, not emitted
             if signed_area(&extra) >= min_area_m2(symbol) {
                 polygons.push(VegPolygon {
-                    class,
+                    value: class,
                     symbol,
                     rings: vec![extra],
                 });
@@ -507,7 +507,7 @@ fn write_geojson_file(
         .iter()
         .map(|p| {
             let shade = shade.then(|| {
-                NonZeroU64::new(p.class.into()).expect("traced components are never background")
+                NonZeroU64::new(p.value.into()).expect("traced components are never background")
             });
             geojson::vegetation_area(p.symbol, shade, &p.rings)
         })
@@ -865,8 +865,8 @@ mod tests {
                 panic!("not vegetation properties: {:?}", feature.properties);
             };
             let shade = props.shade.expect("every green area has a shade").get();
-            assert_eq!(shade, u64::from(p.class));
-            assert_eq!(props.symbol, speckle_code(p.class), "shade {shade}");
+            assert_eq!(shade, u64::from(p.value));
+            assert_eq!(props.symbol, speckle_code(p.value), "shade {shade}");
             // an integer in the JSON, not a string or a float
             assert!(value["features"][i]["properties"]["shade"].is_u64());
             shades.insert(shade);
