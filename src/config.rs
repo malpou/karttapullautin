@@ -111,7 +111,7 @@ pub struct Config {
     pub vector_greenshade_isom: Vec<VegetationPropertiesSymbol>,
     /// Douglas-Peucker tolerance in metres for vegetation areas; 0 disables simplification.
     pub vector_simplify: f64,
-    /// Give each green vegetation area its raw greenshade index as a `shade` property.
+    /// Give each green vegetation area its greenshade index as a `shade` property.
     pub vector_shade: bool,
     /// EPSG code of the input data's projected CRS, declared in every GeoJSON output.
     /// None (key empty or missing) leaves the declaration out.

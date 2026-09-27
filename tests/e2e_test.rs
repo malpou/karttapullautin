@@ -354,9 +354,9 @@ fn batch_with_osm_vectorconf() {
         "{green:?}"
     );
     assert!(green.contains("406"), "{green:?}");
-    let open_land = assert_vegetation_features(&tile.join(geojson::OPEN_LAND.file_name()), true);
+    let open_land = assert_vegetation_features(&tile.join(geojson::OPEN_LAND.file_name()), false);
     assert_eq!(open_land, ["403".to_string()].into());
-    let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()), true);
+    let ug = assert_vegetation_features(&tile.join(geojson::UNDERGROWTH.file_name()), false);
     assert_eq!(ug, ["407".to_string()].into());
 
     // the same areas as closed DXF polylines, one DXF layer per symbol code
