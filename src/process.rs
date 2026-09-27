@@ -33,6 +33,7 @@ use crate::render;
 use crate::util::Consumer;
 use crate::util::Timing;
 use crate::util::read_lines_no_alloc;
+use crate::util::seeded_rng;
 use crate::vegetation;
 
 // compute the number of elements we can buffer for 50MB of memory usage during LAZ -> XyzRecord conversion
@@ -129,7 +130,6 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
         zoff, thinfactor, ..
     } = &*config;
 
-    let mut rng = rand::rng();
     let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
 
     while let Some(ops) = planner.next_operation() {
@@ -148,6 +148,27 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
 
                     let mut pd = PointDataBuilder::new().for_header(reader.header()).build();
 
+                    // one generator per target tile, seeded from the tile names: a tile's own
+                    // points are thinned as in a single job, and the thinning of a tile does
+                    // not depend on the order of the operations
+                    let tile = |i| {
+                        plan.get_input_file(i)
+                            .path
+                            .file_stem()
+                            .unwrap()
+                            .to_string_lossy()
+                    };
+                    let mut rngs: Vec<_> = to
+                        .iter()
+                        .map(|&to_i| {
+                            if to_i == from {
+                                seeded_rng(&tile(to_i))
+                            } else {
+                                seeded_rng(&format!("{}<{}", tile(to_i), tile(from)))
+                            }
+                        })
+                        .collect();
+
                     loop {
                         let n = reader
                             .fill_points(LAZ_BUFFER_SIZE as u64, &mut pd)
@@ -158,7 +179,7 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
 
                         // for each dependency, we need to check all points against their boundary
                         // to know if they should be included in the output.
-                        for &to_i in &to {
+                        for (&to_i, rng) in to.iter().zip(&mut rngs) {
                             let to_file = plan.get_input_file(to_i);
                             let padded_bounds = to_file.header.bounds.expand(config.batchbuffer);
 
@@ -306,6 +327,7 @@ pub fn process_tile(
     thread: &String,
     tmpfolder: &Path,
     input_file: &Path,
+    tile: &str,
     skip_rendering: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut timing = Timing::start_now("process_tile");
@@ -378,7 +400,7 @@ pub fn process_tile(
             info!("Using thinning factor {thinfactor}");
         }
 
-        let mut rng = rand::rng();
+        let mut rng = seeded_rng(tile);
         let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
 
         let options = las::ReaderOptions::default().with_laz_parallelism(if config.laz_parallel {
@@ -571,7 +593,7 @@ pub fn process_tile(
     if !vegeonly && !contoursonly {
         info!("Cliff generation");
         timing.start_section("cliff generation");
-        cliffs::makecliffs(fs, config, tmpfolder).unwrap();
+        cliffs::makecliffs(fs, config, tmpfolder, tile).unwrap();
 
         if config.vector_vege {
             geojson::bindxf_to_geojson(
@@ -689,7 +711,7 @@ pub fn batch_process(
         }
 
         // Process the tile
-        process_tile(fs, conf, thread, &tmpfolder, &tmp_filename, has_zip).unwrap();
+        process_tile(fs, conf, thread, &tmpfolder, &tmp_filename, laz, has_zip).unwrap();
 
         if has_zip && !vegeonly && !cliffsonly && !contoursonly {
             process_zip(fs, conf, thread, &tmpfolder, &[], true).unwrap();

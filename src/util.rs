@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Context;
 use log::debug;
+use rand::{SeedableRng, rngs::Xoshiro256PlusPlus};
 
 use crate::io::fs::FileSystem;
 
@@ -155,6 +156,17 @@ pub fn write_object<W: std::io::Write, O: serde::Serialize>(
     Ok(())
 }
 
+/// A random number generator seeded from `key` (a tile name), so that thinning
+/// (`thinfactor`, `cliffthin`) picks the same points on every run. The seed is the 64-bit
+/// FNV-1a hash of `key`: std's hashers are not stable across Rust versions. The generator
+/// is named, not `SmallRng`, whose algorithm differs by platform and rand version.
+pub fn seeded_rng(key: &str) -> Xoshiro256PlusPlus {
+    let hash = key.bytes().fold(0xcbf29ce484222325_u64, |h, b| {
+        (h ^ b as u64).wrapping_mul(0x100000001b3)
+    });
+    Xoshiro256PlusPlus::seed_from_u64(hash)
+}
+
 /// A bounded Single-Producer-Multiple-Consumer queue.
 ///
 /// [`Producer::push`] blocks when the queue contains `capacity` items, resuming once a consumer
@@ -245,6 +257,17 @@ impl<T> Consumer<T> {
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn seeded_rng_is_stable_per_key() {
+        use rand::Rng;
+        let draw = |key| {
+            let mut rng = seeded_rng(key);
+            (0..8).map(|_| rng.next_u64()).collect::<Vec<_>>()
+        };
+        assert_eq!(draw("tile_a"), draw("tile_a"));
+        assert_ne!(draw("tile_a"), draw("tile_b"));
+    }
 
     #[test]
     fn test_queue() {

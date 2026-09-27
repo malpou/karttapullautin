@@ -202,7 +202,8 @@ fn main() {
     }
 
     if command == "makecliffs" {
-        pullauta::cliffs::makecliffs(&fs, &config, &tmpfolder).unwrap();
+        // no tile name here: the `cliffthin` seed is the empty name
+        pullauta::cliffs::makecliffs(&fs, &config, &tmpfolder, "").unwrap();
         return;
     }
 
@@ -440,6 +441,8 @@ fn main() {
         if args.len() > 1 {
             norender = args[1].clone() == "norender";
         }
+        // the tile name seeds the thinning, also when the in-memory fs renames the input
+        let tile = Path::new(&command).file_stem().unwrap().to_string_lossy();
 
         if config.experimental_use_in_memory_fs {
             let fs = pullauta::io::fs::memory::MemoryFileSystem::new();
@@ -457,6 +460,7 @@ fn main() {
                 &thread,
                 &tmpfolder,
                 Path::new("input.laz"),
+                &tile,
                 norender,
             )
             .unwrap();
@@ -478,6 +482,7 @@ fn main() {
                 &thread,
                 &tmpfolder,
                 Path::new(&command),
+                &tile,
                 norender,
             )
             .unwrap();
