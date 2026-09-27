@@ -1,5 +1,5 @@
 # The commit whose output CI compares this branch's output with
 # (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
 # How to move it: CHANGES.md.
-ref = "6c18c2d3114d1133719c18d18d6c5204367eac29"
-note = "pr/contour-level commit 1: contour files carry the traced level (contour temp files only, 0 px)"
+ref = "2daa479c2fd6556bc3374414af4179c00f4366ee"
+note = "pr/contour-kind commit 1: ContourKind, contour GeoJSON level_m, .dxf.bin version 2 (0 px)"

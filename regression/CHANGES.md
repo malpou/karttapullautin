@@ -164,3 +164,33 @@ Baseline moves to 6c18c2d.
   test (non-binary cell sizes) used to get level NaN in smoothjoin (never
   a depression, NaN height in `out2`) or 0 in knolldetector (its
   knoll/depression test against 0 m); it now gets its traced level.
+
+### 2026-09-27: pr/contour-kind
+
+`Classification::Contour(ContourKind)` replaces the eight contour and
+depression variants; `ContourKind` holds the index, half-interval and
+depression flags, set by the arithmetic smoothjoin used, and gives the
+symbol code (101/102/103). The contours GeoJSON property `elevation`
+becomes `level_m` (the glossary's Level). The `.dxf.bin` classification
+encoding changed, so the format moves to version 2 and older files are
+rejected as stale. Baseline moves to 2daa479.
+
+- Pixels: 0 changed in the single job and the batch job.
+- Per-code metrics: identical for every code in every GeoJSON (geometry
+  precision/recall 1.0000, counts and lengths unchanged); the kind
+  mapping kept every feature's code.
+- GeoJSON: in the batch job's `contours.geojson` (`temp1/`,
+  `temp_test_file_dir/`) and `out/test_file_contours.geojson`,
+  `merged_contours.geojson` (979 features each) and `out/contours.geojson`
+  (1 071), every 101/102 feature's `elevation` is now `level_m` with the
+  same value; eval counts these as unmatched properties. The files are
+  identical once the key is renamed (keys are written in name order, so
+  `level_m` moves after `isom_code`). 103 features carry no level, as
+  before. The single job writes no GeoJSON.
+- `.dxf.bin`, every file in `single/temp/`, `batch/temp1/` and
+  `batch/temp_test_file_dir/` (`c2g`, `c3g`, `contours03`, `detected`,
+  `dotknolls`, `formlines`, `out`, `out2`, and `vegetation` in the batch
+  folders): the version string `1` -> `2` and the renumbered
+  classification variant indices, same size, except `out2.dxf.bin`
+  5 053 274 -> 5 055 215 bytes, one kind byte per smoothed contour line.
+- DXF text output (layers are symbol codes) is identical.
