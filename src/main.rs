@@ -212,7 +212,7 @@ fn main() {
     }
 
     if command == "dotknolls" {
-        pullauta::knolls::dotknolls(&fs, &config, &tmpfolder).unwrap();
+        pullauta::knolls::dotknolls(&fs, &config.knoll, config.output_dxf, &tmpfolder).unwrap();
         return;
     }
 
@@ -232,7 +232,7 @@ fn main() {
     }
 
     if command == "knolldetector" {
-        pullauta::knolls::knolldetector(&fs, &config, &tmpfolder).unwrap();
+        pullauta::knolls::knolldetector(&fs, &config.knoll, config.output_dxf, &tmpfolder).unwrap();
         return;
     }
 
@@ -339,7 +339,7 @@ fn main() {
     }
 
     if command == "xyzknolls" {
-        pullauta::knolls::xyzknolls(&fs, &config, &tmpfolder).unwrap();
+        pullauta::knolls::xyzknolls(&fs, &config.knoll, &tmpfolder).unwrap();
     }
 
     #[cfg(feature = "shapefile")]

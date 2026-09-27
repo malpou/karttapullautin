@@ -556,17 +556,19 @@ pub fn process_tile(
         if !skipknolldetection {
             info!("Knoll detection part 2");
             timing.start_section("knoll detection part 2");
-            knolls::knolldetector(fs, config, tmpfolder).map_err(|e| {
-                format!(
-                    "knoll detection (knolldetector) in {}: {e:#}",
-                    tmpfolder.display()
-                )
-            })?;
+            knolls::knolldetector(fs, &config.knoll, config.output_dxf, tmpfolder).map_err(
+                |e| {
+                    format!(
+                        "knoll detection (knolldetector) in {}: {e:#}",
+                        tmpfolder.display()
+                    )
+                },
+            )?;
         }
         info!("Contour generation part 1");
         timing.start_section("contour generation part 1");
         // modifies the heightmap (but does not change dimensions)
-        knolls::xyzknolls(fs, config, tmpfolder).map_err(|e| {
+        knolls::xyzknolls(fs, &config.knoll, tmpfolder).map_err(|e| {
             format!(
                 "knoll lifting (xyzknolls) in {}: {e:#}",
                 tmpfolder.display()
@@ -607,7 +609,7 @@ pub fn process_tile(
 
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
-        knolls::dotknolls(fs, config, tmpfolder).unwrap();
+        knolls::dotknolls(fs, &config.knoll, config.output_dxf, tmpfolder).unwrap();
 
         // The .dxf.bin files leave this folder only when savetempfiles is on, so the
         // terrain reaches vector output as GeoJSON written next to its source.

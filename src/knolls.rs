@@ -7,7 +7,6 @@ use rustc_hash::FxHashSet;
 use std::error::Error;
 use std::path::Path;
 
-use crate::config::Config;
 use crate::contours::join_contours;
 use crate::geometry::{
     BinaryDxf, Bounds, Classification, Geometry, Point2, Points, Polylines, Ring,
@@ -16,6 +15,152 @@ use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::vec2d::Vec2D;
+
+/// Parameters of the knoll stage: [`knolldetector`] picks the closed contours that become
+/// knolls, [`xyzknolls`] lifts the ground model under them (the knoll lift), and
+/// [`dotknolls`] sorts the dot knolls into clean and ugly ones.
+///
+/// Provenance: every default is the constant of the original Perl `knolldetector`,
+/// `xyzknolls` and `dotknolls`, kept as it was (ADR 0001). Nothing records what data they
+/// were tuned on. Fields named `_m` are metres compared directly with elevations or
+/// ground distances; `scalefactor` does not scale them. `settled_max_lift`,
+/// `settled_top_height`, `high_lift_ratio`, `low_lift_ratio` and `shrink_min_lift` are
+/// shares of the level spacing, which includes `scalefactor`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnollParams {
+    /// Scales the map: pixel size of the dot knoll image and part of the level spacing
+    /// (ini `scalefactor`). Stays here until the scalefactor split.
+    pub scalefactor: f64,
+    /// Contour interval in metres (ini `contour_interval`). The knoll levels step by half
+    /// of it times `scalefactor`, and the candidate thresholds tuned at 5 m scale with it.
+    pub contour_interval: f64,
+
+    // knolldetector: which closed contours are knoll candidates
+    /// Lines of this many vertices or more are dropped before the end-to-end join.
+    pub join_max_vertices: usize,
+    /// Joined lines of more vertices than this are dropped (terrain, not knolls). Checked
+    /// on every joined line, before the test that it is closed.
+    pub max_ring_vertices: usize,
+    /// Joined lines of fewer vertices than this must pass `min_short_ring_length_m` and
+    /// `min_ring_vertices`.
+    pub short_ring_vertices: usize,
+    /// A line below `short_ring_vertices` whose length is under this is dropped. Metres.
+    pub min_short_ring_length_m: f64,
+    /// A line below `short_ring_vertices` with fewer vertices than this is dropped.
+    pub min_ring_vertices: usize,
+    /// A candidate lies at least this far below its top contour. Metres.
+    pub min_drop_below_top_m: f64,
+    /// A candidate lies less than this far below its top contour, else it belongs to a
+    /// larger hill. Metres.
+    pub max_drop_below_top_m: f64,
+    /// A top keeps its current best candidate when that candidate's lift to the next knoll
+    /// level is under this many fifths of the contour interval (times `scalefactor`)…
+    pub settled_max_lift: f64,
+    /// … and the top stands this many fifths of the interval above it…
+    pub settled_top_height: f64,
+    /// … give or take this much. Metres.
+    pub settled_top_tolerance_m: f64,
+    /// A best candidate of fewer vertices than this is always kept.
+    pub small_ring_vertices: usize,
+    /// A larger best candidate is kept when its top rises more than this above it. Metres.
+    pub min_top_rise_m: f64,
+    /// … or when it sits more than this above the half-interval level below it. Metres.
+    pub min_level_offset_m: f64,
+
+    // xyzknolls: the knoll lift
+    /// Radius in cells of the square window that measures local relief before the lift.
+    pub flatten_radius_cells: usize,
+    /// Cells whose window relief is under this are pulled towards the window mean, the
+    /// more the flatter. Metres.
+    pub flatten_max_relief_m: f64,
+    /// A knoll within this of a knoll level counts as on it: the lift aims at the level
+    /// above. Metres.
+    pub level_tolerance_m: f64,
+    /// Added to the lift that brings the knoll to the next level. Metres.
+    pub lift_margin_m: f64,
+    /// Share of the lift given to the smoothing around the knoll.
+    pub surround_share: f64,
+    /// That share when the lift exceeds `high_lift_ratio` of the level spacing.
+    pub surround_share_high: f64,
+    /// Lifts above this share of the level spacing are high.
+    pub high_lift_ratio: f64,
+    /// Lifts below this share of the level spacing are low: no smoothing around, and
+    /// `low_lift_extra_m` more lift.
+    pub low_lift_ratio: f64,
+    /// Extra lift of a low lift. Metres.
+    pub low_lift_extra_m: f64,
+    /// Extra lift of every knoll. Metres.
+    pub lift_extra_m: f64,
+    /// Taken off the lift when it would carry the top contour past the level above the
+    /// next one. Metres.
+    pub overshoot_cut_m: f64,
+    /// A knoll whose lift exceeds this many 2.5ths of the level spacing (times
+    /// `scalefactor`) and has more than `shrink_min_vertices` vertices is shrunk first.
+    pub shrink_min_lift: f64,
+    /// See `shrink_min_lift`.
+    pub shrink_min_vertices: usize,
+    /// Shrinks the knoll's ring towards its centre by this factor.
+    pub shrink_factor: f64,
+    /// The smoothing radius around a knoll is this share of the distance to the nearest
+    /// other knoll, in cells…
+    pub surround_range_share: f64,
+    /// … less this many cells…
+    pub surround_range_trim_cells: f64,
+    /// … clamped to at least this many cells…
+    pub min_surround_range_cells: f64,
+    /// … and at most this many.
+    pub max_surround_range_cells: f64,
+    /// Ground model heights this close to a knoll level move this far off it, so contours
+    /// at the level neither cross nor touch. Metres.
+    pub level_clearance_m: f64,
+
+    // dotknolls
+    /// Half-width in dot knoll image pixels (`scalefactor` metres) of the square around a
+    /// dot knoll that must hold no contour, else the dot knoll is ugly.
+    pub dot_clearance_px: f64,
+}
+
+impl Default for KnollParams {
+    fn default() -> Self {
+        Self {
+            scalefactor: 1.0,
+            contour_interval: 5.0,
+            join_max_vertices: 201,
+            max_ring_vertices: 121,
+            short_ring_vertices: 9,
+            min_short_ring_length_m: 5.0,
+            min_ring_vertices: 3,
+            min_drop_below_top_m: 0.1,
+            max_drop_below_top_m: 4.6,
+            settled_max_lift: 1.75,
+            settled_top_height: 0.6,
+            settled_top_tolerance_m: 0.2,
+            small_ring_vertices: 13,
+            min_top_rise_m: 0.45,
+            min_level_offset_m: 0.45,
+            flatten_radius_cells: 2,
+            flatten_max_relief_m: 1.25,
+            level_tolerance_m: 0.09,
+            lift_margin_m: 0.15,
+            surround_share: 0.4,
+            surround_share_high: 0.6,
+            high_lift_ratio: 0.66,
+            low_lift_ratio: 0.25,
+            low_lift_extra_m: 0.3,
+            lift_extra_m: 0.5,
+            overshoot_cut_m: 0.4,
+            shrink_min_lift: 1.5,
+            shrink_min_vertices: 21,
+            shrink_factor: 0.8,
+            surround_range_share: 0.8,
+            surround_range_trim_cells: 1.0,
+            min_surround_range_cells: 1.0,
+            max_surround_range_cells: 12.0,
+            level_clearance_m: 0.02,
+            dot_clearance_px: 3.0,
+        }
+    }
+}
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Dotknolls {
@@ -30,12 +175,14 @@ pub(crate) struct Dotknoll {
 
 pub fn dotknolls(
     fs: &impl FileSystem,
-    config: &Config,
+    params: &KnollParams,
+    output_dxf: bool,
     tmpfolder: &Path,
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying dotknolls...");
 
-    let scalefactor = config.scalefactor;
+    let scalefactor = params.scalefactor;
+    let clearance = params.dot_clearance_px;
 
     let heightmap_in = tmpfolder.join("xyz_knolls.hmap");
     let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
@@ -86,14 +233,14 @@ pub fn dotknolls(
         let Dotknoll { x, y, is_knoll } = dot;
 
         let mut ok = true;
-        let mut i = (x - xstart) / scalefactor - 3.0;
-        while i < (x - xstart) / scalefactor + 4.0 && ok {
+        let mut i = (x - xstart) / scalefactor - clearance;
+        while i < (x - xstart) / scalefactor + (clearance + 1.0) && ok {
             if (i as u32) >= im.width() {
                 ok = false;
                 break;
             }
-            let mut j = (y - ystart) / scalefactor - 3.0;
-            while j < (y - ystart) / scalefactor + 4.0 && ok {
+            let mut j = (y - ystart) / scalefactor - clearance;
+            while j < (y - ystart) / scalefactor + (clearance + 1.0) && ok {
                 if (j as u32) >= im.height() {
                     ok = false;
                     break;
@@ -130,7 +277,7 @@ pub fn dotknolls(
     dxf.to_writer(&mut f)
         .expect("could not write dotknolls.dxf.bin");
 
-    if config.output_dxf {
+    if output_dxf {
         dxf.to_dxf(&mut fs.create(tmpfolder.join("dotknolls.dxf"))?)?;
     }
 
@@ -139,15 +286,17 @@ pub fn dotknolls(
 }
 pub fn knolldetector(
     fs: &impl FileSystem,
-    config: &Config,
+    params: &KnollParams,
+    output_dxf: bool,
     tmpfolder: &Path,
 ) -> anyhow::Result<()> {
     info!("Detecting knolls...");
-    let scalefactor = config.scalefactor;
-    let contour_interval = config.contour_interval;
+    let scalefactor = params.scalefactor;
+    let contour_interval = params.contour_interval;
 
     let halfinterval = contour_interval / 2.0 * scalefactor;
 
+    // the thresholds were tuned at a 5 m contour interval; this scales them to the map's
     let contours_ratio = contour_interval / 5.0 * scalefactor;
 
     let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
@@ -178,7 +327,7 @@ pub fn knolldetector(
     let mut detected_lines = Polylines::<Point2, Classification>::new();
 
     // TODO; might need to lower to 200
-    let joined = join_contours(&lines, 201);
+    let joined = join_contours(&lines, params.join_max_vertices);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
     let mut el_x: Vec<Vec<f64>> = joined
         .iter()
@@ -194,12 +343,12 @@ pub fn knolldetector(
         let mut skip = false;
         let el_x_len = el_x[l].len();
         if el_x_len > 0 {
-            if el_x_len > 121 {
+            if el_x_len > params.max_ring_vertices {
                 skip = true;
                 el_x[l].clear();
                 el_y[l].clear();
             }
-            if el_x_len < 9 {
+            if el_x_len < params.short_ring_vertices {
                 let mut p = 0;
                 let mut dist = 0.0;
                 while p < el_x_len - 1 {
@@ -208,7 +357,7 @@ pub fn knolldetector(
                     .sqrt();
                     p += 1;
                 }
-                if dist < 5.0 || el_x_len < 3 {
+                if dist < params.min_short_ring_length_m || el_x_len < params.min_ring_vertices {
                     skip = true;
                     el_x[l].clear();
                     el_y[l].clear();
@@ -220,7 +369,7 @@ pub fn knolldetector(
                 el_y[l].clear();
             }
             if !skip
-                && el_x_len < 122
+                && el_x_len <= params.max_ring_vertices
                 && el_x[l].first() == el_x[l].last()
                 && el_y[l].first() == el_y[l].last()
             {
@@ -407,8 +556,10 @@ pub fn knolldetector(
                 let &Top { id, xtest, ytest } = head;
                 let ll = l as u64;
 
-                if *elevation.get(&ll).unwrap() < (*elevation.get(&id).unwrap() - 0.1)
-                    && *elevation.get(&ll).unwrap() > (*elevation.get(&id).unwrap() - 4.6)
+                if *elevation.get(&ll).unwrap()
+                    < (*elevation.get(&id).unwrap() - params.min_drop_below_top_m)
+                    && *elevation.get(&ll).unwrap()
+                        > (*elevation.get(&id).unwrap() - params.max_drop_below_top_m)
                     && skip
                     && xtest < maxx
                     && xtest > minx
@@ -447,12 +598,12 @@ pub fn knolldetector(
             mov.insert(id, test);
         } else {
             let tid = *best.get(&topid).unwrap();
-            if *mov.get(&tid).unwrap() < 1.75 * contours_ratio
+            if *mov.get(&tid).unwrap() < params.settled_max_lift * contours_ratio
                 && (*elevation.get(&topid).unwrap()
                     - *elevation.get(&tid).unwrap()
-                    - 0.6 * contours_ratio)
+                    - params.settled_top_height * contours_ratio)
                     .abs()
-                    < 0.2
+                    < params.settled_top_tolerance_m
             {
                 // no action
             } else if *mov.get(&tid).unwrap() > test {
@@ -472,13 +623,14 @@ pub fn knolldetector(
 
         let x = el_x[id as usize].to_vec();
         if *best.get(&topid).unwrap() == id
-            && (x.len() < 13
-                || (*elevation.get(&topid).unwrap() > (*elevation.get(&id).unwrap() + 0.45)
+            && (x.len() < params.small_ring_vertices
+                || (*elevation.get(&topid).unwrap() > (*elevation.get(&id).unwrap() + params.min_top_rise_m)
+                    // 2.5 * contours_ratio is the half interval
                     || (*elevation.get(&id).unwrap()
                         - 2.5
                             * contours_ratio
                             * (*elevation.get(&id).unwrap() / (2.5 * contours_ratio)).floor())
-                        > 0.45))
+                        > params.min_level_offset_m))
         {
             new_candidates.push(Candidate {
                 id,
@@ -580,7 +732,7 @@ pub fn knolldetector(
         .and_then(|mut f| detected_dxf.to_writer(&mut f))
         .with_context(|| format!("writing {}", detected_out.display()))?;
 
-    if config.output_dxf {
+    if output_dxf {
         let detected_out = tmpfolder.join("detected.dxf");
         fs.create(&detected_out)
             .map_err(anyhow::Error::from)
@@ -610,10 +762,14 @@ struct Pin {
     ylist: Vec<f64>,
 }
 
-pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> anyhow::Result<()> {
+pub fn xyzknolls(
+    fs: &impl FileSystem,
+    params: &KnollParams,
+    tmpfolder: &Path,
+) -> anyhow::Result<()> {
     info!("Identifying knolls...");
-    let scalefactor = config.scalefactor;
-    let contour_interval = config.contour_interval;
+    let scalefactor = params.scalefactor;
+    let contour_interval = params.contour_interval;
 
     let interval = contour_interval / 2.0 * scalefactor;
 
@@ -628,14 +784,16 @@ pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> any
 
     let mut xyz2 = hmap.clone();
 
-    for i in 2..=(xmax - 2) {
-        for j in 2..=(ymax - 2) {
+    let r = params.flatten_radius_cells;
+    let flat = params.flatten_max_relief_m;
+    for i in r..=(xmax - r) {
+        for j in r..=(ymax - r) {
             let mut low = f64::MAX;
             let mut high = f64::MIN;
             let mut val = 0.0;
             let mut count = 0;
-            for ii in (i - 2)..=(i + 2) {
-                for jj in (j - 2)..=(j + 2) {
+            for ii in (i - r)..=(i + r) {
+                for jj in (j - r)..=(j + r) {
                     let tmp = hmap.grid[(ii, jj)];
                     if tmp < low {
                         low = tmp;
@@ -648,9 +806,9 @@ pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> any
                 }
             }
             let steepness = high - low;
-            if steepness < 1.25 {
-                let tmp = (1.25 - steepness) * (val - low - high) / (count as f64 - 2.0) / 1.25
-                    + steepness * xyz2.grid[(i, j)] / 1.25;
+            if steepness < flat {
+                let tmp = (flat - steepness) * (val - low - high) / (count as f64 - 2.0) / flat
+                    + steepness * xyz2.grid[(i, j)] / flat;
                 xyz2.grid[(i, j)] = tmp;
             }
         }
@@ -702,24 +860,26 @@ pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> any
             ylist: mut y,
         } = line;
 
-        let elenew = ((ele - 0.09) / interval + 1.0).floor() * interval;
-        let mut move1 = elenew - ele + 0.15;
-        let mut move2 = move1 * 0.4;
-        if move1 > 0.66 * interval {
-            move2 = move1 * 0.6;
+        let elenew = ((ele - params.level_tolerance_m) / interval + 1.0).floor() * interval;
+        let mut move1 = elenew - ele + params.lift_margin_m;
+        let mut move2 = move1 * params.surround_share;
+        if move1 > params.high_lift_ratio * interval {
+            move2 = move1 * params.surround_share_high;
         }
-        if move1 < 0.25 * interval {
+        if move1 < params.low_lift_ratio * interval {
             move2 = 0.0;
-            move1 += 0.3;
+            move1 += params.low_lift_extra_m;
         }
-        move1 += 0.5;
-        if ele2 + move1 > ((ele - 0.09) / interval + 2.0).floor() * interval {
-            move1 -= 0.4;
+        move1 += params.lift_extra_m;
+        if ele2 + move1 > ((ele - params.level_tolerance_m) / interval + 2.0).floor() * interval {
+            move1 -= params.overshoot_cut_m;
         }
-        if elenew - ele > 1.5 * interval / 2.5 * scalefactor && x.len() > 21 {
+        if elenew - ele > params.shrink_min_lift * interval / 2.5 * scalefactor
+            && x.len() > params.shrink_min_vertices
+        {
             for k in 0..x.len() {
-                x[k] = xx + (x[k] - xx) * 0.8;
-                y[k] = yy + (y[k] - yy) * 0.8;
+                x[k] = xx + (x[k] - xx) * params.shrink_factor;
+                y[k] = yy + (y[k] - yy) * params.shrink_factor;
             }
         }
         let mut touched: FxHashSet<(usize, usize)> = Default::default();
@@ -758,8 +918,12 @@ pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> any
                 }
             }
         }
-        let mut range = *dist.get(&l).unwrap_or(&0.0) * 0.8 - 1.0;
-        range = range.clamp(1.0, 12.0);
+        let mut range = *dist.get(&l).unwrap_or(&0.0) * params.surround_range_share
+            - params.surround_range_trim_cells;
+        range = range.clamp(
+            params.min_surround_range_cells,
+            params.max_surround_range_cells,
+        );
         smooth_around_pin(&mut xyz2.grid, &touched, (xx, yy), range, move2);
     }
 
@@ -769,13 +933,14 @@ pub fn xyzknolls(fs: &impl FileSystem, config: &Config, tmpfolder: &Path) -> any
     // small number to avoid that issue, insignificant enough to matter, but big buffer enough to hopefully make
     // it not get back to "bad value" for it getting rounded somewhere. Sure, it could be some fraction of
     // contour interval, but in real world 2 cm is insignificant enough.
+    // Here the 2 cm is `level_clearance_m`; the tracer in contours.rs keeps its own nudge.
     for (_, _, h) in xyz2.grid.iter_mut() {
         let tmp = (*h / interval + 0.5).floor() * interval;
-        if (tmp - *h).abs() < 0.02 {
+        if (tmp - *h).abs() < params.level_clearance_m {
             if *h - tmp < 0.0 {
-                *h = tmp - 0.02;
+                *h = tmp - params.level_clearance_m;
             } else {
-                *h = tmp + 0.02;
+                *h = tmp + params.level_clearance_m;
             }
         }
     }
@@ -831,6 +996,96 @@ fn smooth_around_pin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::fs::memory::MemoryFileSystem;
+
+    /// The defaults are the original (Perl-port) constants.
+    #[test]
+    fn knoll_params_default_to_the_perl_constants() {
+        let p = KnollParams::default();
+        assert_eq!((p.scalefactor, p.contour_interval), (1.0, 5.0));
+        assert_eq!(p.join_max_vertices, 201);
+        assert_eq!((p.short_ring_vertices, p.max_ring_vertices), (9, 121));
+        assert_eq!((p.min_ring_vertices, p.min_short_ring_length_m), (3, 5.0));
+        assert_eq!((p.min_drop_below_top_m, p.max_drop_below_top_m), (0.1, 4.6));
+        assert_eq!(
+            (
+                p.settled_max_lift,
+                p.settled_top_height,
+                p.settled_top_tolerance_m
+            ),
+            (1.75, 0.6, 0.2)
+        );
+        assert_eq!(p.small_ring_vertices, 13);
+        assert_eq!((p.min_top_rise_m, p.min_level_offset_m), (0.45, 0.45));
+        assert_eq!((p.flatten_radius_cells, p.flatten_max_relief_m), (2, 1.25));
+        assert_eq!((p.level_tolerance_m, p.lift_margin_m), (0.09, 0.15));
+        assert_eq!((p.surround_share, p.surround_share_high), (0.4, 0.6));
+        assert_eq!((p.high_lift_ratio, p.low_lift_ratio), (0.66, 0.25));
+        assert_eq!((p.low_lift_extra_m, p.lift_extra_m), (0.3, 0.5));
+        assert_eq!(p.overshoot_cut_m, 0.4);
+        assert_eq!(
+            (p.shrink_min_lift, p.shrink_min_vertices, p.shrink_factor),
+            (1.5, 21, 0.8)
+        );
+        assert_eq!(
+            (p.surround_range_share, p.surround_range_trim_cells),
+            (0.8, 1.0)
+        );
+        assert_eq!(
+            (p.min_surround_range_cells, p.max_surround_range_cells),
+            (1.0, 12.0)
+        );
+        assert_eq!((p.level_clearance_m, p.dot_clearance_px), (0.02, 3.0));
+    }
+
+    /// Run `knolldetector` on a 2 m ground model of `f(cell x, cell y)`, contoured at
+    /// 0.3 m as the pipeline does, and return its pins.
+    fn detect(f: impl Fn(f64, f64) -> f64) -> Vec<Pin> {
+        let fs = MemoryFileSystem::new();
+        let tmp = Path::new("tmp");
+        fs.create_dir_all(tmp).unwrap();
+        let (w, h) = (41, 41);
+        let mut grid = Vec2D::new(w, h, 0.0);
+        for i in 0..w {
+            for j in 0..h {
+                grid[(i, j)] = f(i as f64, j as f64);
+            }
+        }
+        let hmap = HeightMap {
+            xoffset: 1000.0,
+            yoffset: 2000.0,
+            scale: 2.0,
+            grid,
+        };
+        hmap.to_file(&fs, tmp.join("xyz_03.hmap")).unwrap();
+        crate::contours::heightmap2contours(&fs, tmp, 0.3, &hmap, "contours03.dxf.bin", false)
+            .unwrap();
+        knolldetector(&fs, &KnollParams::default(), false, tmp).unwrap();
+        crate::util::read_object(fs.open(tmp.join("pins.bin")).unwrap()).unwrap()
+    }
+
+    /// A 1 m cone (radius 5 cells) on flat ground at 100 m is one knoll: one pin, at the
+    /// apex (cell 20, 20 = 1040 m, 2040 m), its ring below the top ring.
+    #[test]
+    fn knolldetector_finds_one_knoll_on_a_cone() {
+        let cone = |x: f64, y: f64| {
+            100.0 + (1.0 - ((x - 20.0).powi(2) + (y - 20.0).powi(2)).sqrt() / 5.0).max(0.0)
+        };
+        let pins = detect(cone);
+        assert_eq!(pins.len(), 1);
+        let pin = &pins[0];
+        assert!((pin.xx - 1040.0).abs() < 2.0 && (pin.yy - 2040.0).abs() < 2.0);
+        assert!(pin.ele < pin.ele2 && pin.ele2 < 101.0 && pin.ele > 100.0);
+    }
+
+    /// The same cone upside down is a depression: no knoll.
+    #[test]
+    fn knolldetector_finds_no_knoll_in_a_pit() {
+        let pit = |x: f64, y: f64| {
+            100.0 - (1.0 - ((x - 20.0).powi(2) + (y - 20.0).powi(2)).sqrt() / 5.0).max(0.0)
+        };
+        assert!(detect(pit).is_empty());
+    }
 
     /// Range 1.5 visits x, y in {3.5, 4.5, 5.5, 6.5} around (5, 5): fractional coordinates.
     /// (5.5, 5.5) truncates to the lifted cell (5, 5), which must be skipped; the neighbour

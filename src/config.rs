@@ -4,6 +4,7 @@ use ini::Ini;
 use log::warn;
 
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
+use crate::knolls::KnollParams;
 
 /// The config parsed from the .ini configuration file.
 pub struct Config {
@@ -44,6 +45,8 @@ pub struct Config {
     pub thinfactor: f64,
 
     pub skipknolldetection: bool,
+    /// The knoll stage's parameters; `scalefactor` and `contour_interval` are copied in.
+    pub knoll: KnollParams,
 
     pub xfactor: f64,
     pub yfactor: f64,
@@ -495,6 +498,11 @@ impl Config {
             zoff,
             thinfactor,
             skipknolldetection,
+            knoll: KnollParams {
+                scalefactor,
+                contour_interval,
+                ..KnollParams::default()
+            },
             xfactor,
             yfactor,
             zfactor,
@@ -884,6 +892,18 @@ mod test {
             let warning = contour_interval_warning(interval).unwrap();
             assert!(warning.contains("contour_interval"), "{warning}");
         }
+    }
+
+    #[test]
+    fn knoll_params_take_scalefactor_and_contour_interval() {
+        use crate::knolls::KnollParams;
+        let config = load_with(&[("scalefactor", "1.5"), ("contour_interval", "2.5")]).unwrap();
+        let expected = KnollParams {
+            scalefactor: 1.5,
+            contour_interval: 2.5,
+            ..KnollParams::default()
+        };
+        assert_eq!(config.knoll, expected);
     }
 
     #[test]
