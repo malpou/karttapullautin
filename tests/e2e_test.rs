@@ -55,16 +55,21 @@ fn run_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// The key of a `key=value` (or `key = value`) template line.
+fn ini_key(line: &str) -> Option<&str> {
+    let (key, _) = line.split_once('=')?;
+    (!line.starts_with('#')).then(|| key.trim())
+}
+
 /// Write `pullauta.ini` into `dir`: the default template with the given `key=value`
 /// lines replaced (every key must already be in the template).
 fn write_ini(dir: &Path, settings: &[(&str, &str)]) {
     let template = include_str!("../pullauta.default.ini");
     let mut lines: Vec<String> = template.lines().map(String::from).collect();
     for (key, value) in settings {
-        let prefix = format!("{key}=");
         let line = lines
             .iter_mut()
-            .find(|l| l.starts_with(&prefix))
+            .find(|l| ini_key(l) == Some(key))
             .unwrap_or_else(|| panic!("{key} is not in pullauta.default.ini"));
         *line = format!("{key}={value}");
     }
@@ -107,6 +112,47 @@ fn feature_collection(path: &Path) -> Vec<Value> {
         );
     }
     features
+}
+
+/// Validate every `.geojson` file under `dir` against `schema/geojson.schema.json`, the
+/// public contract of the vector output. Returns how many files were checked.
+fn assert_schema_conformance(dir: &Path) -> usize {
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("invalid schema");
+    let mut checked = 0;
+    for path in files(dir) {
+        if path.extension().is_none_or(|e| e != "geojson") {
+            continue;
+        }
+        let val: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap())
+            .unwrap_or_else(|e| panic!("{}: invalid JSON: {e}", path.display()));
+        let errors: Vec<String> = validator
+            .iter_errors(&val)
+            .map(|e| format!("{} at {}", e, e.instance_path()))
+            .collect();
+        assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
+        checked += 1;
+    }
+    checked
+}
+
+/// Every file under `dir`, recursively, in name order.
+fn files(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            out.extend(files(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// A plain ISOM symbol number ("502"). osm.txt uses no OOM sub-symbols ("501.2").
@@ -273,16 +319,26 @@ fn assert_terrain_outputs(tile: &Path) {
 #[test]
 #[ignore]
 fn single_job_writes_terrain_geojson() {
-    let dir = run_dir("e2e-single");
-    std::fs::copy(input("test_file.laz"), dir.join("test_file.laz")).unwrap();
-    write_ini(&dir, &[("vector_vege", "1")]);
-
-    run_pullauta(&dir, &["test_file.laz"]);
+    let dir = run_single_job("e2e-single", &[]);
 
     let temp = dir.join("temp");
     assert_terrain_outputs(&temp);
     let green = assert_vegetation_features(&temp.join(geojson::VEGETATION.file_name()), false);
     assert!(green.contains("406"), "{green:?}");
+
+    // the four terrain outputs, vegetation, open land and undergrowth
+    assert_eq!(assert_schema_conformance(&dir), 7);
+}
+
+/// Run the single job on the regression tile in a fresh run directory `name`, with
+/// vegetation vectorization on and the given extra settings. Returns the directory.
+fn run_single_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
+    let dir = run_dir(name);
+    std::fs::copy(input("test_file.laz"), dir.join("test_file.laz")).unwrap();
+    write_ini(&dir, &[&[("vector_vege", "1")], settings].concat());
+
+    run_pullauta(&dir, &["test_file.laz"]);
+    dir
 }
 
 /// Batch job as in the regression workflow: one tile plus the OSM shapefile zip, with
@@ -293,33 +349,7 @@ fn single_job_writes_terrain_geojson() {
 #[test]
 #[ignore]
 fn batch_with_osm_vectorconf() {
-    let dir = run_dir("e2e-batch-osm");
-    for sub in ["in", "out"] {
-        std::fs::create_dir(dir.join(sub)).unwrap();
-    }
-    for name in ["test_file.laz", "test_file.shp.zip"] {
-        std::fs::copy(input(name), dir.join("in").join(name)).unwrap();
-    }
-    std::fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("osm.txt"),
-        dir.join("osm.txt"),
-    )
-    .unwrap();
-    write_ini(
-        &dir,
-        &[
-            ("batch", "1"),
-            ("vectorconf", "osm.txt"),
-            ("vector_vege", "1"),
-            ("vector_shade", "1"),
-            ("output_dxf", "1"),
-            ("savetempfolders", "1"),
-            ("batchmerge", "1"),
-            ("epsg", EPSG),
-        ],
-    );
-
-    run_pullauta(&dir, &[]);
+    let dir = run_batch_job("e2e-batch-osm", &[]);
 
     let tile = dir.join("temp_test_file_dir");
 
@@ -376,6 +406,92 @@ fn batch_with_osm_vectorconf() {
     assert_terrain_outputs(&tile);
 
     assert_batch_merge(&dir.join("out"));
+
+    // every registry output in the thread's temp1/ and its savetempfolders copy, cropped
+    // and merged in out/, and output.geojson
+    assert_eq!(
+        assert_schema_conformance(&dir),
+        4 * geojson::GEOJSON_OUTPUTS.len() + 1
+    );
+}
+
+/// Run the batch job of [`batch_with_osm_vectorconf`] in a fresh run directory `name`,
+/// with the given extra settings. Returns the directory.
+fn run_batch_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
+    let dir = run_dir(name);
+    for sub in ["in", "out"] {
+        std::fs::create_dir(dir.join(sub)).unwrap();
+    }
+    for name in ["test_file.laz", "test_file.shp.zip"] {
+        std::fs::copy(input(name), dir.join("in").join(name)).unwrap();
+    }
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("osm.txt"),
+        dir.join("osm.txt"),
+    )
+    .unwrap();
+    let batch = [
+        ("batch", "1"),
+        ("vectorconf", "osm.txt"),
+        ("vector_vege", "1"),
+        ("vector_shade", "1"),
+        ("output_dxf", "1"),
+        ("savetempfolders", "1"),
+        ("batchmerge", "1"),
+        ("epsg", EPSG),
+    ];
+    write_ini(&dir, &[&batch, settings].concat());
+
+    run_pullauta(&dir, &[]);
+    dir
+}
+
+/// Two runs of the same job write byte-identical files, also with thinning on
+/// (`thinfactor`, `cliffthin` < 1: the samplings seeded from the tile name).
+#[test]
+#[ignore]
+fn runs_are_deterministic() {
+    let thin = [("thinfactor", "0.5"), ("cliffthin", "0.5")];
+    assert_same_files(
+        &run_single_job("e2e-determinism-single-a", &thin),
+        &run_single_job("e2e-determinism-single-b", &thin),
+    );
+    assert_same_files(
+        &run_batch_job("e2e-determinism-batch-a", &thin),
+        &run_batch_job("e2e-determinism-batch-b", &thin),
+    );
+}
+
+/// Check that `a` and `b` hold the same files with the same bytes.
+fn assert_same_files(a: &Path, b: &Path) {
+    let relative = |dir: &Path| -> Vec<PathBuf> {
+        files(dir)
+            .into_iter()
+            .map(|p| p.strip_prefix(dir).unwrap().to_path_buf())
+            .collect()
+    };
+    let names = relative(a);
+    assert_eq!(names, relative(b));
+    for name in &names {
+        assert!(
+            std::fs::read(a.join(name)).unwrap() == std::fs::read(b.join(name)).unwrap(),
+            "{} differs between two runs",
+            name.display()
+        );
+    }
+}
+
+/// The e2e settings and the template use the `vector_` keys: none of the fork's old key
+/// names is left, so a run cannot silently fall back to a default.
+#[test]
+fn template_has_no_old_vector_keys() {
+    let template = include_str!("../pullauta.default.ini");
+    for old in ["vectorvege", "vegeshade", "greenshadeisom", "vegesimplify"] {
+        assert!(
+            template.lines().all(|l| ini_key(l) != Some(old)),
+            "{old} is in pullauta.default.ini"
+        );
+    }
 }
 
 const EPSG: &str = "3067";
