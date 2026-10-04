@@ -4,6 +4,7 @@ use ini::Ini;
 use log::warn;
 
 use crate::cliffs::CliffParams;
+use crate::contours::GroundParams;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
 use crate::mapframe::MapFrame;
@@ -44,21 +45,21 @@ pub struct Config {
     /// GeoJSON merge and the combined export.
     pub batchmerge: bool,
 
-    /// Scales the ground lengths of the knoll stage and smoothjoin and the form-line
-    /// steepness (ini `scalefactor`). Stays here until `pr/metre-lengths`.
-    pub scalefactor: f64,
-    /// The rendered sheet: 600 dpi at 1:10 000 times `scalefactor`.
+    /// The rendered sheet: 600 dpi at the map scale (ini `mapscale`).
     pub map_frame: MapFrame,
     pub vege_bitmode: bool,
     pub zoff: f64,
     pub thinfactor: f64,
 
+    /// The ground model's parameters.
+    pub ground: GroundParams,
     pub skipknolldetection: bool,
-    /// The knoll stage's parameters; `scalefactor` and the trace interval are copied in.
+    /// The knoll stage's parameters; the trace interval is copied in.
     pub knoll: KnollParams,
-    /// smoothjoin's parameters, with `scalefactor`, `contour_interval` and `form_lines`.
+    /// smoothjoin's parameters, with `contour_interval`, `form_lines` and the ISOM minima
+    /// at the map scale.
     pub smoothjoin: SmoothJoinParams,
-    /// draw_curves' parameters, with `scalefactor`, the map frame and `form_lines`.
+    /// draw_curves' parameters, with the map frame and `form_lines`.
     pub curves: CurveRenderParams,
 
     pub xfactor: f64,
@@ -193,11 +194,16 @@ impl Config {
         };
         let batchmerge = flag(gs, "batchmerge", Some(false))?;
 
-        let scalefactor: f64 = parse_typed(gs, "scalefactor", 1.0);
         let map_frame = MapFrame {
-            scale_denominator: scalefactor * 10_000.0,
+            scale_denominator: match gs.get("mapscale") {
+                None => 10_000.0,
+                Some(v) => parse_map_scale(v)?,
+            },
             ..MapFrame::default()
         };
+        if let Some(warning) = map_scale_warning(&map_frame) {
+            warn!("{warning}");
+        }
         let vege_bitmode: bool = gs.get("vege_bitmode").unwrap_or("0") == "1";
         let zoff = parse_typed(gs, "zoffset", 0.0);
         let mut thinfactor: f64 = parse_typed(gs, "thinfactor", 1.0);
@@ -476,19 +482,17 @@ impl Config {
             batchmerge,
             savetempfolders,
             savetempfiles,
-            scalefactor,
             map_frame,
             vege_bitmode,
             zoff,
             thinfactor,
+            ground: GroundParams { cell_size_m: 2.0 },
             skipknolldetection,
             knoll: KnollParams {
-                scalefactor,
                 trace_interval: form_lines.trace_interval(contour_interval),
                 ..KnollParams::default()
             },
             smoothjoin: SmoothJoinParams {
-                scalefactor,
                 contour_interval,
                 form_lines,
                 smoothing,
@@ -496,10 +500,10 @@ impl Config {
                 depression_length,
                 decorate_depressions,
                 inidotknolls,
+                isom_minima: map_frame.isom_minima(),
             },
             curves: CurveRenderParams {
                 frame: map_frame,
-                scalefactor,
                 form_lines,
                 formlinesteepness,
                 formlineaddition,
@@ -592,7 +596,7 @@ impl<'a> Keys<'a> {
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
 /// unknown. A key ending in `{i}` stands for that prefix and a number.
-const REMOVED_KEYS: [(&str, &str); 7] = [
+const REMOVED_KEYS: [(&str, &str); 8] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
@@ -610,6 +614,11 @@ const REMOVED_KEYS: [(&str, &str); 7] = [
         "index contours are every fifth contour; delete it",
     ),
     ("zone{i}", "renamed to `stratum{i}`, same value"),
+    (
+        "scalefactor",
+        "the map scale is `mapscale` (scalefactor=1.5 is mapscale=15000); ground lengths \
+         no longer scale with it",
+    ),
 ];
 
 /// What to do instead of `key`, when it is one of the [`REMOVED_KEYS`]; a `{i}` in the
@@ -681,6 +690,29 @@ fn parse_positive_metres(key: &str, v: &str) -> Result<f64, String> {
     }
 }
 
+/// Parse `mapscale`: the map scale's denominator, a finite number above 0.
+fn parse_map_scale(v: &str) -> Result<f64, String> {
+    match v.trim().parse::<f64>() {
+        Ok(scale) if scale.is_finite() && scale > 0.0 => Ok(scale),
+        _ => Err(format!(
+            "Value {v} of `mapscale` must be a scale denominator above 0, such as 10000 \
+             for 1:10 000"
+        )),
+    }
+}
+
+/// The warning for a map scale ISOM 2017-2 does not define, whose symbols are not
+/// enlarged.
+fn map_scale_warning(frame: &MapFrame) -> Option<String> {
+    (!frame.is_isom_scale()).then(|| {
+        format!(
+            "mapscale={} is not an ISOM 2017-2 map scale (15000, or 10000 with symbols at \
+             150 %); the ISOM minimum sizes are taken at 100 % symbol size",
+            frame.scale_denominator
+        )
+    })
+}
+
 /// The warning for a contour interval ISOM 2017-2 does not allow; any positive interval
 /// is still used (sprint maps use 2-2.5 m).
 fn contour_interval_warning(interval: f64) -> Option<String> {
@@ -713,6 +745,7 @@ mod test {
     use std::path::Path;
 
     use super::Config;
+    use crate::mapframe::MapFrame;
 
     #[test]
     fn should_load_config_template_successfully() {
@@ -790,6 +823,7 @@ mod test {
             "formline",
             "indexcontours",
             "zone1",
+            "scalefactor",
         ] {
             let err = load_appended(&format!("{key}=1")).err().unwrap();
             assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
@@ -921,25 +955,73 @@ mod test {
     }
 
     #[test]
-    fn scalefactor_sets_the_map_frame() {
-        use crate::mapframe::MapFrame;
-        assert_eq!(load_with(&[]).unwrap().map_frame, MapFrame::default());
-        let config = load_with(&[("scalefactor", "1.5")]).unwrap();
-        assert_eq!(config.map_frame.scale_denominator, 15_000.0);
-        assert_eq!(config.curves.frame, config.map_frame);
-        assert_eq!(config.vegetation.frame, config.map_frame);
-    }
-
-    #[test]
-    fn knoll_params_take_scalefactor_and_trace_interval() {
+    fn knoll_params_take_the_trace_interval_not_the_map_scale() {
         use crate::knolls::KnollParams;
-        let config = load_with(&[("scalefactor", "1.5"), ("contour_interval", "2.5")]).unwrap();
+        let config = load_with(&[("mapscale", "15000"), ("contour_interval", "2.5")]).unwrap();
         let expected = KnollParams {
-            scalefactor: 1.5,
             trace_interval: 1.25,
             ..KnollParams::default()
         };
         assert_eq!(config.knoll, expected);
+    }
+
+    /// `mapscale` sets the sheet only: at 1:15 000 every stage's ground lengths are the
+    /// 1:10 000 ones, the sheet has 2/3 of the pixels per metre, and the ISOM minima are
+    /// the same ground metres (symbols are enlarged 150 % at 1:10 000).
+    #[test]
+    fn mapscale_scales_the_sheet_not_the_ground_lengths() {
+        let default = load_with(&[]).unwrap();
+        assert_eq!(default.map_frame, MapFrame::default());
+        let config = load_with(&[("mapscale", "15000")]).unwrap();
+        assert_eq!(config.map_frame.scale_denominator, 15_000.0);
+        assert_eq!(config.curves.frame, config.map_frame);
+        assert_eq!(config.vegetation.frame, config.map_frame);
+        let px = config.map_frame.px_per_metre();
+        assert!((px - default.map_frame.px_per_metre() * 2.0 / 3.0).abs() < 1e-15);
+        assert_eq!(config.ground, default.ground);
+        assert_eq!(config.ground.cell_size_m, 2.0);
+        assert_eq!(config.knoll, default.knoll);
+        assert_eq!(config.smoothjoin, default.smoothjoin);
+        assert_eq!(
+            config.curves.formlinesteepness,
+            default.curves.formlinesteepness
+        );
+        // 1:5 000 is no ISOM scale: symbols at 100 %, so 1/3 of the 1:15 000 sizes
+        let sprint = load_with(&[("mapscale", "5000")]).unwrap();
+        assert_eq!(sprint.smoothjoin.isom_minima.slope_line, 2.0);
+        assert_eq!(sprint.smoothjoin.isom_minima.ring_length, 5.5);
+    }
+
+    #[test]
+    fn mapscale_must_be_a_denominator_above_0() {
+        assert_eq!(
+            load_without("mapscale").unwrap().map_frame,
+            MapFrame::default()
+        );
+        for bad in ["0", "-10000", "inf", "1:10000"] {
+            let err = load_with(&[("mapscale", bad)]).err().unwrap();
+            assert!(err.contains("`mapscale`"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn mapscale_warns_outside_the_isom_scales() {
+        use super::map_scale_warning;
+        let at = |scale_denominator| MapFrame {
+            scale_denominator,
+            ..MapFrame::default()
+        };
+        assert_eq!(map_scale_warning(&at(10_000.0)), None);
+        assert_eq!(map_scale_warning(&at(15_000.0)), None);
+        let warning = map_scale_warning(&at(4_000.0)).unwrap();
+        assert!(warning.contains("mapscale=4000"), "{warning}");
+    }
+
+    #[test]
+    fn scalefactor_is_removed_with_advice() {
+        let err = load_appended("scalefactor=1.5").err().unwrap();
+        assert!(err.contains("`scalefactor` (removed:"), "{err}");
+        assert!(err.contains("mapscale=15000"), "{err}");
     }
 
     /// The template's cliff values reach `CliffParams`; the rest are the constants
@@ -1047,11 +1129,8 @@ mod test {
         };
         assert_eq!(config.smoothjoin.levels(), old_mode_0);
         assert_eq!(config.knoll.trace_interval, 2.5);
-        // knolldetector's threshold ratio, trace_interval / 2.5 * scalefactor
-        assert_eq!(
-            config.knoll.trace_interval / 2.5 * config.knoll.scalefactor,
-            1.0
-        );
+        // knolldetector's threshold ratio, trace_interval / 2.5
+        assert_eq!(config.knoll.trace_interval / 2.5, 1.0);
     }
 
     #[test]

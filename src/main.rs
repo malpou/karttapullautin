@@ -460,7 +460,14 @@ fn main() {
             }
             pullauta::merge::bindxfmerge(&fs, &config).unwrap();
             pullauta::geojson::merge_geojson(&fs, out).unwrap();
-            pullauta::geojson::export_combined(&fs, out, merged_bin, config.epsg).unwrap();
+            pullauta::geojson::export_combined(
+                &fs,
+                out,
+                merged_bin,
+                &config.map_frame,
+                config.epsg,
+            )
+            .unwrap();
         }
         return;
     }

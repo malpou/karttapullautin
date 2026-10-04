@@ -23,18 +23,18 @@ use crate::vec2d::Vec2D;
 /// Provenance: every default is the constant of the original Perl `knolldetector`,
 /// `xyzknolls` and `dotknolls`, kept as it was (ADR 0001). Nothing records what data they
 /// were tuned on. Fields named `_m` are metres compared directly with elevations or
-/// ground distances; `scalefactor` does not scale them. `settled_max_lift`,
+/// ground distances; the map scale does not scale them. `settled_max_lift`,
 /// `settled_top_height`, `high_lift_ratio`, `low_lift_ratio` and `shrink_min_lift` are
-/// shares of the level spacing, which includes `scalefactor`.
+/// shares of the level spacing, the trace interval.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KnollParams {
-    /// Scales the map: pixel size of the dot knoll image and part of the level spacing
-    /// (ini `scalefactor`). Stays here until the scalefactor split.
-    pub scalefactor: f64,
     /// Trace interval in metres: the contour interval, or half of it with form lines
-    /// (ini `contour_interval` and `form_lines`). The knoll levels step by it times
-    /// `scalefactor`, and the candidate thresholds tuned at 2.5 m scale with it.
+    /// (ini `contour_interval` and `form_lines`). The knoll levels step by it, and the
+    /// candidate thresholds tuned at 2.5 m scale with it.
     pub trace_interval: f64,
+    /// Interval of the fine contours knolldetector picks its candidates from
+    /// (`contours03.dxf.bin`). Metres.
+    pub candidate_interval_m: f64,
 
     // knolldetector: which closed contours are knoll candidates
     /// Lines of this many vertices or more are dropped before the end-to-end join.
@@ -55,7 +55,7 @@ pub struct KnollParams {
     /// larger hill. Metres.
     pub max_drop_below_top_m: f64,
     /// A top keeps its current best candidate when that candidate's lift to the next knoll
-    /// level is under this times the trace interval / 2.5 m (times `scalefactor`)…
+    /// level is under this times the trace interval / 2.5 m…
     pub settled_max_lift: f64,
     /// … and the top stands this times the trace interval / 2.5 m above it…
     pub settled_top_height: f64,
@@ -95,8 +95,8 @@ pub struct KnollParams {
     /// Taken off the lift when it would carry the top contour past the level above the
     /// next one. Metres.
     pub overshoot_cut_m: f64,
-    /// A knoll whose lift exceeds this many 2.5ths of the level spacing (times
-    /// `scalefactor`) and has more than `shrink_min_vertices` vertices is shrunk first.
+    /// A knoll whose lift exceeds this many 2.5ths of the level spacing and has more than
+    /// `shrink_min_vertices` vertices is shrunk first.
     pub shrink_min_lift: f64,
     /// See `shrink_min_lift`.
     pub shrink_min_vertices: usize,
@@ -116,16 +116,19 @@ pub struct KnollParams {
     pub level_clearance_m: f64,
 
     // dotknolls
-    /// Half-width in dot knoll image pixels (`scalefactor` metres) of the square around a
-    /// dot knoll that must hold no contour, else the dot knoll is ugly.
+    /// Pixel size of the image the contours are drawn into to test dot knoll clearance.
+    /// Metres.
+    pub dot_pixel_m: f64,
+    /// Half-width in those pixels of the square around a dot knoll that must hold no
+    /// contour, else the dot knoll is ugly.
     pub dot_clearance_px: f64,
 }
 
 impl Default for KnollParams {
     fn default() -> Self {
         Self {
-            scalefactor: 1.0,
             trace_interval: 2.5,
+            candidate_interval_m: 0.3,
             join_max_vertices: 201,
             max_ring_vertices: 121,
             short_ring_vertices: 9,
@@ -158,6 +161,7 @@ impl Default for KnollParams {
             min_surround_range_cells: 1.0,
             max_surround_range_cells: 12.0,
             level_clearance_m: 0.02,
+            dot_pixel_m: 1.0,
             dot_clearance_px: 3.0,
         }
     }
@@ -182,7 +186,7 @@ pub fn dotknolls(
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying dotknolls...");
 
-    let scalefactor = params.scalefactor;
+    let pixel = params.dot_pixel_m;
     let clearance = params.dot_clearance_px;
 
     let heightmap_in = tmpfolder.join("xyz_knolls.hmap");
@@ -198,8 +202,8 @@ pub fn dotknolls(
     let size = hmap.scale;
 
     let mut im = GrayImage::from_pixel(
-        (xmax * size / scalefactor) as u32,
-        (ymax * size / scalefactor) as u32,
+        (xmax * size / pixel) as u32,
+        (ymax * size / pixel) as u32,
         Luma([0xff]),
     );
 
@@ -213,12 +217,12 @@ pub fn dotknolls(
             draw_line_segment_mut(
                 &mut im,
                 (
-                    ((line[i - 1].x - xstart) / scalefactor).floor() as f32,
-                    ((line[i - 1].y - ystart) / scalefactor).floor() as f32,
+                    ((line[i - 1].x - xstart) / pixel).floor() as f32,
+                    ((line[i - 1].y - ystart) / pixel).floor() as f32,
                 ),
                 (
-                    ((line[i].x - xstart) / scalefactor).floor() as f32,
-                    ((line[i].y - ystart) / scalefactor).floor() as f32,
+                    ((line[i].x - xstart) / pixel).floor() as f32,
+                    ((line[i].y - ystart) / pixel).floor() as f32,
                 ),
                 Luma([0x0]),
             )
@@ -234,14 +238,14 @@ pub fn dotknolls(
         let Dotknoll { x, y, is_knoll } = dot;
 
         let mut ok = true;
-        let mut i = (x - xstart) / scalefactor - clearance;
-        while i < (x - xstart) / scalefactor + (clearance + 1.0) && ok {
+        let mut i = (x - xstart) / pixel - clearance;
+        while i < (x - xstart) / pixel + (clearance + 1.0) && ok {
             if (i as u32) >= im.width() {
                 ok = false;
                 break;
             }
-            let mut j = (y - ystart) / scalefactor - clearance;
-            while j < (y - ystart) / scalefactor + (clearance + 1.0) && ok {
+            let mut j = (y - ystart) / pixel - clearance;
+            while j < (y - ystart) / pixel + (clearance + 1.0) && ok {
                 if (j as u32) >= im.height() {
                     ok = false;
                     break;
@@ -292,11 +296,10 @@ pub fn knolldetector(
     tmpfolder: &Path,
 ) -> anyhow::Result<()> {
     info!("Detecting knolls...");
-    let scalefactor = params.scalefactor;
-    let halfinterval = params.trace_interval * scalefactor;
+    let halfinterval = params.trace_interval;
 
     // the thresholds were tuned at a 2.5 m trace interval; this scales them to the map's
-    let contours_ratio = params.trace_interval / 2.5 * scalefactor;
+    let contours_ratio = params.trace_interval / 2.5;
 
     let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
 
@@ -767,8 +770,7 @@ pub fn xyzknolls(
     tmpfolder: &Path,
 ) -> anyhow::Result<()> {
     info!("Identifying knolls...");
-    let scalefactor = params.scalefactor;
-    let interval = params.trace_interval * scalefactor;
+    let interval = params.trace_interval;
 
     // load the binary file
     let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
@@ -871,7 +873,7 @@ pub fn xyzknolls(
         if ele2 + move1 > ((ele - params.level_tolerance_m) / interval + 2.0).floor() * interval {
             move1 -= params.overshoot_cut_m;
         }
-        if elenew - ele > params.shrink_min_lift * interval / 2.5 * scalefactor
+        if elenew - ele > params.shrink_min_lift * interval / 2.5
             && x.len() > params.shrink_min_vertices
         {
             for k in 0..x.len() {
@@ -999,7 +1001,8 @@ mod tests {
     #[test]
     fn knoll_params_default_to_the_perl_constants() {
         let p = KnollParams::default();
-        assert_eq!((p.scalefactor, p.trace_interval), (1.0, 2.5));
+        assert_eq!((p.trace_interval, p.candidate_interval_m), (2.5, 0.3));
+        assert_eq!(p.dot_pixel_m, 1.0);
         assert_eq!(p.join_max_vertices, 201);
         assert_eq!((p.short_ring_vertices, p.max_ring_vertices), (9, 121));
         assert_eq!((p.min_ring_vertices, p.min_short_ring_length_m), (3, 5.0));

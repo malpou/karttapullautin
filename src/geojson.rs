@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use crate::geometry::{BinaryDxf, Classification, Geometry, Point2};
 use crate::io::fs::FileSystem;
 use crate::isom::{IsomCode, IsomTable, SymbolGeometry};
+use crate::mapframe::{IsomMinima, MapFrame};
 use crate::plan::Rect;
 use geojson_types::{FeatureGeometryType, FeatureProperties};
 
@@ -421,25 +422,23 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 // export, after the per-tile outputs are merged: the knolls that survive spacing are
 // only known then, across tile edges.
 
-/// ISOM 2017-2 minimum dimensions for contours, in ground metres. The standard specifies
-/// them on the 1:15,000 original, so ground metres = mm x 15: the smallest bend that can
-/// be drawn is 0.25 mm centre to centre (3.75 m) and the mouth of a re-entrant or spur
-/// must be wider than 0.5 mm (7.5 m). The wider bound subsumes the narrower one, so a
-/// single pass at 8 m enforces both.
-const MIN_MOUTH_M: f64 = 8.0;
-
-/// A bound on how much line one splice may consume. Nothing removed can depart further
-/// than MIN_MOUTH_M from the join that replaces it, so this only stops a long
-/// near-parallel double-back from being swallowed in a single cut.
-const MAX_DETOUR_M: f64 = 24.0;
+// ISOM 2017-2 minimum dimensions for contours ([`IsomMinima`], in ground metres). The
+// standard specifies them on the 1:15,000 original, ground metres = mm x 15 there: the
+// smallest bend that can be drawn is 0.25 mm centre to centre (3.75 m) and the mouth of
+// a re-entrant or spur must be wider than 0.5 mm (7.5 m). The wider bound subsumes the
+// narrower one, so a single pass at `contour_mouth` (8 m) enforces both.
+//
+// `contour_max_detour` (24 m) bounds how much line one splice may consume. Nothing
+// removed can depart further than `contour_mouth` from the join that replaces it, so it
+// only stops a long near-parallel double-back from being swallowed in a single cut.
 
 /// Distance from `p` to the segment `a`-`b`.
 fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     point2(p).distance_to_segment(point2(a), point2(b))
 }
 
-/// Splice out excursions that leave and return within MIN_MOUTH_M *and* never depart
-/// further than MIN_MOUTH_M from the join replacing them: the wobbles ISOM 2017-2 means
+/// Splice out excursions that leave and return within `contour_mouth` *and* never depart
+/// further than `contour_mouth` from the join replacing them: the wobbles ISOM 2017-2 means
 /// by "small details on contours should be avoided because they tend to hide the main
 /// features of the terrain".
 ///
@@ -447,7 +446,8 @@ fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 /// neck along its length; together they guarantee nothing is removed that reaches beyond
 /// what the symbol's own minimum dimension can carry. A closed ring is protected from
 /// being consumed whole by requiring the kept remainder to stay above the same bound.
-fn generalise_contour(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
+fn generalise_contour(pts: &[[f64; 2]], minima: &IsomMinima) -> Vec<[f64; 2]> {
+    let mouth = minima.contour_mouth;
     if pts.len() < 4 {
         return pts.to_vec();
     }
@@ -464,14 +464,14 @@ fn generalise_contour(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
         // the furthest vertex that comes back within the minimum mouth on a short detour
         let mut jump = None;
         let mut j = i + 1;
-        while j < pts.len() && cum[j] - cum[i] <= MAX_DETOUR_M {
+        while j < pts.len() && cum[j] - cum[i] <= minima.contour_max_detour {
             let along = cum[j] - cum[i];
-            if along > MIN_MOUTH_M
-                && along < total - MIN_MOUTH_M
-                && dist(pts[i], pts[j]) < MIN_MOUTH_M
+            if along > mouth
+                && along < total - mouth
+                && dist(pts[i], pts[j]) < mouth
                 && pts[i + 1..j]
                     .iter()
-                    .all(|p| seg_dist(*p, pts[i], pts[j]) < MIN_MOUTH_M)
+                    .all(|p| seg_dist(*p, pts[i], pts[j]) < mouth)
             {
                 jump = Some(j);
             }
@@ -486,22 +486,21 @@ fn generalise_contour(pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
 /// that "contours shall be adapted or broken in order not to touch" them. The knoll's
 /// position is the whole information the symbol carries, so the contour is the side that
 /// gives way. 109 is a 0.4 mm dot on the 1:15,000 original (a 6 m footprint, 3 m radius)
-/// plus half a contour width of air.
-const KNOLL_CLEAR_M: f64 = 3.5;
-
+/// plus half a contour width of air: `clearance`, [`IsomMinima::knoll_clearance`] (3.5 m).
+///
 /// Break a contour into the pieces that stay clear of the knoll symbols, dropping any
 /// piece too short to be a line.
 ///
 /// Cuts at vertices rather than interpolating the exact crossing point. Contour vertices
 /// are ~1.2 m apart, well inside the clearance, so the gap is right to within a vertex.
-fn break_at_knolls(pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+fn break_at_knolls(pts: &[[f64; 2]], knolls: &[[f64; 2]], clearance: f64) -> Vec<Vec<[f64; 2]>> {
     if knolls.is_empty() {
         return vec![pts.to_vec()];
     }
     let mut parts = Vec::new();
     let mut cur: Vec<[f64; 2]> = Vec::new();
     for p in pts {
-        if knolls.iter().any(|k| dist(*k, *p) < KNOLL_CLEAR_M) {
+        if knolls.iter().any(|k| dist(*k, *p) < clearance) {
             if cur.len() > 1 {
                 parts.push(std::mem::take(&mut cur));
             } else {
@@ -527,11 +526,20 @@ fn is_contour_family(code: IsomCode) -> bool {
 /// Apply the ISOM contour rules to one published line: generalise detail below what the
 /// symbol can carry, then break where a knoll symbol needs room. Anything that is not a
 /// contour passes through as a single piece, untouched.
-fn conform_contour(code: IsomCode, pts: &[[f64; 2]], knolls: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+fn conform_contour(
+    code: IsomCode,
+    pts: &[[f64; 2]],
+    knolls: &[[f64; 2]],
+    minima: &IsomMinima,
+) -> Vec<Vec<[f64; 2]>> {
     if !is_contour_family(code) {
         return vec![pts.to_vec()];
     }
-    break_at_knolls(&generalise_contour(pts), knolls)
+    break_at_knolls(
+        &generalise_contour(pts, minima),
+        knolls,
+        minima.knoll_clearance,
+    )
 }
 
 /// ISOM 109/110/111 point symbols must not touch or overlap each other either (12 m
@@ -918,14 +926,15 @@ fn published_pieces(
     pts: &[[f64; 2]],
     closed: bool,
     knolls: &[[f64; 2]],
+    minima: &IsomMinima,
 ) -> Vec<Vec<[f64; 2]>> {
-    conform_contour(code, pts, knolls)
+    conform_contour(code, pts, knolls, minima)
         .into_iter()
         .flat_map(|piece| {
             let still_closed = closed && piece.first() == piece.last();
             let sampled = curve_points(code, &piece, still_closed);
             if is_contour_family(code) {
-                break_at_knolls(&sampled, knolls)
+                break_at_knolls(&sampled, knolls, minima.knoll_clearance)
             } else {
                 vec![sampled]
             }
@@ -1111,8 +1120,10 @@ fn dxf_polyline(out: &mut String, layer: &str, pts: &[[f64; 2]], closed: bool, e
 }
 
 /// The combined export being assembled: DXF entities (layer = symbol code), GeoJSON
-/// features per table, the layers used and the extent.
+/// features per table, the layers used and the extent; the contours are conformed to
+/// `minima`.
 struct Combined {
+    minima: IsomMinima,
     dxf: String,
     tables: HashMap<IsomTable, Vec<geojson_types::Feature>>,
     layers: BTreeSet<IsomCode>,
@@ -1121,8 +1132,9 @@ struct Combined {
 }
 
 impl Combined {
-    fn new() -> Self {
+    fn new(minima: IsomMinima) -> Self {
         Self {
+            minima,
             dxf: String::new(),
             tables: HashMap::new(),
             layers: BTreeSet::new(),
@@ -1176,7 +1188,7 @@ impl Combined {
         };
         let pts = smoothed(code, pts);
         let closed = pts.len() > 3 && pts.first() == pts.last();
-        for piece in published_pieces(code, &pts, closed, knolls) {
+        for piece in published_pieces(code, &pts, closed, knolls, &self.minima) {
             let closed = closed && piece.first() == piece.last();
             self.dxf_entity(code, &piece, closed, level_m);
             self.feature(
@@ -1193,7 +1205,7 @@ impl Combined {
         let code = isom_code(&props);
         let mut coords = Vec::new();
         for ring in rings {
-            for piece in published_pieces(code, ring, true, knolls) {
+            for piece in published_pieces(code, ring, true, knolls, &self.minima) {
                 self.dxf_entity(code, &piece, true, None);
                 coords.push(Value::Array(coords_line(piece)));
             }
@@ -1245,8 +1257,8 @@ impl Combined {
 /// features in `contours` or `cliffs`. On the way:
 /// - knoll and small depression points: spacing-filtered by [`published_knolls`];
 /// - contours and form lines: one Chaikin pass, ISOM generalisation, broken around the
-///   published knolls (`merged.dxf.bin` leaves the half-interval contours out, as the
-///   tables do);
+///   published knolls, with the ISOM sizes at `frame`'s map scale (`merged.dxf.bin`
+///   leaves the half-interval contours out, as the tables do);
 /// - cliffs: KP's per-cell dashes chained into cliff lines, too-short faces dropped;
 /// - curve symbols get Bezier SPLINEs in the DXF and the same curve, sampled, in the
 ///   GeoJSON.
@@ -1256,6 +1268,7 @@ pub fn export_combined(
     fs: &impl FileSystem,
     batchoutfolder: &Path,
     merged_bin: &Path,
+    frame: &MapFrame,
     epsg: Option<u32>,
 ) -> anyhow::Result<()> {
     use geojson_types::FeatureProperties as P;
@@ -1298,7 +1311,7 @@ pub fn export_combined(
     };
     let knoll_pts: Vec<[f64; 2]> = knolls.iter().map(|(p, _)| *p).collect();
 
-    let mut out = Combined::new();
+    let mut out = Combined::new(frame.isom_minima());
     // cliff dash midpoints per cliff symbol, chained into cliff lines below
     let mut cliffs: BTreeMap<_, (geojson_types::CliffProperties, Vec<[f64; 2]>)> = BTreeMap::new();
     let mut add_dash = |props: geojson_types::CliffProperties, pts: &[[f64; 2]]| {
@@ -1398,6 +1411,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const CONTOUR: Classification = Classification::Contour(ContourKind::CONTOUR);
+
+    /// The ISOM minima at the default map scale.
+    fn minima() -> IsomMinima {
+        MapFrame::default().isom_minima()
+    }
 
     #[test]
     fn table_file_names() {
@@ -1573,7 +1591,7 @@ mod tests {
         // a straight line with a 3 m spike that opens a 2 m mouth
         let mut pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
         pts.splice(20..20, [[20.0, 3.0], [21.0, 3.0]]);
-        let out = generalise_contour(&pts);
+        let out = generalise_contour(&pts, &minima());
         assert!(
             out.iter().all(|p| p[1] == 0.0),
             "sub-minimum spike survived: {out:?}"
@@ -1594,10 +1612,10 @@ mod tests {
             .chain((0..30).rev().map(|i| [22.0, -f64::from(i)]))
             .collect();
         pts.splice(20..20, deep);
-        let out = generalise_contour(&pts);
+        let out = generalise_contour(&pts, &minima());
         let depth = out.iter().fold(0.0f64, |d, p| d.min(p[1]));
         assert!(
-            depth <= -29.0 + MIN_MOUTH_M,
+            depth <= -29.0 + minima().contour_mouth,
             "a 29 m re-entrant lost more than the ISOM minimum: kept only {depth} m"
         );
     }
@@ -1607,18 +1625,18 @@ mod tests {
     #[test]
     fn break_at_knolls_opens_a_gap_around_the_symbol() {
         let pts: Vec<[f64; 2]> = (0..40).map(|i| [f64::from(i), 0.0]).collect();
-        let parts = break_at_knolls(&pts, &[[20.0, 0.0]]);
+        let parts = break_at_knolls(&pts, &[[20.0, 0.0]], 3.5);
         assert_eq!(parts.len(), 2, "contour was not broken");
         for part in &parts {
             for p in part {
                 assert!(
-                    dist(*p, [20.0, 0.0]) >= KNOLL_CLEAR_M,
+                    dist(*p, [20.0, 0.0]) >= 3.5,
                     "contour still touches the knoll at {p:?}"
                 );
             }
         }
         // and a contour nowhere near a knoll is left as one piece
-        assert_eq!(break_at_knolls(&pts, &[[20.0, 50.0]]).len(), 1);
+        assert_eq!(break_at_knolls(&pts, &[[20.0, 50.0]], 3.5).len(), 1);
     }
 
     #[test]
@@ -1627,10 +1645,17 @@ mod tests {
         let knolls = [[10.0, 1.0], [30.0, -1.0]];
         use IsomCode::*;
         for code in [C101_000, C101_001, C102_000, C103_000] {
-            assert_eq!(conform_contour(code, &pts, &knolls).len(), 3, "{code}");
+            assert_eq!(
+                conform_contour(code, &pts, &knolls, &minima()).len(),
+                3,
+                "{code}"
+            );
         }
         // a cliff passes through whole, even next to a knoll
-        assert_eq!(conform_contour(C201_000, &pts, &knolls), vec![pts.clone()]);
+        assert_eq!(
+            conform_contour(C201_000, &pts, &knolls, &minima()),
+            vec![pts.clone()]
+        );
     }
 
     #[test]
@@ -2249,6 +2274,7 @@ mod tests {
             &fs,
             out,
             Path::new(crate::merge::MERGED_DXF_BIN),
+            &MapFrame::default(),
             Some(25832),
         )
         .unwrap();
@@ -2283,7 +2309,10 @@ mod tests {
         use IsomCode::*;
         for f in &by_code[&C101_000] {
             let pts = line_points(&f.geometry.coordinates);
-            assert!(pts.iter().all(|p| dist(*p, [50.0, 0.0]) >= KNOLL_CLEAR_M));
+            assert!(
+                pts.iter()
+                    .all(|p| dist(*p, [50.0, 0.0]) >= minima().knoll_clearance)
+            );
         }
         assert_eq!(
             line_points(&by_code[&C103_000][0].geometry.coordinates)[0][1],
@@ -2379,7 +2408,7 @@ mod tests {
         .to_writer(&mut fs.create(bin).unwrap())
         .unwrap();
 
-        export_combined(&fs, out, bin, None).unwrap();
+        export_combined(&fs, out, bin, &MapFrame::default(), None).unwrap();
 
         let combined = read_combined(&fs, out);
         assert!(
@@ -2442,7 +2471,7 @@ mod tests {
         .to_writer(&mut fs.create(bin).unwrap())
         .unwrap();
 
-        export_combined(&fs, out, bin, None).unwrap();
+        export_combined(&fs, out, bin, &MapFrame::default(), None).unwrap();
 
         let combined = read_combined(&fs, out);
         let lines: Vec<Vec<[f64; 2]>> = combined
@@ -2466,7 +2495,14 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
-        export_combined(&fs, out, Path::new(crate::merge::MERGED_DXF_BIN), None).unwrap();
+        export_combined(
+            &fs,
+            out,
+            Path::new(crate::merge::MERGED_DXF_BIN),
+            &MapFrame::default(),
+            None,
+        )
+        .unwrap();
         for &table in IsomTable::ALL {
             assert!(!fs.exists(out.join(file_name(table))));
         }

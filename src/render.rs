@@ -330,15 +330,14 @@ fn draw_cliffs(
 
 /// Is a closed form line ring smaller than ISOM allows the symbol to be drawn?
 ///
-/// ISOM 2017-2 sets the minimum closed form line (knoll or depression) at 1.1 OM on the
-/// 1:15,000 original, which is 1.65 mm at the 1:10,000 we render — 16.5 m on the ground.
-/// Measured on the ring's longer bounding-box side, so an elongated ring is judged by
-/// its length: this drops specks, not real knolls.
+/// ISOM 2017-2 sets the minimum closed form line (knoll or depression) at 1.1 mm on the
+/// 1:15,000 original ([`MapFrame::isom_minima`]: 16.5 m on the ground at 1:15 000 and,
+/// symbols enlarged, at 1:10 000). Measured on the ring's longer bounding-box side, so an
+/// elongated ring is judged by its length: this drops specks, not real knolls.
 ///
 /// `x`/`y` arrive in sheet pixels of `frame`, so its metres per pixel convert back to
 /// ground metres.
 fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], frame: &MapFrame) -> bool {
-    const MIN_GROUND_M: f64 = 16.5;
     let (mut xmin, mut xmax) = (f64::MAX, f64::MIN);
     let (mut ymin, mut ymax) = (f64::MAX, f64::MIN);
     for (&px, &py) in x.iter().zip(y.iter()) {
@@ -347,18 +346,15 @@ fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], frame: &MapFrame) -> boo
         ymin = ymin.min(py);
         ymax = ymax.max(py);
     }
-    (xmax - xmin).max(ymax - ymin) * frame.metres_per_px() < MIN_GROUND_M
+    (xmax - xmin).max(ymax - ymin) * frame.metres_per_px() < frame.isom_minima().ring_length
 }
 
 /// Parameters of [`draw_curves`], which draws the contours and selects and dashes the
 /// form lines.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurveRenderParams {
-    /// The sheet the lines are drawn on (ini `scalefactor`).
+    /// The sheet the lines are drawn on (ini `mapscale`).
     pub frame: MapFrame,
-    /// Part of the steepness threshold (ini `scalefactor`). Stays here until
-    /// `pr/metre-lengths`.
-    pub scalefactor: f64,
     /// Whether the half-interval lines are selected into form lines (ini `form_lines`).
     pub form_lines: FormLineMode,
     /// Local relief threshold of the form-line selection; greater gives more form lines
@@ -397,8 +393,7 @@ pub fn draw_curves(
     // Drawing curves --------------
     let &CurveRenderParams {
         frame,
-        scalefactor,
-        mut formlinesteepness,
+        formlinesteepness,
         form_lines,
         formlineaddition,
         dashlength,
@@ -409,7 +404,6 @@ pub fn draw_curves(
         depressions_color,
     } = params;
     let selective = form_lines == FormLineMode::Selective;
-    formlinesteepness *= scalefactor;
 
     let mut size: f64 = 0.0;
     let mut xstart: f64 = 0.0;
@@ -1011,7 +1005,7 @@ mod tests {
 
     #[test]
     fn rings_below_the_isom_minimum_are_rejected() {
-        // ISOM 2017-2 symbol 103: minimum closed form line 1.65 mm at 1:10,000 = 16.5 m.
+        // ISOM 2017-2 symbol 103: minimum closed form line 1.1 mm at 1:15,000 = 16.5 m.
         let frame = MapFrame::default();
         let (x, y) = ring(10.0, &frame);
         assert!(closed_ring_below_isom_minimum(&x, &y, &frame));
@@ -1031,7 +1025,8 @@ mod tests {
 
     #[test]
     fn the_bound_is_ground_distance_not_pixels() {
-        // Same 20 m ring at 1:15 000 => 2/3 of the pixels, and the verdict must not change.
+        // Same 20 m ring at 1:15 000 => 2/3 of the pixels, and the verdict must not change;
+        // the bound is the same 16.5 m there.
         for scale in [10_000.0, 15_000.0] {
             let frame = at_scale(scale);
             let (x, y) = ring(20.0, &frame);
@@ -1039,6 +1034,10 @@ mod tests {
             let (x, y) = ring(16.0, &frame);
             assert!(closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
         }
+        // 1:5 000 draws symbols at 100 %: the minimum is 5.5 m.
+        let frame = at_scale(5_000.0);
+        let (x, y) = ring(6.0, &frame);
+        assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
     }
 
     #[test]

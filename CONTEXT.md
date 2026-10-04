@@ -56,6 +56,8 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Symbol table**: The machine-readable list of ISOM 2017-2 symbols the vector output may emit: the vendored, pinned `isom.yaml` of MetsaApp/isom-maplibre, giving each code its table and drawing. _Avoid_: symbol set (a mapping program's file), legend
 **Table**: The named group of vector features one style source reads, e.g. `contours`, `cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`; each GeoJSON output is one table. MapLibre calls it a source layer. _Avoid_: layer (only a DXF container), output kind
 **Map frame**: Scale, resolution, origin and north rotation of the rendered sheet; `MapFrame` holds the resolution and map scale. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre.
+**Map scale**: The ratio of a map length to the ground length it shows, 1:10 000 by default; the `mapscale` ini key is its denominator. It sizes the rendered sheet only: ground lengths such as the cell size and the contour interval are set in metres and do not follow it. _Avoid_: scalefactor
+**ISOM minimum**: The smallest size ISOM 2017-2 lets a symbol be drawn at, given in mm on the 1:15 000 original; in ground metres it is mm x the map scale's denominator x the symbol enlargement (150 % at 1:10 000, so the ground sizes match 1:15 000; 100 % at any scale ISOM 2017-2 does not define). The combined export, smoothjoin and the renderer enforce the contour mouth, knoll clearance, closed ring and slope line minima (`IsomMinima`). _Avoid_: min size, OM
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
 
 ### Development

@@ -20,7 +20,7 @@ const GROUND_METRES_PER_INCH_AT_10K: f64 = 254.0;
 pub struct MapFrame {
     /// Dots per map inch of the rendered sheet (600; no ini key).
     pub dpi: f64,
-    /// The map scale's denominator, 10 000 for 1:10 000 (ini `scalefactor` x 10 000).
+    /// The map scale's denominator, 10 000 for 1:10 000 (ini `mapscale`).
     pub scale_denominator: f64,
 }
 
@@ -32,6 +32,40 @@ impl Default for MapFrame {
         }
     }
 }
+
+/// ISOM 2017-2 minimum sizes the vector output and the renderer enforce on contours, knoll
+/// symbols and depressions. [`ISOM_MINIMA_MM`] holds them in mm on the map at the symbol
+/// size of the 1:15 000 original; [`MapFrame::isom_minima`] gives them in ground metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct IsomMinima {
+    /// A contour keeps a re-entrant or spur whose mouth is wider than this; narrower
+    /// wobbles are spliced out (combined export).
+    pub contour_mouth: f64,
+    /// The most line one such splice may consume (combined export).
+    pub contour_max_detour: f64,
+    /// Contours break this far around a knoll or small depression symbol (combined export).
+    pub knoll_clearance: f64,
+    /// A closed contour or form line shorter than this on its longer side is too small to
+    /// draw as a line: no closed form line (render) and no contour depression (smoothjoin).
+    pub ring_length: f64,
+    /// … and a contour depression narrower than this on its shorter side.
+    pub ring_width: f64,
+    /// Length of a depression's slope line (smoothjoin).
+    pub slope_line: f64,
+}
+
+/// [`IsomMinima`] in mm on the map at the 1:15 000 symbol size. The mouth is 0.5 mm with a
+/// margin (8 m at 1:15 000); the detour bound is no ISOM rule but scales with the mouth;
+/// the knoll clearance is the 0.2 mm radius of the 0.4 mm dot plus half a contour width
+/// of air (3.5 m); closed rings are 1.1 x 0.7 mm; the slope line is 0.4 mm.
+pub const ISOM_MINIMA_MM: IsomMinima = IsomMinima {
+    contour_mouth: 8.0 / 15.0,
+    contour_max_detour: 1.6,
+    knoll_clearance: 3.5 / 15.0,
+    ring_length: 1.1,
+    ring_width: 0.7,
+    slope_line: 0.4,
+};
 
 impl MapFrame {
     /// The map scale as a multiple of 1:10 000, which the 254 m inch is given for.
@@ -57,6 +91,45 @@ impl MapFrame {
     /// A sheet length in pixels as ground metres: the inverse of [`Self::to_px`].
     pub fn to_metres(&self, px: f64) -> f64 {
         px / self.dpi * GROUND_METRES_PER_INCH_AT_10K * self.per_10k()
+    }
+
+    /// Whether ISOM 2017-2 defines this map scale: 1:15 000, or 1:10 000 with the symbols
+    /// enlarged.
+    pub fn is_isom_scale(&self) -> bool {
+        self.scale_denominator == 10_000.0 || self.scale_denominator == 15_000.0
+    }
+
+    /// How much the symbols are enlarged over the 1:15 000 original: 150 % at 1:10 000
+    /// (ISOM 2017-2), so a symbol covers the same ground at both scales. Other scales,
+    /// which ISOM 2017-2 does not define, draw the symbols at 100 %.
+    pub fn symbol_enlargement(&self) -> f64 {
+        if self.scale_denominator == 10_000.0 {
+            1.5
+        } else {
+            1.0
+        }
+    }
+
+    /// [`ISOM_MINIMA_MM`] in ground metres: mm on the map x the scale denominator x the
+    /// symbol enlargement.
+    pub fn isom_minima(&self) -> IsomMinima {
+        let ground = |mm: f64| mm * self.scale_denominator * self.symbol_enlargement() / 1000.0;
+        let IsomMinima {
+            contour_mouth,
+            contour_max_detour,
+            knoll_clearance,
+            ring_length,
+            ring_width,
+            slope_line,
+        } = ISOM_MINIMA_MM;
+        IsomMinima {
+            contour_mouth: ground(contour_mouth),
+            contour_max_detour: ground(contour_max_detour),
+            knoll_clearance: ground(knoll_clearance),
+            ring_length: ground(ring_length),
+            ring_width: ground(ring_width),
+            slope_line: ground(slope_line),
+        }
     }
 }
 
@@ -183,6 +256,42 @@ mod tests {
             frame.to_px(d).to_bits() != (d * frame.px_per_metre()).to_bits()
         });
         assert!(any_differs, "fused and unfused conversions never differed");
+    }
+
+    /// At 1:10 000 (enlarged 150 %) and at 1:15 000 the minima are the ground metres the
+    /// stages had as constants, bit for bit.
+    #[test]
+    fn isom_minima_are_the_old_ground_metres_at_both_isom_scales() {
+        for scale_denominator in [10_000.0, 15_000.0] {
+            let frame = MapFrame {
+                scale_denominator,
+                ..MapFrame::default()
+            };
+            assert!(frame.is_isom_scale());
+            let m = frame.isom_minima();
+            let bits = |v: f64| v.to_bits();
+            assert_eq!(bits(m.contour_mouth), bits(8.0), "{scale_denominator}");
+            assert_eq!(bits(m.contour_max_detour), bits(24.0));
+            assert_eq!(bits(m.knoll_clearance), bits(3.5));
+            assert_eq!(bits(m.ring_length), bits(16.5));
+            assert_eq!(bits(m.ring_width), bits(10.5));
+            assert_eq!(bits(m.slope_line), bits(6.0));
+        }
+    }
+
+    /// Outside ISOM's two scales the symbols are not enlarged: 1:4 000 gets 4/15 of the
+    /// 1:15 000 ground sizes.
+    #[test]
+    fn isom_minima_follow_other_scales_at_full_symbol_size() {
+        let frame = MapFrame {
+            scale_denominator: 4_000.0,
+            ..MapFrame::default()
+        };
+        assert!(!frame.is_isom_scale());
+        assert_eq!(frame.symbol_enlargement(), 1.0);
+        let m = frame.isom_minima();
+        assert!((m.ring_length - 4.4).abs() < 1e-12);
+        assert!((m.slope_line - 1.6).abs() < 1e-12);
     }
 
     #[test]

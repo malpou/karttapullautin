@@ -12,7 +12,7 @@ use crate::geometry::{
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::mapframe::WorldFile;
+use crate::mapframe::{IsomMinima, WorldFile};
 use crate::vec2d::Vec2D;
 use image::buffer::ConvertBuffer;
 
@@ -371,10 +371,11 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
 ///
 /// ISOM 2017-2 (symbol 101) requires at least one slope line on a depression, drawn
 /// perpendicular to the contour and pointing downslope — i.e. into the ring. Its length
-/// is 0.4 OM on the 1:15,000 original, 0.6 mm at the 1:10,000 we render, which is 6 m on
-/// the ground; coordinates here are ground metres. A depression below ISOM's minimum
-/// size (1.1 x 0.7 OM -> 1.65 x 1.05 mm -> 16.5 x 10.5 m) is not drawable as a contour
-/// depression at all — those are the small-depression symbol's job — so it gets no tick.
+/// is 0.4 mm on the 1:15,000 original, `minima.slope_line` on the ground (6 m at 1:15 000
+/// and 1:10 000); coordinates here are ground metres. A depression below ISOM's minimum
+/// size (1.1 x 0.7 mm, `minima.ring_length` x `minima.ring_width`, 16.5 x 10.5 m) is not
+/// drawable as a contour depression at all — those are the small-depression symbol's
+/// job — so it gets no tick.
 ///
 /// Direction is decided by testing whether the tick's far end lands INSIDE the ring, not
 /// by aiming at the ring's centroid: a depression ring is often a long crescent, and a
@@ -389,10 +390,9 @@ fn decorate_depression(
     el_x: &[f64],
     el_y: &[f64],
     h: f64,
+    minima: &IsomMinima,
 ) -> Option<(Vec<Point3>, Classification)> {
-    const LENGTH_M: f64 = 6.0;
-    const MIN_WIDTH_M: f64 = 10.5;
-    const MIN_LENGTH_M: f64 = 16.5;
+    let length_m = minima.slope_line;
     /// Positions tried around the ring; the best-clearance one wins.
     const CANDIDATES: usize = 12;
 
@@ -409,12 +409,12 @@ fn decorate_depression(
         ymax = ymax.max(y);
     }
     let (w, hgt) = (xmax - xmin, ymax - ymin);
-    if w.max(hgt) < MIN_LENGTH_M || w.min(hgt) < MIN_WIDTH_M {
+    if w.max(hgt) < minima.ring_length || w.min(hgt) < minima.ring_width {
         // draw a small depression
-        let center = ((xmax + xmin) / 2.0, (ymax + ymin + LENGTH_M) / 2.0);
+        let center = ((xmax + xmin) / 2.0, (ymax + ymin + length_m) / 2.0);
         let steps = 8;
         let mut points = Vec::with_capacity(steps);
-        let radius = LENGTH_M;
+        let radius = length_m;
         for i in 0..steps {
             // Angle from 0 to PI (semi-circle)
             let angle = std::f64::consts::PI * ((i as f64) / ((steps - 1) as f64) + 1.0);
@@ -437,7 +437,7 @@ fn decorate_depression(
         }
         // Both perpendiculars; keep whichever ends up inside the ring.
         for (nx, ny) in [(-ty / len, tx / len), (ty / len, -tx / len)] {
-            let (ex, ey) = (el_x[i] + nx * LENGTH_M, el_y[i] + ny * LENGTH_M);
+            let (ex, ey) = (el_x[i] + nx * length_m, el_y[i] + ny * length_m);
             if !ring.contains(Point2::new(ex, ey)) {
                 continue;
             }
@@ -466,7 +466,7 @@ pub enum FormLineMode {
 
 impl FormLineMode {
     /// The trace interval of a map at `contour_interval`: the vertical distance between
-    /// traced lines, in metres (before `scalefactor`).
+    /// traced lines, in metres.
     pub fn trace_interval(self, contour_interval: f64) -> f64 {
         match self {
             Self::None => contour_interval,
@@ -479,9 +479,6 @@ impl FormLineMode {
 /// kind, and picks out depressions, knoll heads and dot knolls.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SmoothJoinParams {
-    /// Scales the map: part of the trace interval (ini `scalefactor`). Stays here until
-    /// the scalefactor split.
-    pub scalefactor: f64,
     /// The map's contour interval in metres (ini `contour_interval`); index contours are
     /// every fifth contour.
     pub contour_interval: f64,
@@ -498,18 +495,20 @@ pub struct SmoothJoinParams {
     /// Mark each depression's downhill side with a slope line (ini `decorate_depressions`).
     pub decorate_depressions: bool,
     /// How distinct a small closed line must be to stay a contour rather than become a
-    /// dot knoll: the share of its vertices that must be steep, and, times 0.45-0.9 m
-    /// (and `scalefactor`), its relief (ini `knolls`).
+    /// dot knoll: the share of its vertices that must be steep, and, times 0.45-0.9 m,
+    /// its relief (ini `knolls`).
     pub inidotknolls: f64,
+    /// The ISOM minimum depression size and slope line length, in ground metres
+    /// ([`crate::mapframe::MapFrame::isom_minima`], ini `mapscale`).
+    pub isom_minima: IsomMinima,
 }
 
 impl SmoothJoinParams {
-    /// How the traced lines map to contour kinds: traced every trace interval (times
-    /// `scalefactor`), index contours every fifth contour.
+    /// How the traced lines map to contour kinds: traced every trace interval, index
+    /// contours every fifth contour.
     pub fn levels(&self) -> ContourLevels {
         ContourLevels {
-            trace_interval: self.form_lines.trace_interval(self.contour_interval)
-                * self.scalefactor,
+            trace_interval: self.form_lines.trace_interval(self.contour_interval),
             index_interval: 5.0 * self.contour_interval,
             half_interval_lines: self.form_lines == FormLineMode::Selective,
         }
@@ -525,7 +524,6 @@ pub fn smoothjoin(
     info!("Smooth curves...");
 
     let &SmoothJoinParams {
-        scalefactor,
         inidotknolls,
         smoothing,
         curviness,
@@ -680,13 +678,13 @@ pub fn smoothjoin(
                         && el_x_len < 41
                         && depression as f64 * h_center - 1.9 < minele
                     {
-                        if maxele - 0.45 * scalefactor * inidotknolls < minele {
+                        if maxele - 0.45 * inidotknolls < minele {
                             skip = true;
                         }
-                        if el_x_len < 33 && maxele - 0.75 * scalefactor * inidotknolls < minele {
+                        if el_x_len < 33 && maxele - 0.75 * inidotknolls < minele {
                             skip = true;
                         }
-                        if el_x_len < 19 && maxele - 0.9 * scalefactor * inidotknolls < minele {
+                        if el_x_len < 19 && maxele - 0.9 * inidotknolls < minele {
                             skip = true;
                         }
                     }
@@ -904,7 +902,8 @@ pub fn smoothjoin(
                 // original countour
                 if decorate_depressions
                     && layer.is_depression()
-                    && let Some((form, class)) = decorate_depression(&el_x[l], &el_y[l], h)
+                    && let Some((form, class)) =
+                        decorate_depression(&el_x[l], &el_y[l], h, &params.isom_minima)
                 {
                     if class == Classification::SmallDepression {
                         out2_lines.pop();
@@ -937,8 +936,13 @@ pub fn smoothjoin(
 #[cfg(test)]
 mod tests {
     use super::Classification;
-    use super::decorate_depression;
-    use crate::geometry::{Point2, Ring};
+    use crate::geometry::{Point2, Point3, Ring};
+    use crate::mapframe::MapFrame;
+
+    /// decorate_depression at the default map scale.
+    fn decorate_depression(x: &[f64], y: &[f64], h: f64) -> Option<(Vec<Point3>, Classification)> {
+        super::decorate_depression(x, y, h, &MapFrame::default().isom_minima())
+    }
     // A closed ring approximating a circle of the given ground radius, in metres.
     fn ring(radius: f64) -> (Vec<f64>, Vec<f64>) {
         let (mut x, mut y) = (Vec::new(), Vec::new());
@@ -970,7 +974,7 @@ mod tests {
     fn the_tick_is_the_isom_length() {
         let (x, y) = ring(20.0);
         let (tick, _class) = decorate_depression(&x, &y, 0.0).unwrap();
-        // 0.4 OM -> 0.6 mm at 1:10,000 -> 6 m on the ground.
+        // 0.4 mm at 1:15,000 (0.6 mm at 1:10,000) -> 6 m on the ground.
         let len = ((tick[1].x - tick[0].x).powi(2) + (tick[1].y - tick[0].y).powi(2)).sqrt();
         assert!((len - 6.0).abs() < 1e-9, "{len}");
     }
@@ -981,6 +985,22 @@ mod tests {
         let (x, y) = ring(4.0);
         let (_tick, class) = decorate_depression(&x, &y, 0.0).unwrap();
         assert!(class == Classification::SmallDepression);
+    }
+
+    /// At 1:4 000 (symbols at 100 %) the minimum is 4.4 x 2.8 m and the slope line 1.6 m:
+    /// the 8 m ring that is a small depression at 1:10 000 carries a short tick.
+    #[test]
+    fn the_isom_sizes_follow_the_map_scale() {
+        let (x, y) = ring(4.0);
+        let minima = MapFrame {
+            scale_denominator: 4_000.0,
+            ..MapFrame::default()
+        }
+        .isom_minima();
+        let (tick, class) = super::decorate_depression(&x, &y, 0.0, &minima).unwrap();
+        assert!(class == Classification::SlopeLine);
+        let len = ((tick[1].x - tick[0].x).powi(2) + (tick[1].y - tick[0].y).powi(2)).sqrt();
+        assert!((len - 1.6).abs() < 1e-9, "{len}");
     }
 
     #[test]

@@ -499,7 +499,6 @@ pub fn process_tile(
     timing.start_section("knoll detection part 1");
 
     let &Config {
-        scalefactor,
         vegeonly,
         cliffsonly,
         contoursonly,
@@ -519,7 +518,7 @@ pub fn process_tile(
         contours::heightmap2contours(
             fs,
             tmpfolder,
-            scalefactor * 0.3,
+            config.knoll.candidate_interval_m,
             &xyz_03,
             "contours03.dxf.bin", // dxf curves generated from the heightmap
             config.output_dxf,

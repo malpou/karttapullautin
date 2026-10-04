@@ -12,6 +12,13 @@ use crate::io::heightmap::HeightMap;
 use crate::io::xyz::{LasClass, XyzInternalReader};
 use crate::vec2d::Vec2D;
 
+/// Parameters of [`xyz2heightmap`], which grids the ground returns into the ground model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroundParams {
+    /// Cell size of the ground model in metres (2; no ini key).
+    pub cell_size_m: f64,
+}
+
 /// Create a heightmap from a point cloud file.
 ///
 /// Loads all the points and uses those that are classified as ground or water to create a heightmap using averages.
@@ -68,7 +75,7 @@ pub fn xyz2heightmap(
     }
     drop(reader);
 
-    let scale = 2.0 * config.scalefactor;
+    let scale = config.ground.cell_size_m;
 
     // align bounding box to a grid with the required scale
     let xmin = (xmin / scale).floor() * scale;
@@ -929,14 +936,13 @@ mod tests {
         assert!(found > 10, "the old lookup found {found} levels");
     }
 
-    /// At scalefactor 1.3 (cell size and half interval not binary fractions) the old
+    /// At a 2.6 m cell and a 1.625 m trace interval (not binary fractions) the old
     /// lookup's exact on-grid test can miss every vertex and return NaN; the traced level
     /// is always there.
     #[test]
     fn level_is_known_where_the_old_lookup_gave_nan() {
-        let scalefactor = 1.3;
-        let interval = 2.5 / 2.0 * scalefactor;
-        let frame = (1000.1, 2000.3, 2.0 * scalefactor);
+        let interval = 2.5 / 2.0 * 1.3;
+        let frame = (1000.1, 2000.3, 2.0 * 1.3);
         let g = grid(31, 31, |x, y| cone(15.0, 30.0)(x, y) + 0.3 * x);
         let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
         let mut nan = 0;
