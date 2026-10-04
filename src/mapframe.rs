@@ -1,21 +1,64 @@
-//! The map frame: 600 dpi at 1:10 000. One map inch is 10 000 ground inches, 254 m, so the
-//! sheet has 600 / 254 pixels per ground metre before `scalefactor`.
+//! The map frame: the sheet's resolution and map scale. At 600 dpi and 1:10 000 one map
+//! inch is 254 ground metres, so the sheet has 600 / 254 pixels per ground metre.
 //!
-//! Call sites keep their own operator order (`d * DPI / GROUND_METRES_PER_INCH / scalefactor`
-//! or the inverse) because `(d * 600.0) / 254.0` and `d * (600.0 / 254.0)` round differently;
-//! `PX_PER_METRE` is only for sites that already computed the fused constant first.
+//! The conversions keep the operator order the render sites always had
+//! (`d * dpi / 254 / (scale / 10 000)` and its inverse) because `(d * 600.0) / 254.0` and
+//! `d * (600.0 / 254.0)` round differently; `px_per_metre()` is only for sites that
+//! already computed the fused factor first. The north lines are the exception: they now
+//! follow the map scale through `to_px` (off by default).
 
 use std::io::{BufRead, Write};
 use std::path::Path;
 
 use crate::io::fs::FileSystem;
 
-/// Dots per map inch of the rendered sheet.
-pub const DPI: f64 = 600.0;
 /// Ground metres covered by one map inch at 1:10 000.
-pub const GROUND_METRES_PER_INCH: f64 = 254.0;
-/// Pixels per ground metre before `scalefactor`, as one fused constant.
-pub const PX_PER_METRE: f64 = DPI / GROUND_METRES_PER_INCH;
+const GROUND_METRES_PER_INCH_AT_10K: f64 = 254.0;
+
+/// The rendered sheet's resolution and map scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapFrame {
+    /// Dots per map inch of the rendered sheet (600; no ini key).
+    pub dpi: f64,
+    /// The map scale's denominator, 10 000 for 1:10 000 (ini `scalefactor` x 10 000).
+    pub scale_denominator: f64,
+}
+
+impl Default for MapFrame {
+    fn default() -> Self {
+        Self {
+            dpi: 600.0,
+            scale_denominator: 10_000.0,
+        }
+    }
+}
+
+impl MapFrame {
+    /// The map scale as a multiple of 1:10 000, which the 254 m inch is given for.
+    fn per_10k(&self) -> f64 {
+        self.scale_denominator / 10_000.0
+    }
+
+    /// Pixels per ground metre, as one fused factor.
+    pub fn px_per_metre(&self) -> f64 {
+        self.dpi / GROUND_METRES_PER_INCH_AT_10K / self.per_10k()
+    }
+
+    /// Ground metres per pixel, as one fused factor.
+    pub fn metres_per_px(&self) -> f64 {
+        GROUND_METRES_PER_INCH_AT_10K / self.dpi * self.per_10k()
+    }
+
+    /// A ground length in metres as sheet pixels, multiplying first.
+    pub fn to_px(&self, metres: f64) -> f64 {
+        metres * self.dpi / GROUND_METRES_PER_INCH_AT_10K / self.per_10k()
+    }
+
+    /// A sheet length in pixels as ground metres: the inverse of [`Self::to_px`].
+    pub fn to_metres(&self, px: f64) -> f64 {
+        px / self.dpi * GROUND_METRES_PER_INCH_AT_10K * self.per_10k()
+    }
+}
 
 /// A six-line world file: pixel size x, rotation, rotation, pixel size y, x origin, y origin.
 ///
@@ -99,28 +142,47 @@ mod tests {
 
     #[test]
     fn px_per_metre_is_the_literal() {
-        assert_eq!(PX_PER_METRE.to_bits(), (600.0f64 / 254.0).to_bits());
+        let frame = MapFrame::default();
+        assert_eq!(frame.px_per_metre().to_bits(), (600.0f64 / 254.0).to_bits());
+        assert_eq!(
+            frame.metres_per_px().to_bits(),
+            (254.0f64 / 600.0).to_bits()
+        );
     }
 
-    /// Documents why two constants exist: swapping the fused constant into a call site that
-    /// multiplies first changes the rounding of some values.
+    #[test]
+    fn a_coarser_scale_has_fewer_pixels_per_metre() {
+        let frame = MapFrame {
+            scale_denominator: 15_000.0,
+            ..MapFrame::default()
+        };
+        let default = MapFrame::default().px_per_metre();
+        assert!((frame.px_per_metre() - default * 2.0 / 3.0).abs() < 1e-15);
+        assert_eq!(frame.to_px(381.0), 600.0);
+        assert_eq!(frame.to_metres(600.0), 381.0);
+    }
+
+    /// Documents why the frame converts in two ways: the fused factor rounds some values
+    /// differently from multiplying first, so each site keeps its order. At 1:10 000 the
+    /// conversions are the old `d * 600 / 254 / 1` and its inverse, bit for bit.
     #[test]
     fn operator_order_is_preserved() {
-        for (d, s) in [(3.0, 1.0), (1234.567, 1.0), (98765.4321, 2.0), (0.1, 0.5)] {
+        let frame = MapFrame::default();
+        for d in [3.0, 1234.567, 98765.4321, 0.1] {
             assert_eq!(
-                (d * DPI / GROUND_METRES_PER_INCH / s).to_bits(),
-                (d * 600.0 / 254.0 / s).to_bits()
+                frame.to_px(d).to_bits(),
+                (d * 600.0 / 254.0 / 1.0).to_bits()
             );
             assert_eq!(
-                (d / DPI * GROUND_METRES_PER_INCH * s).to_bits(),
-                (d / 600.0 * 254.0 * s).to_bits()
+                frame.to_metres(d).to_bits(),
+                (d / 600.0 * 254.0 * 1.0).to_bits()
             );
         }
         let any_differs = (1..1000).any(|i| {
             let d = i as f64 * 1.001;
-            (d * DPI / GROUND_METRES_PER_INCH).to_bits() != (d * PX_PER_METRE).to_bits()
+            frame.to_px(d).to_bits() != (d * frame.px_per_metre()).to_bits()
         });
-        assert!(any_differs, "fused and unfused constants never differed");
+        assert!(any_differs, "fused and unfused conversions never differed");
     }
 
     #[test]
@@ -166,7 +228,7 @@ mod tests {
     /// drawn with, printed with f64 digits; it survives a parse exactly.
     #[test]
     fn undergrowth_frame_text() {
-        let tmpfactor = (PX_PER_METRE / 1.0) as f32;
+        let tmpfactor = MapFrame::default().px_per_metre() as f32;
         let w = WorldFile::north_up(1.0 / f64::from(tmpfactor), 381234.0, 6671298.0);
         let mut out = Vec::new();
         w.write(&mut out).unwrap();
@@ -174,8 +236,12 @@ mod tests {
             out,
             b"0.42333332155810494\r\n0\r\n0\r\n-0.42333332155810494\r\n381234\r\n6671298\r\n"
         );
-        for scalefactor in [0.5, 1.0, 1.3] {
-            let tmpfactor = (PX_PER_METRE / scalefactor) as f32;
+        for scale_denominator in [5_000.0, 10_000.0, 13_000.0] {
+            let frame = MapFrame {
+                scale_denominator,
+                ..MapFrame::default()
+            };
+            let tmpfactor = frame.px_per_metre() as f32;
             let w = WorldFile::north_up(1.0 / f64::from(tmpfactor), 381234.0, 6671298.0);
             let mut out = Vec::new();
             w.write(&mut out).unwrap();

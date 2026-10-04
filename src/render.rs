@@ -8,7 +8,7 @@ use crate::geometry::Polylines;
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, WorldFile};
+use crate::mapframe::{MapFrame, WorldFile};
 use crate::merge::FormLineMode;
 use crate::vec2d::Vec2D;
 use image::ImageBuffer;
@@ -30,7 +30,7 @@ pub fn render(
 ) -> Result<(), Box<dyn Error>> {
     info!("Rendering...");
 
-    let scalefactor = config.scalefactor;
+    let frame = config.map_frame;
 
     let angle = -angle_deg / 180.0 * PI;
 
@@ -59,13 +59,14 @@ pub fn render(
     let w = img.width();
     let h = img.height();
 
-    let eastoff = -((x0 - (-angle).tan() * y0)
-        - ((x0 - (-angle).tan() * y0) / (250.0 / angle.cos())).floor() * (250.0 / angle.cos()))
-        / GROUND_METRES_PER_INCH
-        * DPI;
+    // the north lines' phase on the sheet; it used to skip the scale (`/ 254 * 600`)
+    let eastoff = -frame.to_px(
+        (x0 - (-angle).tan() * y0)
+            - ((x0 - (-angle).tan() * y0) / (250.0 / angle.cos())).floor() * (250.0 / angle.cos()),
+    );
 
-    let new_width = (w as f64 * DPI / GROUND_METRES_PER_INCH / scalefactor) as u32;
-    let new_height = (h as f64 * DPI / GROUND_METRES_PER_INCH / scalefactor) as u32;
+    let new_width = frame.to_px(w as f64) as u32;
+    let new_height = frame.to_px(h as f64) as u32;
     let mut img = image::imageops::resize(
         &img,
         new_width,
@@ -100,27 +101,20 @@ pub fn render(
 
     // north lines ----------------
     if angle != 999.0 {
-        let mut i: f64 =
-            eastoff - DPI * 250.0 / GROUND_METRES_PER_INCH / angle.cos() * 100.0 / scalefactor;
-        while i < w as f64 * 5.0 * DPI / GROUND_METRES_PER_INCH / scalefactor {
+        let mut i: f64 = eastoff - frame.to_px(250.0) / angle.cos() * 100.0;
+        while i < frame.to_px(w as f64 * 5.0) {
             for m in 0..nwidth {
                 draw_line_segment_mut(
                     &mut img,
                     (i as f32 + m as f32, 0.0),
                     (
-                        (i as f32
-                            + (angle.tan() * (h as f64) * DPI
-                                / GROUND_METRES_PER_INCH
-                                / scalefactor) as f32)
-                            + m as f32,
-                        (h as f32 * DPI as f32
-                            / GROUND_METRES_PER_INCH as f32
-                            / scalefactor as f32),
+                        (i as f32 + frame.to_px(angle.tan() * (h as f64)) as f32) + m as f32,
+                        frame.to_px(h as f64) as f32,
                     ),
                     Rgba([0, 0, 200, 255]),
                 );
             }
-            i += DPI * 250.0 / GROUND_METRES_PER_INCH / angle.cos() / scalefactor;
+            i += frame.to_px(250.0) / angle.cos();
         }
     }
 
@@ -143,8 +137,8 @@ pub fn render(
         }
 
         // convert point to image coordinates
-        let x = (point.x - x0) * DPI / GROUND_METRES_PER_INCH / scalefactor;
-        let y = (y0 - point.y) * DPI / GROUND_METRES_PER_INCH / scalefactor;
+        let x = frame.to_px(point.x - x0);
+        let y = frame.to_px(y0 - point.y);
 
         let color = Rgba([166, 85, 43, 255]);
         draw_filled_circle_mut(&mut img, (x as i32, y as i32), 7, color)
@@ -248,7 +242,7 @@ pub fn render(
     let mut pgw_file_out = fs
         .create(format!("{filename}.pgw"))
         .expect("Unable to create file");
-    map_world_file(&vege_frame, scalefactor)
+    map_world_file(&vege_frame, &frame)
         .write(&mut pgw_file_out)
         .expect("Unable to write to file");
     crate::crs::write_raster_crs(fs, format!("{filename}.png"), config.epsg)?;
@@ -265,7 +259,7 @@ fn draw_cliffs(
     x0: f64,
     y0: f64,
 ) -> Result<(), Box<dyn Error>> {
-    let scalefactor = config.scalefactor;
+    let frame = config.map_frame;
 
     let input = tmpfolder.join(file);
     let dxf = BinaryDxf::from_reader(&mut fs.open(input)?)?;
@@ -289,8 +283,8 @@ fn draw_cliffs(
 
         // scale and flip all points into pixel-space
         for p in line.iter_mut() {
-            p.x = (p.x - x0) * DPI / GROUND_METRES_PER_INCH / scalefactor;
-            p.y = (y0 - p.y) * DPI / GROUND_METRES_PER_INCH / scalefactor;
+            p.x = frame.to_px(p.x - x0);
+            p.y = frame.to_px(y0 - p.y);
         }
 
         if line.first() != line.last() {
@@ -341,10 +335,9 @@ fn draw_cliffs(
 /// Measured on the ring's longer bounding-box side, so an elongated ring is judged by
 /// its length: this drops specks, not real knolls.
 ///
-/// `x`/`y` arrive in render pixels (600 dpi, 1:10,000, divided by `scalefactor`), so the
-/// inverse of that transform converts back to metres — the same one `pixel_to_ground`
-/// uses when it writes ground coordinates.
-fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], scalefactor: f64) -> bool {
+/// `x`/`y` arrive in sheet pixels of `frame`, so its metres per pixel convert back to
+/// ground metres.
+fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], frame: &MapFrame) -> bool {
     const MIN_GROUND_M: f64 = 16.5;
     let (mut xmin, mut xmax) = (f64::MAX, f64::MIN);
     let (mut ymin, mut ymax) = (f64::MAX, f64::MIN);
@@ -354,16 +347,17 @@ fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], scalefactor: f64) -> boo
         ymin = ymin.min(py);
         ymax = ymax.max(py);
     }
-    let to_metres = GROUND_METRES_PER_INCH / DPI * scalefactor;
-    (xmax - xmin).max(ymax - ymin) * to_metres < MIN_GROUND_M
+    (xmax - xmin).max(ymax - ymin) * frame.metres_per_px() < MIN_GROUND_M
 }
 
 /// Parameters of [`draw_curves`], which draws the contours and selects and dashes the
 /// form lines.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurveRenderParams {
-    /// Scales the map: pixel size and part of the steepness threshold (ini
-    /// `scalefactor`). Stays here until the scalefactor split.
+    /// The sheet the lines are drawn on (ini `scalefactor`).
+    pub frame: MapFrame,
+    /// Part of the steepness threshold (ini `scalefactor`). Stays here until
+    /// `pr/metre-lengths`.
     pub scalefactor: f64,
     /// Whether the half-interval lines are selected into form lines (ini `form_lines`).
     pub form_lines: FormLineMode,
@@ -402,6 +396,7 @@ pub fn draw_curves(
 ) -> Result<Option<BinaryDxf>, Box<dyn Error>> {
     // Drawing curves --------------
     let &CurveRenderParams {
+        frame,
         scalefactor,
         mut formlinesteepness,
         form_lines,
@@ -554,12 +549,8 @@ pub fn draw_curves(
         .iter()
         .map(|(line, (layer, _))| {
             if *layer == Classification::SlopeLine {
-                line.first().map(|point| {
-                    (
-                        (point.x - x0) * DPI / GROUND_METRES_PER_INCH / scalefactor,
-                        (y0 - point.y) * DPI / GROUND_METRES_PER_INCH / scalefactor,
-                    )
-                })
+                line.first()
+                    .map(|point| (frame.to_px(point.x - x0), frame.to_px(y0 - point.y)))
             } else {
                 None
             }
@@ -575,8 +566,8 @@ pub fn draw_curves(
 
         // flip and scale the line points
         for p in line.iter_mut() {
-            p.x = (p.x - x0) * DPI / GROUND_METRES_PER_INCH / scalefactor;
-            p.y = (y0 - p.y) * DPI / GROUND_METRES_PER_INCH / scalefactor;
+            p.x = frame.to_px(p.x - x0);
+            p.y = frame.to_px(y0 - p.y);
         }
 
         // TEMP: split x and y values
@@ -623,7 +614,7 @@ pub fn draw_curves(
                     help[i] = false;
                     help2[i] = true;
                     help3[i] = false;
-                    let ground = pixel_to_ground(x[i], y[i], x0, y0, scalefactor);
+                    let ground = pixel_to_ground(x[i], y[i], x0, y0, &frame);
                     let xx = ((ground.x - xstart) / size).floor() as usize;
                     let yy = ((ground.y - ystart) / size).floor() as usize;
 
@@ -721,7 +712,7 @@ pub fn draw_curves(
                     smallringtest = false;
                     if x.first() == x.last() && y.first() == y.last() && x.len() < *max_length {
                         smallringtest = help2.iter().any(|v| *v);
-                        if smallringtest && closed_ring_below_isom_minimum(&x, &y, scalefactor) {
+                        if smallringtest && closed_ring_below_isom_minimum(&x, &y, &frame) {
                             smallringtest = false;
                             help2.iter_mut().for_each(|h| *h = false);
                         }
@@ -834,7 +825,7 @@ pub fn draw_curves(
                 }
                 if curvew != 1.5 || help2[i] || smallringtest {
                     if should_generate_formlines && curvew == 1.5 {
-                        formiline_points.push(pixel_to_ground(x[i], y[i], x0, y0, scalefactor));
+                        formiline_points.push(pixel_to_ground(x[i], y[i], x0, y0, &frame));
                     }
 
                     if draw_image {
@@ -986,63 +977,68 @@ pub fn write_formlines(
 
 /// The rendered map's world file: `vegetation.pgw`'s frame (one pixel per ground metre) with
 /// the map's pixel size.
-fn map_world_file(vege_frame: &WorldFile, scalefactor: f64) -> WorldFile {
+fn map_world_file(vege_frame: &WorldFile, frame: &MapFrame) -> WorldFile {
     WorldFile {
-        pixel_size_x: vege_frame.pixel_size_x / DPI * GROUND_METRES_PER_INCH * scalefactor,
-        pixel_size_y: vege_frame.pixel_size_y / DPI * GROUND_METRES_PER_INCH * scalefactor,
+        pixel_size_x: frame.to_metres(vege_frame.pixel_size_x),
+        pixel_size_y: frame.to_metres(vege_frame.pixel_size_y),
         ..vege_frame.clone()
     }
 }
 
-/// Inverse of the draw transform `((x - x0), (y0 - y)) * DPI / GROUND_METRES_PER_INCH /
-/// scalefactor`: a map-pixel position back to ground coordinates, one operator order for both
-/// axes.
-fn pixel_to_ground(x: f64, y: f64, x0: f64, y0: f64, scalefactor: f64) -> Point2 {
-    Point2::new(
-        x / DPI * GROUND_METRES_PER_INCH * scalefactor + x0,
-        -y / DPI * GROUND_METRES_PER_INCH * scalefactor + y0,
-    )
+/// Inverse of the draw transform `frame.to_px((x - x0), (y0 - y))`: a map-pixel position
+/// back to ground coordinates, one operator order for both axes.
+fn pixel_to_ground(x: f64, y: f64, x0: f64, y0: f64, frame: &MapFrame) -> Point2 {
+    Point2::new(frame.to_metres(x) + x0, frame.to_metres(-y) + y0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::closed_ring_below_isom_minimum;
+    use crate::mapframe::MapFrame;
 
-    /// Render pixels per ground metre at 600 dpi, 1:10,000 (the transform in draw_curves).
-    use crate::mapframe::PX_PER_METRE as PX_PER_M;
-
-    /// A square ring of the given ground size, as the renderer would see it.
-    fn ring(metres: f64) -> (Vec<f64>, Vec<f64>) {
-        let s = metres * PX_PER_M;
+    /// A square ring of the given ground size, as the renderer would see it at `frame`.
+    fn ring(metres: f64, frame: &MapFrame) -> (Vec<f64>, Vec<f64>) {
+        let s = metres * frame.px_per_metre();
         (vec![0.0, s, s, 0.0, 0.0], vec![0.0, 0.0, s, s, 0.0])
+    }
+
+    fn at_scale(scale_denominator: f64) -> MapFrame {
+        MapFrame {
+            scale_denominator,
+            ..MapFrame::default()
+        }
     }
 
     #[test]
     fn rings_below_the_isom_minimum_are_rejected() {
         // ISOM 2017-2 symbol 103: minimum closed form line 1.65 mm at 1:10,000 = 16.5 m.
-        let (x, y) = ring(10.0);
-        assert!(closed_ring_below_isom_minimum(&x, &y, 1.0));
-        let (x, y) = ring(20.0);
-        assert!(!closed_ring_below_isom_minimum(&x, &y, 1.0));
+        let frame = MapFrame::default();
+        let (x, y) = ring(10.0, &frame);
+        assert!(closed_ring_below_isom_minimum(&x, &y, &frame));
+        let (x, y) = ring(20.0, &frame);
+        assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
     }
 
     #[test]
     fn an_elongated_ring_is_judged_by_its_longer_side() {
         // 5 m across but 40 m long: a real feature, not a speck.
-        let s = PX_PER_M;
+        let frame = MapFrame::default();
+        let s = frame.px_per_metre();
         let x = vec![0.0, 40.0 * s, 40.0 * s, 0.0, 0.0];
         let y = vec![0.0, 0.0, 5.0 * s, 5.0 * s, 0.0];
-        assert!(!closed_ring_below_isom_minimum(&x, &y, 1.0));
+        assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
     }
 
     #[test]
     fn the_bound_is_ground_distance_not_pixels() {
-        // Same ring, scalefactor 2 => half the pixels for the same ground size, and the
-        // verdict must not change.
-        let (x, y) = ring(20.0);
-        let halved: Vec<f64> = x.iter().map(|v| v / 2.0).collect();
-        let halved_y: Vec<f64> = y.iter().map(|v| v / 2.0).collect();
-        assert!(!closed_ring_below_isom_minimum(&halved, &halved_y, 2.0));
+        // Same 20 m ring at 1:15 000 => 2/3 of the pixels, and the verdict must not change.
+        for scale in [10_000.0, 15_000.0] {
+            let frame = at_scale(scale);
+            let (x, y) = ring(20.0, &frame);
+            assert!(!closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
+            let (x, y) = ring(16.0, &frame);
+            assert!(closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
+        }
     }
 
     #[test]
@@ -1050,13 +1046,13 @@ mod tests {
         use super::map_world_file;
         use crate::mapframe::WorldFile;
         let vege = WorldFile::north_up(1.0, 123456.5, 7891011.5);
-        let map = map_world_file(&vege, 1.0);
+        let map = map_world_file(&vege, &MapFrame::default());
         assert_eq!(map.pixel_size_x, 1.0 / 600.0 * 254.0);
         assert_eq!(map.pixel_size_y, -1.0 / 600.0 * 254.0);
         assert_eq!((map.rotation_x, map.rotation_y), (0.0, 0.0));
         assert_eq!((map.x_origin, map.y_origin), (123456.5, 7891011.5));
         assert_eq!(
-            map_world_file(&vege, 2.0).pixel_size_x,
+            map_world_file(&vege, &at_scale(20_000.0)).pixel_size_x,
             2.0 * map.pixel_size_x
         );
     }
@@ -1064,20 +1060,20 @@ mod tests {
     #[test]
     fn pixel_to_ground_inverts_the_draw_transform_on_both_axes() {
         use super::pixel_to_ground;
-        use crate::mapframe::{DPI, GROUND_METRES_PER_INCH};
         let (x0, y0) = (500000.0, 6700000.0);
-        for scalefactor in [0.5, 0.7, 1.0, 1.3, 2.0] {
+        for scale in [5_000.0, 7_000.0, 10_000.0, 13_000.0, 20_000.0] {
+            let frame = at_scale(scale);
             for (gx, gy) in [
                 (500123.4, 6699876.6),
                 (500001.1, 6699999.3),
                 (500777.7, 6699321.9),
             ] {
-                let px = (gx - x0) * DPI / GROUND_METRES_PER_INCH / scalefactor;
-                let py = (y0 - gy) * DPI / GROUND_METRES_PER_INCH / scalefactor;
-                let p = pixel_to_ground(px, py, x0, y0, scalefactor);
+                let px = frame.to_px(gx - x0);
+                let py = frame.to_px(y0 - gy);
+                let p = pixel_to_ground(px, py, x0, y0, &frame);
                 assert!((p.x - gx).abs() < 1e-6 && (p.y - gy).abs() < 1e-6, "{p:?}");
                 // one operator order: the same pixel offset gives the same ground offset
-                let q = pixel_to_ground(px, px, 0.0, 0.0, scalefactor);
+                let q = pixel_to_ground(px, px, 0.0, 0.0, &frame);
                 assert_eq!(q.y.to_bits(), (-q.x).to_bits());
             }
         }

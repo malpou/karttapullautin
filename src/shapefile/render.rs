@@ -11,7 +11,7 @@ use crate::{
     config::Config,
     geojson,
     io::fs::FileSystem,
-    mapframe::{DPI, GROUND_METRES_PER_INCH, PX_PER_METRE, WorldFile},
+    mapframe::WorldFile,
     shapefile::{
         canvas::{Canvas, Color},
         mapping::{Mapping, Operator},
@@ -54,7 +54,8 @@ pub fn render(
         fs.remove_file(high_file).unwrap();
     }
 
-    let scalefactor = config.scalefactor;
+    let frame = config.map_frame;
+    let px_per_metre = frame.px_per_metre();
 
     let vectorconf = &config.vectorconf;
     let mtkskip = &config.mtkskiplayers;
@@ -92,8 +93,8 @@ pub fn render(
     let w = img.width() as f64;
     let h = img.height() as f64;
 
-    let outw = w * DPI / GROUND_METRES_PER_INCH / scalefactor;
-    let outh = h * DPI / GROUND_METRES_PER_INCH / scalefactor;
+    let outw = frame.to_px(w);
+    let outh = frame.to_px(h);
 
     // TODO: only allocate the canvas that are actually used... in a lazy way
     let (width, height) = (outw as u32, outh as u32);
@@ -154,10 +155,10 @@ pub fn render(
         // drawshape comes here
         let mut reader = fs.read_shapefile(file.clone())?;
         let bbox = reader.header().bbox;
-        let minx = (PX_PER_METRE / scalefactor * (bbox.min.x - x0)).floor();
-        let maxy = (PX_PER_METRE / scalefactor * (y0 - bbox.min.y)).floor();
-        let maxx = (PX_PER_METRE / scalefactor * (bbox.max.x - x0)).floor();
-        let miny = (PX_PER_METRE / scalefactor * (y0 - bbox.max.y)).floor();
+        let minx = (px_per_metre * (bbox.min.x - x0)).floor();
+        let maxy = (px_per_metre * (y0 - bbox.min.y)).floor();
+        let maxx = (px_per_metre * (bbox.max.x - x0)).floor();
+        let miny = (px_per_metre * (y0 - bbox.max.y)).floor();
         log::debug!("Bounding box: {bbox:?}");
         if minx > outw || maxx < 0.0 || miny > outh || maxy < 0.0 {
             info!("Skipping shapefile {}, out of bounds.", file.display());
@@ -176,10 +177,10 @@ pub fn render(
                 _ => continue, // we don't care about other types
             };
 
-            let minx = (PX_PER_METRE / scalefactor * (bbox.min.x - x0)).floor();
-            let maxy = (PX_PER_METRE / scalefactor * (y0 - bbox.min.y)).floor();
-            let maxx = (PX_PER_METRE / scalefactor * (bbox.max.x - x0)).floor();
-            let miny = (PX_PER_METRE / scalefactor * (y0 - bbox.max.y)).floor();
+            let minx = (px_per_metre * (bbox.min.x - x0)).floor();
+            let maxy = (px_per_metre * (y0 - bbox.min.y)).floor();
+            let maxx = (px_per_metre * (bbox.max.x - x0)).floor();
+            let miny = (px_per_metre * (y0 - bbox.max.y)).floor();
             if minx > outw || maxx < 0.0 || miny > outh || maxy < 0.0 {
                 continue;
             }
@@ -566,8 +567,8 @@ pub fn render(
                             let x = point.x;
                             let y = point.y;
                             poly.push((
-                                (PX_PER_METRE / scalefactor * (x - x0)).floor() as f32,
-                                (PX_PER_METRE / scalefactor * (y0 - y)).floor() as f32,
+                                (px_per_metre * (x - x0)).floor() as f32,
+                                (px_per_metre * (y0 - y)).floor() as f32,
                             ));
                         }
                     }
@@ -666,12 +667,12 @@ pub fn render(
                             let x = point.x;
                             let y = point.y;
                             poly.push((
-                                (PX_PER_METRE / scalefactor * (x - x0)).floor() as f32,
-                                (PX_PER_METRE / scalefactor * (y0 - y)).floor() as f32,
+                                (px_per_metre * (x - x0)).floor() as f32,
+                                (px_per_metre * (y0 - y)).floor() as f32,
                             ));
                             polyborder.push((
-                                (PX_PER_METRE / scalefactor * (x - x0)).floor() as f32,
-                                (PX_PER_METRE / scalefactor * (y0 - y)).floor() as f32,
+                                (px_per_metre * (x - x0)).floor() as f32,
+                                (px_per_metre * (y0 - y)).floor() as f32,
                             ));
                         }
                         polys.push(poly);
@@ -725,9 +726,9 @@ pub fn render(
 
     let mut i = 0.0_f32;
     imgmarsh.set_transparent_color();
-    while i < ((h * DPI / GROUND_METRES_PER_INCH / scalefactor + 500.0) as f32) {
+    while i < ((frame.to_px(h) + 500.0) as f32) {
         i += 14.0;
-        let wd = (w * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as f32;
+        let wd = (frame.to_px(w) + 2.0) as f32;
         imgmarsh.draw_filled_polygon(&[vec![
             (-1.0, i),
             (wd, i),

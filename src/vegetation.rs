@@ -12,7 +12,7 @@ use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::{LasClass, XyzInternalReader};
-use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, PX_PER_METRE, WorldFile};
+use crate::mapframe::{MapFrame, WorldFile};
 use crate::palette::{Palette, PaletteColorEnum, PalettedImage};
 use crate::vec2d::Vec2D;
 
@@ -20,9 +20,8 @@ use crate::vec2d::Vec2D;
 /// and undergrowth and draws the vegetation rasters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VegetationParams {
-    /// Scales the map: pixel size of the undergrowth raster (ini `scalefactor`). Stays
-    /// here until the scalefactor split.
-    pub scalefactor: f64,
+    /// The sheet the undergrowth raster is drawn at (ini `mapscale`).
+    pub frame: MapFrame,
     /// Also write the one-channel `*_bit.png` rasters (ini `vege_bitmode`).
     pub vege_bitmode: bool,
     /// LAS class of water returns (ini `waterclass`), drawn blue with `water_blue`.
@@ -648,10 +647,10 @@ pub fn makevege(
 
     drop(imgwater); // explicitly drop imgwater to free memory
 
-    let scalefactor = params.scalefactor;
+    let frame = params.frame;
 
     // factor to convert from coordinates to pixels
-    let tmpfactor = (PX_PER_METRE / scalefactor) as f32;
+    let tmpfactor = frame.px_per_metre() as f32;
 
     let bf32 = block as f32;
     let hf32 = h_block as f32;
@@ -660,13 +659,13 @@ pub fn makevege(
     let mut x = 0.0_f32;
 
     let mut imgug = PalettedImage::new(
-        (w_block as f64 * block * DPI / GROUND_METRES_PER_INCH / scalefactor) as u32,
-        (h_block as f64 * block * DPI / GROUND_METRES_PER_INCH / scalefactor) as u32,
+        frame.to_px(w_block as f64 * block) as u32,
+        frame.to_px(h_block as f64 * block) as u32,
         PaletteColorEnum::Transparent.to_color(),
     );
     let mut img_ug_bit = GrayImage::from_pixel(
-        (w_block as f64 * block * DPI / GROUND_METRES_PER_INCH / scalefactor) as u32,
-        (h_block as f64 * block * DPI / GROUND_METRES_PER_INCH / scalefactor) as u32,
+        frame.to_px(w_block as f64 * block) as u32,
+        frame.to_px(h_block as f64 * block) as u32,
         Luma([0x00]),
     );
     loop {

@@ -25,7 +25,7 @@ use crate::io::xyz::XyzInternalWriter;
 use crate::io::xyz::XyzRecord;
 use crate::isom::IsomTable;
 use crate::knolls;
-use crate::mapframe::{DPI, GROUND_METRES_PER_INCH, WorldFile};
+use crate::mapframe::WorldFile;
 use crate::merge;
 use crate::plan::InputFileIndex;
 use crate::plan::Operation;
@@ -713,7 +713,7 @@ pub fn batch_process(
         contoursonly,
         savetempfolders,
         savetempfiles,
-        scalefactor,
+        map_frame: frame,
         vege_bitmode,
         ..
     } = conf;
@@ -798,15 +798,15 @@ pub fn batch_process(
                 .read_image_png(format!("pullautus{thread}.png"))
                 .expect("Opening image failed");
             let mut img = RgbImage::from_pixel(
-                ((maxx - minx) * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as u32,
-                ((maxy - miny) * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as u32,
+                (frame.to_px(maxx - minx) + 2.0) as u32,
+                (frame.to_px(maxy - miny) + 2.0) as u32,
                 Rgb([255, 255, 255]),
             );
             image::imageops::overlay(
                 &mut img,
                 &orig_img.to_rgb8(),
-                (-dx * DPI / GROUND_METRES_PER_INCH / scalefactor) as i64,
-                (-dy * DPI / GROUND_METRES_PER_INCH / scalefactor) as i64,
+                frame.to_px(-dx) as i64,
+                frame.to_px(-dy) as i64,
             );
 
             img.write_to(
@@ -821,15 +821,15 @@ pub fn batch_process(
                 .read_image_png(format!("pullautus_depr{thread}.png"))
                 .expect("Opening image failed");
             let mut img = RgbImage::from_pixel(
-                ((maxx - minx) * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as u32,
-                ((maxy - miny) * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as u32,
+                (frame.to_px(maxx - minx) + 2.0) as u32,
+                (frame.to_px(maxy - miny) + 2.0) as u32,
                 Rgb([255, 255, 255]),
             );
             image::imageops::overlay(
                 &mut img,
                 &orig_img.to_rgb8(),
-                (-dx * DPI / GROUND_METRES_PER_INCH / scalefactor) as i64,
-                (-dy * DPI / GROUND_METRES_PER_INCH / scalefactor) as i64,
+                frame.to_px(-dx) as i64,
+                frame.to_px(-dy) as i64,
             );
 
             img.write_to(
@@ -897,15 +897,15 @@ pub fn batch_process(
                 orig_img_reader.no_limits();
                 let orig_img = orig_img_reader.decode().unwrap();
                 let mut img = RgbaImage::from_pixel(
-                    ((maxx - minx) * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as u32,
-                    ((maxy - miny) * DPI / GROUND_METRES_PER_INCH / scalefactor + 2.0) as u32,
+                    (frame.to_px(maxx - minx) + 2.0) as u32,
+                    (frame.to_px(maxy - miny) + 2.0) as u32,
                     Rgba([255, 255, 255, 0]),
                 );
                 image::imageops::overlay(
                     &mut img,
                     &orig_img,
-                    (-dx * DPI / GROUND_METRES_PER_INCH / scalefactor) as i64,
-                    (-dy * DPI / GROUND_METRES_PER_INCH / scalefactor) as i64,
+                    frame.to_px(-dx) as i64,
+                    frame.to_px(-dy) as i64,
                 );
 
                 img.write_to(

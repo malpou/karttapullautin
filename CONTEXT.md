@@ -55,7 +55,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Vegetation area**: A green shade, open land or undergrowth patch traced from its grid into a polygon of one symbol code, at least that symbol's ISOM minimum area; smaller patches dissolve into their surroundings. _Avoid_: vege polygon, yellow polygon
 **Symbol table**: The machine-readable list of ISOM 2017-2 symbols the vector output may emit: the vendored, pinned `isom.yaml` of MetsaApp/isom-maplibre, giving each code its table and drawing. _Avoid_: symbol set (a mapping program's file), legend
 **Table**: The named group of vector features one style source reads, e.g. `contours`, `cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`; each GeoJSON output is one table. MapLibre calls it a source layer. _Avoid_: layer (only a DXF container), output kind
-**Map frame**: Scale, resolution, origin and north rotation of the rendered sheet. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre before scalefactor.
+**Map frame**: Scale, resolution, origin and north rotation of the rendered sheet; `MapFrame` holds the resolution and map scale. At 600 dpi and 1:10 000 one map inch is 254 ground metres, so the sheet has 600/254 pixels per metre.
 **World file**: The sidecar that places a raster image on the ground by origin and pixel size. _Avoid_: pgw, georeference file
 
 ### Development

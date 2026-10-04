@@ -6,6 +6,7 @@ use log::warn;
 use crate::cliffs::CliffParams;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
+use crate::mapframe::MapFrame;
 use crate::merge::{FormLineMode, SmoothJoinParams};
 use crate::render::CurveRenderParams;
 use crate::vegetation::{Stratum, VegetationParams};
@@ -43,7 +44,11 @@ pub struct Config {
     /// GeoJSON merge and the combined export.
     pub batchmerge: bool,
 
+    /// Scales the ground lengths of the knoll stage and smoothjoin and the form-line
+    /// steepness (ini `scalefactor`). Stays here until `pr/metre-lengths`.
     pub scalefactor: f64,
+    /// The rendered sheet: 600 dpi at 1:10 000 times `scalefactor`.
+    pub map_frame: MapFrame,
     pub vege_bitmode: bool,
     pub zoff: f64,
     pub thinfactor: f64,
@@ -53,7 +58,7 @@ pub struct Config {
     pub knoll: KnollParams,
     /// smoothjoin's parameters, with `scalefactor`, `contour_interval` and `form_lines`.
     pub smoothjoin: SmoothJoinParams,
-    /// draw_curves' parameters, with `scalefactor` and `form_lines`.
+    /// draw_curves' parameters, with `scalefactor`, the map frame and `form_lines`.
     pub curves: CurveRenderParams,
 
     pub xfactor: f64,
@@ -73,7 +78,7 @@ pub struct Config {
     /// makecliffs' parameters.
     pub cliff: CliffParams,
 
-    /// makevege's parameters, with `scalefactor`, `vege_bitmode` and `water_class`.
+    /// makevege's parameters, with the map frame, `vege_bitmode` and `water_class`.
     pub vegetation: VegetationParams,
 
     // vector export
@@ -189,6 +194,10 @@ impl Config {
         let batchmerge = flag(gs, "batchmerge", Some(false))?;
 
         let scalefactor: f64 = parse_typed(gs, "scalefactor", 1.0);
+        let map_frame = MapFrame {
+            scale_denominator: scalefactor * 10_000.0,
+            ..MapFrame::default()
+        };
         let vege_bitmode: bool = gs.get("vege_bitmode").unwrap_or("0") == "1";
         let zoff = parse_typed(gs, "zoffset", 0.0);
         let mut thinfactor: f64 = parse_typed(gs, "thinfactor", 1.0);
@@ -322,7 +331,7 @@ impl Config {
             })
             .collect::<Result<Vec<f64>, String>>()?;
         let vegetation = VegetationParams {
-            scalefactor,
+            frame: map_frame,
             vege_bitmode,
             water_class,
             water_blue,
@@ -468,6 +477,7 @@ impl Config {
             savetempfolders,
             savetempfiles,
             scalefactor,
+            map_frame,
             vege_bitmode,
             zoff,
             thinfactor,
@@ -488,6 +498,7 @@ impl Config {
                 inidotknolls,
             },
             curves: CurveRenderParams {
+                frame: map_frame,
                 scalefactor,
                 form_lines,
                 formlinesteepness,
@@ -907,6 +918,16 @@ mod test {
             let warning = contour_interval_warning(interval).unwrap();
             assert!(warning.contains("contour_interval"), "{warning}");
         }
+    }
+
+    #[test]
+    fn scalefactor_sets_the_map_frame() {
+        use crate::mapframe::MapFrame;
+        assert_eq!(load_with(&[]).unwrap().map_frame, MapFrame::default());
+        let config = load_with(&[("scalefactor", "1.5")]).unwrap();
+        assert_eq!(config.map_frame.scale_denominator, 15_000.0);
+        assert_eq!(config.curves.frame, config.map_frame);
+        assert_eq!(config.vegetation.frame, config.map_frame);
     }
 
     #[test]
