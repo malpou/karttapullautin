@@ -238,7 +238,8 @@ fn main() {
 
     if command == "makecliffs" {
         // no tile name here: the `cliffthin` seed is the empty name
-        pullauta::cliffs::makecliffs(&fs, &config, &tmpfolder, "").unwrap();
+        pullauta::cliffs::makecliffs(&fs, &config.cliff, config.output_dxf, &tmpfolder, "")
+            .unwrap();
         return;
     }
 

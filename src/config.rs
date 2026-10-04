@@ -3,6 +3,7 @@ use std::{cell::RefCell, collections::BTreeSet, path::Path, str::FromStr};
 use ini::Ini;
 use log::warn;
 
+use crate::cliffs::CliffParams;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
 use crate::merge::{FormLineMode, SmoothJoinParams};
@@ -69,13 +70,8 @@ pub struct Config {
     /// ground model and the blocks treat returns of this class as water.
     pub water_class: u8,
 
-    // cliffs
-    pub c1_limit: f64,
-    pub c2_limit: f64,
-    pub cliff_thin: f64,
-    pub steep_factor: f64,
-    pub flat_place: f64,
-    pub no_small_ciffs: f64,
+    /// makecliffs' parameters.
+    pub cliff: CliffParams,
 
     /// makevege's parameters, with `scalefactor`, `vege_bitmode` and `water_class`.
     pub vegetation: VegetationParams,
@@ -223,7 +219,7 @@ impl Config {
 
         let contour_interval = match gs.get("contour_interval") {
             None => 5.0,
-            Some(v) => parse_contour_interval(v)?,
+            Some(v) => parse_positive_metres("contour_interval", v)?,
         };
         if let Some(warning) = contour_interval_warning(contour_interval) {
             warn!("{warning}");
@@ -255,8 +251,10 @@ impl Config {
         let depression_length: usize = parse_typed(gs, "depression_length", 181);
 
         // cliffs
-        let c1_limit: f64 = parse_typed(gs, "cliff1", 1.0);
-        let c2_limit: f64 = parse_typed(gs, "cliff2", 1.0);
+        let cliff4_limit = match gs.get("cliff4_limit") {
+            None => 7.15,
+            Some(v) => parse_positive_metres("cliff4_limit", v)?,
+        };
         let cliff_thin: f64 = parse_typed(gs, "cliffthin", 1.0);
         if !(0.0..=1.0).contains(&cliff_thin) {
             return Err(format!(
@@ -264,9 +262,20 @@ impl Config {
             )
             .into());
         }
-        let steep_factor: f64 = parse_typed(gs, "cliffsteepfactor", 0.33);
-        let flat_place: f64 = parse_typed(gs, "cliffflatplace", 6.6);
-        let no_small_ciffs: f64 = parse_typed(gs, "cliffnosmallciffs", 0.0);
+        let cliff = CliffParams {
+            c1_limit: parse_typed(gs, "cliff1", 1.0),
+            c2_limit: parse_typed(gs, "cliff2", 1.0),
+            cliff4_limit,
+            cliff_thin,
+            steep_factor: parse_typed(gs, "cliffsteepfactor", 0.33),
+            flat_place: parse_typed(gs, "cliffflatplace", 6.6),
+            no_small_cliffs: Some(parse_typed(gs, "cliffnosmallciffs", 0.0)).filter(|&s| s != 0.0),
+            bin_m: 3.0,
+            bin_max_points: 31,
+            neighbourhood_max_points: 301,
+            drop_slope: 0.85,
+            dash_half_length_m: 1.47,
+        };
 
         // vegetation
 
@@ -496,12 +505,7 @@ impl Config {
             basemapcontours,
             detectbuildings,
             water_class,
-            c1_limit,
-            c2_limit,
-            cliff_thin,
-            steep_factor,
-            flat_place,
-            no_small_ciffs,
+            cliff,
             vegetation,
             vector_vege,
             vector_greenshade_isom,
@@ -656,12 +660,12 @@ fn flag(gs: &Keys, name: &str, default: Option<bool>) -> Result<bool, String> {
 /// The contour intervals ISOM 2017-2 allows, in metres.
 const ISOM_CONTOUR_INTERVALS: [f64; 2] = [2.5, 5.0];
 
-/// Parse `contour_interval`: a finite number of metres above 0.
-fn parse_contour_interval(v: &str) -> Result<f64, String> {
+/// Parse the `key` value `v`: a finite number of metres above 0.
+fn parse_positive_metres(key: &str, v: &str) -> Result<f64, String> {
     match v.trim().parse::<f64>() {
-        Ok(interval) if interval.is_finite() && interval > 0.0 => Ok(interval),
+        Ok(metres) if metres.is_finite() && metres > 0.0 => Ok(metres),
         _ => Err(format!(
-            "Value {v} of `contour_interval` must be a number of metres above 0"
+            "Value {v} of `{key}` must be a number of metres above 0"
         )),
     }
 }
@@ -915,6 +919,65 @@ mod test {
             ..KnollParams::default()
         };
         assert_eq!(config.knoll, expected);
+    }
+
+    /// The template's cliff values reach `CliffParams`; the rest are the constants
+    /// makecliffs had inline.
+    #[test]
+    fn cliff_params_take_the_template_values() {
+        use crate::cliffs::CliffParams;
+        let expected = CliffParams {
+            c1_limit: 1.15,
+            c2_limit: 2.0,
+            cliff4_limit: 7.15,
+            cliff_thin: 1.0,
+            steep_factor: 0.38,
+            flat_place: 3.5,
+            no_small_cliffs: Some(5.5),
+            bin_m: 3.0,
+            bin_max_points: 31,
+            neighbourhood_max_points: 301,
+            drop_slope: 0.85,
+            dash_half_length_m: 1.47,
+        };
+        assert_eq!(load_with(&[]).unwrap().cliff, expected);
+    }
+
+    #[test]
+    fn cliff4_limit_parses_and_defaults_to_the_old_constant() {
+        assert_eq!(
+            load_with(&[("cliff4_limit", "5.5")])
+                .unwrap()
+                .cliff
+                .cliff4_limit,
+            5.5
+        );
+        let absent = load_without("cliff4_limit").unwrap().cliff.cliff4_limit;
+        // the hidden constant it replaces, bit for bit
+        assert_eq!(absent.to_bits(), (2.6_f64 * 2.75).to_bits());
+        for bad in ["0", "-1", "inf", "high"] {
+            let err = load_with(&[("cliff4_limit", bad)]).err().unwrap();
+            assert!(err.contains("`cliff4_limit`"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn cliffnosmallciffs_zero_is_none() {
+        let steep = |v| {
+            load_with(&[("cliffnosmallciffs", v)])
+                .unwrap()
+                .cliff
+                .no_small_cliffs
+        };
+        assert_eq!(steep("0"), None);
+        assert_eq!(steep("5.5"), Some(5.5));
+        assert_eq!(
+            load_without("cliffnosmallciffs")
+                .unwrap()
+                .cliff
+                .no_small_cliffs,
+            None
+        );
     }
 
     /// `contour_interval` is the map's contour interval in both form line modes; lines

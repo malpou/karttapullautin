@@ -639,7 +639,7 @@ pub fn process_tile(
     if !vegeonly && !contoursonly {
         info!("Cliff generation");
         timing.start_section("cliff generation");
-        cliffs::makecliffs(fs, config, tmpfolder, tile).unwrap();
+        cliffs::makecliffs(fs, &config.cliff, config.output_dxf, tmpfolder, tile).unwrap();
 
         if config.vector_vege {
             geojson::bindxf_to_tables(
