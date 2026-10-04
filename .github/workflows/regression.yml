@@ -65,10 +65,12 @@ jobs:
     - name: Build baseline
       if: steps.baseline-build.outputs.cache-hit != 'true'
       run: |
-        # shares target/ (and the cached dependencies) with the branch build below
-        cargo build --release --manifest-path baseline/Cargo.toml --target-dir target
+        # its own target dir: both checkouts are the same path package, so in a shared
+        # target/ cargo takes the baseline build for a fresh branch build and the branch
+        # step would run the baseline binary
+        cargo build --release --manifest-path baseline/Cargo.toml --target-dir baseline-target
         mkdir -p baseline-bin
-        cp target/release/pullauta baseline-bin/pullauta
+        cp baseline-target/release/pullauta baseline-bin/pullauta
 
     - name: Build branch
       run: cargo build --release
