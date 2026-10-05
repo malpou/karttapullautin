@@ -304,12 +304,10 @@ fn add_geometry(entry: &mut CodeGeometry, geometry: &Value) -> anyhow::Result<()
     let coords = &geometry["coordinates"];
     match geometry["type"].as_str() {
         Some("Point") => entry.points.push(point(coords)?),
-        // RFC 7946 wants two positions, but the pipeline writes one-position
-        // contours into temp/contours.geojson: read them as zero-length lines
-        Some("LineString") => entry.lines.push(positions(coords, 1, "a LineString")?),
+        Some("LineString") => entry.lines.push(positions(coords, 2, "a LineString")?),
         Some("MultiLineString") => {
             for line in list(coords, "a MultiLineString")? {
-                entry.lines.push(positions(line, 1, "a LineString")?);
+                entry.lines.push(positions(line, 2, "a LineString")?);
             }
         }
         Some("Polygon") => add_polygon(entry, coords)?,
@@ -917,7 +915,12 @@ mod tests {
                 line_feature("101.000", json!([[0, 0], ["x", 1]])),
                 "non-number",
             ),
-            (line_feature("101.000", json!([])), "fewer than 1"),
+            (line_feature("101.000", json!([[0, 0]])), "fewer than 2"),
+            (
+                json!({"type": "Feature", "properties": {"isom_code": "101.000"},
+                    "geometry": {"type": "MultiLineString", "coordinates": [[[0, 0], [1, 0]], [[2, 0]]]}}),
+                "fewer than 2",
+            ),
             (line_feature("101", json!([[0], [1, 1]])), "position"),
             (
                 json!({"type": "Feature", "properties": {"isom_code": "406.000"},
