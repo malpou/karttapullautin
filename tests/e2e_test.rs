@@ -119,9 +119,7 @@ fn feature_collection(path: &Path) -> Vec<Value> {
 /// public contract of the vector output, and against the isom-maplibre symbol table (see
 /// [`assert_table_conformance`]). Returns how many files were checked.
 fn assert_schema_conformance(dir: &Path) -> usize {
-    let schema: Value =
-        serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
-    let validator = jsonschema::validator_for(&schema).expect("invalid schema");
+    let validator = schema_validator();
     let mut checked = 0;
     for path in files(dir) {
         if path.extension().is_none_or(|e| e != "geojson") {
@@ -135,9 +133,74 @@ fn assert_schema_conformance(dir: &Path) -> usize {
             .collect();
         assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
         assert_table_conformance(&path, &val);
+        assert_geometry_shape(&path, &val);
         checked += 1;
     }
     checked
+}
+
+/// What the schema cannot say: every LineString has two distinct positions and every
+/// Polygon ring ends where it starts.
+fn assert_geometry_shape(path: &Path, collection: &Value) {
+    for f in collection["features"].as_array().unwrap() {
+        let coords = f["geometry"]["coordinates"].as_array().unwrap();
+        match f["geometry"]["type"].as_str() {
+            Some("LineString") => assert!(
+                coords.iter().any(|p| p != &coords[0]),
+                "{}: a LineString has one distinct position: {f}",
+                path.display()
+            ),
+            Some("Polygon") => {
+                for ring in coords {
+                    let ring = ring.as_array().unwrap();
+                    assert_eq!(
+                        ring.first(),
+                        ring.last(),
+                        "{}: open ring: {f}",
+                        path.display()
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn schema_validator() -> jsonschema::Validator {
+    let schema: Value =
+        serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
+    jsonschema::validator_for(&schema).expect("invalid schema")
+}
+
+/// RFC 7946 geometry sizes: a LineString has two or more positions, a Polygon ring four
+/// or more.
+#[test]
+fn schema_rejects_degenerate_geometry() {
+    let validator = schema_validator();
+    let collection = |geometry: Value| {
+        serde_json::json!({"type": "FeatureCollection", "features": [{"type": "Feature",
+            "geometry": geometry,
+            "properties": {"isom_code": "103.000"}}]})
+    };
+    let line = |coords: Value| {
+        collection(serde_json::json!({"type": "LineString", "coordinates": coords}))
+    };
+    let polygon =
+        |ring: Value| collection(serde_json::json!({"type": "Polygon", "coordinates": [ring]}));
+    assert!(validator.is_valid(&line(serde_json::json!([[0.0, 0.0], [1.0, 0.0]]))));
+    assert!(!validator.is_valid(&line(serde_json::json!([[0.0, 0.0]]))));
+    assert!(!validator.is_valid(&line(serde_json::json!([]))));
+    let square = serde_json::json!([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]);
+    assert!(validator.is_valid(&polygon(square)));
+    assert!(!validator.is_valid(&polygon(serde_json::json!([
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 0.0]
+    ]))));
+    // a Point's two numbers are not positions
+    assert!(validator.is_valid(&collection(
+        serde_json::json!({"type": "Point", "coordinates": [0.0, 0.0]})
+    )));
 }
 
 /// The table a GeoJSON file holds, by its name: `<table>.geojson`, or with a tile or

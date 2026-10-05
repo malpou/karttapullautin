@@ -281,7 +281,16 @@ fn isom_code(props: &FeatureProperties) -> IsomCode {
         .unwrap_or_else(|_| panic!("the schema lists {code}, which the symbol table does not"))
 }
 
+/// A LineString with fewer than two distinct positions, as written (rounded to cm):
+/// RFC 7946 wants two or more, and a zero-length line draws nothing.
+fn degenerate_line(f: &geojson_types::Feature) -> bool {
+    let coords = &f.geometry.coordinates;
+    f.geometry.type_ == FeatureGeometryType::LineString
+        && coords.iter().all(|p| Some(p) == coords.first())
+}
+
 /// Write one FeatureCollection (with the legacy `crs` member when an EPSG code is given).
+/// Degenerate lines ([`degenerate_line`]) are left out.
 pub fn write_feature_collection(
     fs: &impl FileSystem,
     output: &std::path::Path,
@@ -291,7 +300,7 @@ pub fn write_feature_collection(
     write_collection(
         fs,
         output,
-        &geojson_types::GeoJsonOutput {
+        geojson_types::GeoJsonOutput {
             crs: crs(epsg),
             features,
             type_: json!("FeatureCollection"),
@@ -348,13 +357,16 @@ pub fn write_tables(
     Ok(())
 }
 
+/// Every GeoJSON file goes through here, so this is where degenerate lines
+/// ([`degenerate_line`]) are left out: a crop can cut a line down to one position.
 fn write_collection(
     fs: &impl FileSystem,
     output: &Path,
-    collection: &geojson_types::GeoJsonOutput,
+    mut collection: geojson_types::GeoJsonOutput,
 ) -> anyhow::Result<()> {
+    collection.features.retain(|f| !degenerate_line(f));
     let mut w = BufWriter::new(fs.create(output)?);
-    serde_json::to_writer(&mut w, collection)?;
+    serde_json::to_writer(&mut w, &collection)?;
     w.flush()?;
     Ok(())
 }
@@ -789,7 +801,7 @@ pub fn crop_geojson(
         }
     }
     collection.features = features;
-    write_collection(fs, output, &collection)
+    write_collection(fs, output, collection)
 }
 
 /// Merge the per-tile `<tile>_<table>.geojson` files in the batch output folder into
@@ -818,7 +830,7 @@ pub fn merge_geojson(fs: &impl FileSystem, batchoutfolder: &Path) -> anyhow::Res
         for file in &files[1..] {
             merged.features.extend(read_collection(fs, file)?.features);
         }
-        write_collection(fs, &batchoutfolder.join(merged_name), &merged)?;
+        write_collection(fs, &batchoutfolder.join(merged_name), merged)?;
     }
     Ok(())
 }
@@ -1529,6 +1541,39 @@ mod tests {
         assert_eq!(codes, [json!("202.000"), json!("201.000")]);
     }
 
+    /// A form line with fewer than two distinct positions (the renderer's selection can
+    /// end one after a single vertex) is not a LineString (RFC 7946), so it is not written.
+    #[test]
+    fn bindxf_to_tables_drops_degenerate_lines() {
+        use crate::geometry::Polylines;
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let mut formlines = Polylines::new();
+        for pts in [
+            vec![[1.0, 1.0]],
+            // two positions that round to the same cm
+            vec![[2.0, 2.0], [2.001, 2.0]],
+            vec![[0.0, 0.0], [3.0, 0.0]],
+        ] {
+            let pts = pts.into_iter().map(point2).collect();
+            formlines.push(pts, Classification::Formline);
+        }
+        write_bin(&fs, "formlines.dxf.bin", vec![formlines.into()]);
+
+        bindxf_to_tables(
+            &fs,
+            &[PathBuf::from("formlines.dxf.bin")],
+            Path::new(""),
+            Source::FormLines,
+            None,
+        )
+        .unwrap();
+        let lines: Vec<Value> = read_features(&fs, IsomTable::Contours)
+            .iter()
+            .map(|f| f["geometry"]["coordinates"].clone())
+            .collect();
+        assert_eq!(lines, [json!([[0.0, 0.0], [3.0, 0.0]])]);
+    }
+
     /// A table file an earlier version left in a reused temp folder is replaced, not an
     /// error.
     #[test]
@@ -2022,6 +2067,30 @@ mod tests {
         }
         assert!(clip_ring(&ring, &bbox(20.0, 20.0, 30.0, 30.0)).is_empty());
         assert_eq!(clip_ring(&ring, &bbox(0.0, 0.0, 20.0, 20.0)).len(), 5);
+    }
+
+    #[test]
+    fn crop_geojson_drops_lines_cut_to_one_position() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let features = vec![
+            // touches the tile only at its corner (0, 0)
+            terrain_line(CONTOUR, &[[-1.0, 1.0], [1.0, -1.0]]),
+            // dips 4 mm into the tile: both clipped ends round to the same cm
+            terrain_line(CONTOUR, &[[-1.0, 5.0], [0.004, 5.0], [-1.0, 5.001]]),
+            terrain_line(CONTOUR, &[[1.0, 1.0], [2.0, 2.0]]),
+        ];
+        write_feature_collection(&fs, Path::new("in.geojson"), features, None).unwrap();
+
+        let out = Path::new("out.geojson");
+        crop_geojson(
+            &fs,
+            Path::new("in.geojson"),
+            out,
+            &bbox(0.0, 0.0, 10.0, 10.0),
+        )
+        .unwrap();
+
+        assert_eq!(read(&fs, out).features.len(), 1);
     }
 
     #[test]

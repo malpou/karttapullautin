@@ -92,6 +92,23 @@
           "properties": {
             "type": { "enum": ["Point", "LineString", "Polygon"] },
             "coordinates": { "type": "array" }
+          },
+          "$comment": "RFC 7946 sizes: a LineString has two or more positions, a Polygon ring four or more. Written as a not, since the type generator reads no if/then.",
+          "not": {
+            "anyOf": [
+              {
+                "properties": {
+                  "type": { "const": "LineString" },
+                  "coordinates": { "maxItems": 1 }
+                }
+              },
+              {
+                "properties": {
+                  "type": { "const": "Polygon" },
+                  "coordinates": { "contains": { "maxItems": 3 } }
+                }
+              }
+            ]
           }
         },
         "properties": {
