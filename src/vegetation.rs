@@ -34,7 +34,7 @@ pub struct VegetationParams {
     /// stratum counts (ini `stratum1`, `stratum2`, ...).
     pub strata: Vec<Stratum>,
     /// Per band of canopy height (`roof_low..roof_high` m): the green-to-ground ratio at
-    /// which the green factor is 1 (ini `thresold1`, ..., each `low|high|ratio`).
+    /// which the green factor is 1 (ini `threshold1`, ..., each `low|high|ratio`).
     pub thresholds: Vec<(f64, f64, f64)>,
     /// Green factor at which each shade is drawn, lightest first (ini `greenshades`).
     pub greenshades: Vec<f64>,
@@ -76,7 +76,7 @@ pub struct VegetationParams {
     // yellow: returns counted per 3 m cell
     /// Returns less than this many metres above ground count as open (ini `yellowheight`).
     pub yellowheight: f64,
-    /// Share of open returns above which a cell is open land (ini `yellowthresold`).
+    /// Share of open returns above which a cell is open land (ini `yellowthreshold`).
     pub yellowthreshold: f64,
     /// Non-open hits a single return counts as (ini `yellowfirstlast`).
     pub yellowfirstlast: u32,

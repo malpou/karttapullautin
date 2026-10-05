@@ -284,7 +284,7 @@ impl Config {
             cliff_thin,
             steep_factor: parse_typed(gs, "cliffsteepfactor", 0.33),
             flat_place: parse_typed(gs, "cliffflatplace", 6.6),
-            no_small_cliffs: Some(parse_typed(gs, "cliffnosmallciffs", 0.0)).filter(|&s| s != 0.0),
+            no_small_cliffs: Some(parse_typed(gs, "cliffnosmallcliffs", 0.0)).filter(|&s| s != 0.0),
             bin_m: 3.0,
             bin_max_points: 31,
             neighbourhood_max_points: 301,
@@ -315,11 +315,11 @@ impl Config {
             let mut thresholds = vec![];
             let mut i: u32 = 1;
             loop {
-                let last_threshold = gs.get(format!("thresold{i}")).unwrap_or("");
+                let last_threshold = gs.get(format!("threshold{i}")).unwrap_or("");
                 if last_threshold.is_empty() {
                     break;
                 }
-                let [v0, v1, v2] = parse_numbers(&format!("thresold{i}"), last_threshold)?;
+                let [v0, v1, v2] = parse_numbers(&format!("threshold{i}"), last_threshold)?;
                 thresholds.push((v0, v1, v2));
                 i += 1;
             }
@@ -360,7 +360,7 @@ impl Config {
             med: parse_typed(gs, "medianboxsize", 0),
             med2: parse_typed(gs, "medianboxsize2", 0),
             yellowheight: parse_typed(gs, "yellowheight", 0.9),
-            yellowthreshold: parse_typed(gs, "yellowthresold", 0.9),
+            yellowthreshold: parse_typed(gs, "yellowthreshold", 0.9),
             yellowfirstlast: parse_typed(gs, "yellowfirstlast", 1),
             proceed_yellows: gs.get("yellow_smoothing").unwrap_or("0") == "1",
             medyellow: parse_typed(gs, "yellowmedianboxsize", 0),
@@ -596,7 +596,7 @@ impl<'a> Keys<'a> {
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
 /// unknown. A key ending in `{i}` stands for that prefix and a number.
-const REMOVED_KEYS: [(&str, &str); 8] = [
+const REMOVED_KEYS: [(&str, &str); 11] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
@@ -618,6 +618,12 @@ const REMOVED_KEYS: [(&str, &str); 8] = [
         "scalefactor",
         "the map scale is `mapscale` (scalefactor=1.5 is mapscale=15000); ground lengths \
          no longer scale with it",
+    ),
+    ("thresold{i}", "renamed to `threshold{i}`, same value"),
+    ("yellowthresold", "renamed to `yellowthreshold`, same value"),
+    (
+        "cliffnosmallciffs",
+        "renamed to `cliffnosmallcliffs`, same value",
     ),
 ];
 
@@ -824,6 +830,9 @@ mod test {
             "indexcontours",
             "zone1",
             "scalefactor",
+            "thresold1",
+            "yellowthresold",
+            "cliffnosmallciffs",
         ] {
             let err = load_appended(&format!("{key}=1")).err().unwrap();
             assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
@@ -880,8 +889,8 @@ mod test {
             ("stratum1", "1|2"),
             ("stratum2", "1|2|x|1"),
             ("stratum3", "1|2|3|4|5"),
-            ("thresold1", "0.2|3"),
-            ("thresold2", "a|b|c"),
+            ("threshold1", "0.2|3"),
+            ("threshold2", "a|b|c"),
             ("greenshades", "0.2|x|0.5"),
         ] {
             let err = load_with(&[(key, bad)]).err().unwrap();
@@ -929,6 +938,57 @@ mod test {
         assert_eq!(super::removed_key("zones"), None);
         assert_eq!(super::removed_key("zone"), None);
         assert_eq!(super::removed_key("zone1x"), None);
+    }
+
+    /// The misspelt keys are removed in favour of their spelt-out names, each error
+    /// naming the new key; `thresold{i}` reports every number.
+    #[test]
+    fn misspelt_keys_are_removed_naming_the_new_key() {
+        let err = load_appended(
+            "thresold1=0.20|3|0.1\nthresold12=3|4|0.1\nyellowthresold=0.9\ncliffnosmallciffs=5.5",
+        )
+        .err()
+        .unwrap();
+        for expected in [
+            "`thresold1` (removed: renamed to `threshold1`, same value)",
+            "`thresold12` (removed: renamed to `threshold12`, same value)",
+            "`yellowthresold` (removed: renamed to `yellowthreshold`, same value)",
+            "`cliffnosmallciffs` (removed: renamed to `cliffnosmallcliffs`, same value)",
+        ] {
+            assert!(err.contains(expected), "{expected}: {err}");
+        }
+        assert_eq!(super::removed_key("thresold"), None);
+        assert_eq!(super::removed_key("thresold1x"), None);
+    }
+
+    /// The spelt-out keys carry the template's values to the same fields.
+    #[test]
+    fn spelt_out_keys_parse_the_template_values() {
+        let config = load_with(&[]).unwrap();
+        assert_eq!(
+            config.vegetation.thresholds,
+            [
+                (0.2, 3.0, 0.1),
+                (3.0, 4.0, 0.1),
+                (4.0, 7.0, 0.1),
+                (7.0, 20.0, 0.1),
+                (20.0, 99.0, 0.1),
+            ]
+        );
+        assert_eq!(config.vegetation.yellowthreshold, 0.9);
+        assert_eq!(config.cliff.no_small_cliffs, Some(5.5));
+        let config = load_with(&[
+            ("threshold2", "2|5|0.3"),
+            ("yellowthreshold", "0.7"),
+            ("cliffnosmallcliffs", "4.5"),
+        ])
+        .unwrap();
+        assert_eq!(config.vegetation.thresholds[1], (2.0, 5.0, 0.3));
+        assert_eq!(config.vegetation.yellowthreshold, 0.7);
+        assert_eq!(config.cliff.no_small_cliffs, Some(4.5));
+        let err = load_without("threshold3").err().unwrap();
+        assert!(err.contains("unknown keys `threshold4`"), "{err}");
+        assert!(err.contains("`threshold5`"), "{err}");
     }
 
     #[test]
@@ -1065,9 +1125,9 @@ mod test {
     }
 
     #[test]
-    fn cliffnosmallciffs_zero_is_none() {
+    fn cliffnosmallcliffs_zero_is_none() {
         let steep = |v| {
-            load_with(&[("cliffnosmallciffs", v)])
+            load_with(&[("cliffnosmallcliffs", v)])
                 .unwrap()
                 .cliff
                 .no_small_cliffs
@@ -1075,7 +1135,7 @@ mod test {
         assert_eq!(steep("0"), None);
         assert_eq!(steep("5.5"), Some(5.5));
         assert_eq!(
-            load_without("cliffnosmallciffs")
+            load_without("cliffnosmallcliffs")
                 .unwrap()
                 .cliff
                 .no_small_cliffs,

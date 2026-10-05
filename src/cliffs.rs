@@ -39,7 +39,7 @@ pub struct CliffParams {
     /// Height range below which ground counts as flat (ini `cliffflatplace`). Metres.
     pub flat_place: f64,
     /// Height range from which no cliffs are drawn, only impassable ones, and the
-    /// impassable cliff limit starts to rise (ini `cliffnosmallciffs`, 0 for None).
+    /// impassable cliff limit starts to rise (ini `cliffnosmallcliffs`, 0 for None).
     /// Metres. None means 6.0 above `flat_place`.
     pub no_small_cliffs: Option<f64>,
     /// Side of the square bins the returns and cells are grouped in. Metres.
