@@ -8,8 +8,8 @@
       "identical": true
     },
     "batch/out/merged.jpg": {
-      "baseline_bytes": 13187021,
-      "candidate_bytes": 13187021,
+      "baseline_bytes": 13186978,
+      "candidate_bytes": 13186978,
       "identical": true
     },
     "batch/out/merged.jpg.aux.xml": {
@@ -33,8 +33,8 @@
       "identical": true
     },
     "batch/out/merged_depr.jpg": {
-      "baseline_bytes": 13349332,
-      "candidate_bytes": 13349332,
+      "baseline_bytes": 13349084,
+      "candidate_bytes": 13349084,
       "identical": true
     },
     "batch/out/merged_depr.jpg.aux.xml": {
@@ -544,8 +544,8 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 3357274,
-          "candidate_px": 3357274,
+          "baseline_px": 3357345,
+          "candidate_px": 3357345,
           "iou": 1.0
         },
         "#000adc": {
@@ -554,8 +554,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 617871,
-          "candidate_px": 617871,
+          "baseline_px": 617870,
+          "candidate_px": 617870,
           "iou": 1.0
         },
         "#407900": {
@@ -569,38 +569,38 @@
           "iou": 1.0
         },
         "#64d964": {
-          "baseline_px": 154715,
-          "candidate_px": 154715,
+          "baseline_px": 154714,
+          "candidate_px": 154714,
           "iou": 1.0
         },
         "#78e078": {
-          "baseline_px": 1333377,
-          "candidate_px": 1333377,
+          "baseline_px": 1333374,
+          "candidate_px": 1333374,
           "iou": 1.0
         },
         "#8ce78c": {
-          "baseline_px": 2106005,
-          "candidate_px": 2106005,
+          "baseline_px": 2105999,
+          "candidate_px": 2105999,
           "iou": 1.0
         },
         "#a0efa0": {
-          "baseline_px": 1178506,
-          "candidate_px": 1178506,
+          "baseline_px": 1178497,
+          "candidate_px": 1178497,
           "iou": 1.0
         },
         "#a6552b": {
-          "baseline_px": 3442303,
-          "candidate_px": 3442303,
+          "baseline_px": 3442284,
+          "candidate_px": 3442284,
           "iou": 1.0
         },
         "#b4f6b4": {
-          "baseline_px": 1521269,
-          "candidate_px": 1521269,
+          "baseline_px": 1521265,
+          "candidate_px": 1521265,
           "iou": 1.0
         },
         "#c8fec8": {
-          "baseline_px": 1950159,
-          "candidate_px": 1950159,
+          "baseline_px": 1950153,
+          "candidate_px": 1950153,
           "iou": 1.0
         },
         "#ff9650": {
@@ -609,13 +609,13 @@
           "iou": 1.0
         },
         "#ffdba6": {
-          "baseline_px": 11048050,
-          "candidate_px": 11048050,
+          "baseline_px": 11048048,
+          "candidate_px": 11048048,
           "iou": 1.0
         },
         "#ffffff": {
-          "baseline_px": 22161437,
-          "candidate_px": 22161437,
+          "baseline_px": 22161417,
+          "candidate_px": 22161417,
           "iou": 1.0
         }
       },
@@ -627,8 +627,8 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 3357274,
-          "candidate_px": 3357274,
+          "baseline_px": 3357345,
+          "candidate_px": 3357345,
           "iou": 1.0
         },
         "#000adc": {
@@ -637,8 +637,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 617871,
-          "candidate_px": 617871,
+          "baseline_px": 617870,
+          "candidate_px": 617870,
           "iou": 1.0
         },
         "#407900": {
@@ -652,43 +652,43 @@
           "iou": 1.0
         },
         "#64d964": {
-          "baseline_px": 153910,
-          "candidate_px": 153910,
+          "baseline_px": 153909,
+          "candidate_px": 153909,
           "iou": 1.0
         },
         "#78e078": {
-          "baseline_px": 1329003,
-          "candidate_px": 1329003,
+          "baseline_px": 1329000,
+          "candidate_px": 1329000,
           "iou": 1.0
         },
         "#8ce78c": {
-          "baseline_px": 2100643,
-          "candidate_px": 2100643,
+          "baseline_px": 2100637,
+          "candidate_px": 2100637,
           "iou": 1.0
         },
         "#a0efa0": {
-          "baseline_px": 1175518,
-          "candidate_px": 1175518,
+          "baseline_px": 1175509,
+          "candidate_px": 1175509,
           "iou": 1.0
         },
         "#a6552b": {
-          "baseline_px": 3442213,
-          "candidate_px": 3442213,
+          "baseline_px": 3442194,
+          "candidate_px": 3442194,
           "iou": 1.0
         },
         "#b4f6b4": {
-          "baseline_px": 1517996,
-          "candidate_px": 1517996,
+          "baseline_px": 1517992,
+          "candidate_px": 1517992,
           "iou": 1.0
         },
         "#c800c8": {
-          "baseline_px": 91822,
-          "candidate_px": 91822,
+          "baseline_px": 91814,
+          "candidate_px": 91814,
           "iou": 1.0
         },
         "#c8fec8": {
-          "baseline_px": 1946327,
-          "candidate_px": 1946327,
+          "baseline_px": 1946321,
+          "candidate_px": 1946321,
           "iou": 1.0
         },
         "#ff9650": {
@@ -697,13 +697,13 @@
           "iou": 1.0
         },
         "#ffdba6": {
-          "baseline_px": 11027724,
-          "candidate_px": 11027724,
+          "baseline_px": 11027722,
+          "candidate_px": 11027722,
           "iou": 1.0
         },
         "#ffffff": {
-          "baseline_px": 22110761,
-          "candidate_px": 22110761,
+          "baseline_px": 22110749,
+          "candidate_px": 22110749,
           "iou": 1.0
         }
       },
@@ -715,8 +715,8 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 3357274,
-          "candidate_px": 3357274,
+          "baseline_px": 3357345,
+          "candidate_px": 3357345,
           "iou": 1.0
         },
         "#000adc": {
@@ -725,8 +725,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 617871,
-          "candidate_px": 617871,
+          "baseline_px": 617870,
+          "candidate_px": 617870,
           "iou": 1.0
         },
         "#407900": {
@@ -740,38 +740,38 @@
           "iou": 1.0
         },
         "#64d964": {
-          "baseline_px": 154715,
-          "candidate_px": 154715,
+          "baseline_px": 154714,
+          "candidate_px": 154714,
           "iou": 1.0
         },
         "#78e078": {
-          "baseline_px": 1333377,
-          "candidate_px": 1333377,
+          "baseline_px": 1333374,
+          "candidate_px": 1333374,
           "iou": 1.0
         },
         "#8ce78c": {
-          "baseline_px": 2106005,
-          "candidate_px": 2106005,
+          "baseline_px": 2105999,
+          "candidate_px": 2105999,
           "iou": 1.0
         },
         "#a0efa0": {
-          "baseline_px": 1178506,
-          "candidate_px": 1178506,
+          "baseline_px": 1178497,
+          "candidate_px": 1178497,
           "iou": 1.0
         },
         "#a6552b": {
-          "baseline_px": 3442303,
-          "candidate_px": 3442303,
+          "baseline_px": 3442284,
+          "candidate_px": 3442284,
           "iou": 1.0
         },
         "#b4f6b4": {
-          "baseline_px": 1521269,
-          "candidate_px": 1521269,
+          "baseline_px": 1521265,
+          "candidate_px": 1521265,
           "iou": 1.0
         },
         "#c8fec8": {
-          "baseline_px": 1950159,
-          "candidate_px": 1950159,
+          "baseline_px": 1950153,
+          "candidate_px": 1950153,
           "iou": 1.0
         },
         "#ff9650": {
@@ -780,13 +780,13 @@
           "iou": 1.0
         },
         "#ffdba6": {
-          "baseline_px": 11048050,
-          "candidate_px": 11048050,
+          "baseline_px": 11048048,
+          "candidate_px": 11048048,
           "iou": 1.0
         },
         "#ffffff": {
-          "baseline_px": 22161437,
-          "candidate_px": 22161437,
+          "baseline_px": 22161417,
+          "candidate_px": 22161417,
           "iou": 1.0
         }
       },
@@ -798,8 +798,8 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 3357274,
-          "candidate_px": 3357274,
+          "baseline_px": 3357345,
+          "candidate_px": 3357345,
           "iou": 1.0
         },
         "#000adc": {
@@ -808,8 +808,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 617871,
-          "candidate_px": 617871,
+          "baseline_px": 617870,
+          "candidate_px": 617870,
           "iou": 1.0
         },
         "#407900": {
@@ -823,43 +823,43 @@
           "iou": 1.0
         },
         "#64d964": {
-          "baseline_px": 153910,
-          "candidate_px": 153910,
+          "baseline_px": 153909,
+          "candidate_px": 153909,
           "iou": 1.0
         },
         "#78e078": {
-          "baseline_px": 1329003,
-          "candidate_px": 1329003,
+          "baseline_px": 1329000,
+          "candidate_px": 1329000,
           "iou": 1.0
         },
         "#8ce78c": {
-          "baseline_px": 2100643,
-          "candidate_px": 2100643,
+          "baseline_px": 2100637,
+          "candidate_px": 2100637,
           "iou": 1.0
         },
         "#a0efa0": {
-          "baseline_px": 1175518,
-          "candidate_px": 1175518,
+          "baseline_px": 1175509,
+          "candidate_px": 1175509,
           "iou": 1.0
         },
         "#a6552b": {
-          "baseline_px": 3442213,
-          "candidate_px": 3442213,
+          "baseline_px": 3442194,
+          "candidate_px": 3442194,
           "iou": 1.0
         },
         "#b4f6b4": {
-          "baseline_px": 1517996,
-          "candidate_px": 1517996,
+          "baseline_px": 1517992,
+          "candidate_px": 1517992,
           "iou": 1.0
         },
         "#c800c8": {
-          "baseline_px": 91822,
-          "candidate_px": 91822,
+          "baseline_px": 91814,
+          "candidate_px": 91814,
           "iou": 1.0
         },
         "#c8fec8": {
-          "baseline_px": 1946327,
-          "candidate_px": 1946327,
+          "baseline_px": 1946321,
+          "candidate_px": 1946321,
           "iou": 1.0
         },
         "#ff9650": {
@@ -868,13 +868,13 @@
           "iou": 1.0
         },
         "#ffdba6": {
-          "baseline_px": 11027724,
-          "candidate_px": 11027724,
+          "baseline_px": 11027722,
+          "candidate_px": 11027722,
           "iou": 1.0
         },
         "#ffffff": {
-          "baseline_px": 22110761,
-          "candidate_px": 22110761,
+          "baseline_px": 22110749,
+          "candidate_px": 22110749,
           "iou": 1.0
         }
       },
@@ -886,8 +886,8 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 3357274,
-          "candidate_px": 3357274,
+          "baseline_px": 3357345,
+          "candidate_px": 3357345,
           "iou": 1.0
         },
         "#000adc": {
@@ -896,8 +896,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 617871,
-          "candidate_px": 617871,
+          "baseline_px": 617870,
+          "candidate_px": 617870,
           "iou": 1.0
         },
         "#407900": {
@@ -911,38 +911,38 @@
           "iou": 1.0
         },
         "#64d964": {
-          "baseline_px": 154715,
-          "candidate_px": 154715,
+          "baseline_px": 154714,
+          "candidate_px": 154714,
           "iou": 1.0
         },
         "#78e078": {
-          "baseline_px": 1333377,
-          "candidate_px": 1333377,
+          "baseline_px": 1333374,
+          "candidate_px": 1333374,
           "iou": 1.0
         },
         "#8ce78c": {
-          "baseline_px": 2106005,
-          "candidate_px": 2106005,
+          "baseline_px": 2105999,
+          "candidate_px": 2105999,
           "iou": 1.0
         },
         "#a0efa0": {
-          "baseline_px": 1178506,
-          "candidate_px": 1178506,
+          "baseline_px": 1178497,
+          "candidate_px": 1178497,
           "iou": 1.0
         },
         "#a6552b": {
-          "baseline_px": 3442303,
-          "candidate_px": 3442303,
+          "baseline_px": 3442284,
+          "candidate_px": 3442284,
           "iou": 1.0
         },
         "#b4f6b4": {
-          "baseline_px": 1521269,
-          "candidate_px": 1521269,
+          "baseline_px": 1521265,
+          "candidate_px": 1521265,
           "iou": 1.0
         },
         "#c8fec8": {
-          "baseline_px": 1950159,
-          "candidate_px": 1950159,
+          "baseline_px": 1950153,
+          "candidate_px": 1950153,
           "iou": 1.0
         },
         "#ff9650": {
@@ -951,13 +951,13 @@
           "iou": 1.0
         },
         "#ffdba6": {
-          "baseline_px": 11048050,
-          "candidate_px": 11048050,
+          "baseline_px": 11048048,
+          "candidate_px": 11048048,
           "iou": 1.0
         },
         "#ffffff": {
-          "baseline_px": 22161437,
-          "candidate_px": 22161437,
+          "baseline_px": 22161417,
+          "candidate_px": 22161417,
           "iou": 1.0
         }
       },
@@ -969,8 +969,8 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 3357274,
-          "candidate_px": 3357274,
+          "baseline_px": 3357345,
+          "candidate_px": 3357345,
           "iou": 1.0
         },
         "#000adc": {
@@ -979,8 +979,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 617871,
-          "candidate_px": 617871,
+          "baseline_px": 617870,
+          "candidate_px": 617870,
           "iou": 1.0
         },
         "#407900": {
@@ -994,43 +994,43 @@
           "iou": 1.0
         },
         "#64d964": {
-          "baseline_px": 153910,
-          "candidate_px": 153910,
+          "baseline_px": 153909,
+          "candidate_px": 153909,
           "iou": 1.0
         },
         "#78e078": {
-          "baseline_px": 1329003,
-          "candidate_px": 1329003,
+          "baseline_px": 1329000,
+          "candidate_px": 1329000,
           "iou": 1.0
         },
         "#8ce78c": {
-          "baseline_px": 2100643,
-          "candidate_px": 2100643,
+          "baseline_px": 2100637,
+          "candidate_px": 2100637,
           "iou": 1.0
         },
         "#a0efa0": {
-          "baseline_px": 1175518,
-          "candidate_px": 1175518,
+          "baseline_px": 1175509,
+          "candidate_px": 1175509,
           "iou": 1.0
         },
         "#a6552b": {
-          "baseline_px": 3442213,
-          "candidate_px": 3442213,
+          "baseline_px": 3442194,
+          "candidate_px": 3442194,
           "iou": 1.0
         },
         "#b4f6b4": {
-          "baseline_px": 1517996,
-          "candidate_px": 1517996,
+          "baseline_px": 1517992,
+          "candidate_px": 1517992,
           "iou": 1.0
         },
         "#c800c8": {
-          "baseline_px": 91822,
-          "candidate_px": 91822,
+          "baseline_px": 91814,
+          "candidate_px": 91814,
           "iou": 1.0
         },
         "#c8fec8": {
-          "baseline_px": 1946327,
-          "candidate_px": 1946327,
+          "baseline_px": 1946321,
+          "candidate_px": 1946321,
           "iou": 1.0
         },
         "#ff9650": {
@@ -1039,13 +1039,13 @@
           "iou": 1.0
         },
         "#ffdba6": {
-          "baseline_px": 11027724,
-          "candidate_px": 11027724,
+          "baseline_px": 11027722,
+          "candidate_px": 11027722,
           "iou": 1.0
         },
         "#ffffff": {
-          "baseline_px": 22110761,
-          "candidate_px": 22110761,
+          "baseline_px": 22110749,
+          "candidate_px": 22110749,
           "iou": 1.0
         }
       },
@@ -1136,13 +1136,13 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 2964238,
-          "candidate_px": 2964238,
+          "baseline_px": 2964309,
+          "candidate_px": 2964309,
           "iou": 1.0
         },
         "#00000000": {
-          "baseline_px": 45416288,
-          "candidate_px": 45416288,
+          "baseline_px": 45416218,
+          "candidate_px": 45416218,
           "iou": 1.0
         },
         "#000adc": {
@@ -1151,8 +1151,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 619071,
-          "candidate_px": 619071,
+          "baseline_px": 619070,
+          "candidate_px": 619070,
           "iou": 1.0
         },
         "#ff9650": {
@@ -1373,13 +1373,13 @@
       "changed_pixels": 0,
       "classes": {
         "#000000": {
-          "baseline_px": 2964238,
-          "candidate_px": 2964238,
+          "baseline_px": 2964309,
+          "candidate_px": 2964309,
           "iou": 1.0
         },
         "#00000000": {
-          "baseline_px": 45416288,
-          "candidate_px": 45416288,
+          "baseline_px": 45416218,
+          "candidate_px": 45416218,
           "iou": 1.0
         },
         "#000adc": {
@@ -1388,8 +1388,8 @@
           "iou": 1.0
         },
         "#1dbeff": {
-          "baseline_px": 619071,
-          "candidate_px": 619071,
+          "baseline_px": 619070,
+          "candidate_px": 619070,
           "iou": 1.0
         },
         "#ff9650": {
