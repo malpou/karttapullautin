@@ -95,9 +95,11 @@ fn main() {
     let pnorthlineswidth = config.pnorthlineswidth;
 
     match command {
-        Command::Default if fs.exists(tmpfolder.join("vegetation.png")) && !batch => {
+        // re-render a tile run with debug_intermediates=1; a normal run keeps only
+        // products in temp/, so `pullauta` alone prints the usage there
+        Command::Default if !batch && pullauta::render::check_inputs(&fs, &tmpfolder).is_ok() => {
             info!("Rendering png map with depressions");
-            pullauta::render::render(
+            or_exit(pullauta::render::render(
                 &fs,
                 &config,
                 &thread,
@@ -105,10 +107,9 @@ fn main() {
                 pnorthlinesangle,
                 pnorthlineswidth,
                 false,
-            )
-            .unwrap();
+            ));
             info!("Rendering png map without depressions");
-            pullauta::render::render(
+            or_exit(pullauta::render::render(
                 &fs,
                 &config,
                 &thread,
@@ -116,8 +117,7 @@ fn main() {
                 pnorthlinesangle,
                 pnorthlineswidth,
                 true,
-            )
-            .unwrap();
+            ));
             info!("\nAll done!");
         }
 
@@ -160,11 +160,22 @@ fn main() {
 
                 pullauta::process::launch_threads(fs.clone(), config.clone(), &zip_files).unwrap();
 
-                // copy the output files back to disk
-                std::fs::create_dir_all(&config.batchoutfolder).unwrap();
-                for path in fs.list(&config.batchoutfolder).unwrap() {
-                    info!("Copying {} from memory fs to disk", path.display());
-                    fs.save_to_disk(&path, &path).unwrap();
+                // copy the output files back to disk, and the tiles' temp folders
+                // (temp_<tile>_dir) with debug_intermediates=1
+                let mut folders = vec![PathBuf::from(&config.batchoutfolder)];
+                if config.debug_intermediates {
+                    folders.extend(fs.list(".").unwrap().into_iter().filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.starts_with("temp_") && n.ends_with("_dir"))
+                    }));
+                }
+                for folder in folders {
+                    std::fs::create_dir_all(&folder).unwrap();
+                    for path in fs.list(&folder).unwrap() {
+                        info!("Copying {} from memory fs to disk", path.display());
+                        fs.save_to_disk(&path, &path).unwrap();
+                    }
                 }
             } else {
                 pullauta::process::launch_threads(fs.clone(), config.clone(), &zip_files).unwrap();
@@ -176,24 +187,18 @@ fn main() {
                 pullauta::merge::pngmerge(&fs, &config, 4.0, false).unwrap();
                 pullauta::merge::pngmerge(&fs, &config, 4.0, true).unwrap();
                 pullauta::merge::pngmergevege(&fs, &config, 1.0, false).unwrap();
-                // a merged.dxf.bin left by an earlier run would stand in for this run's
-                // contours and cliffs; bindxfmerge writes a new one only when the tiles
-                // kept their .dxf.bin files (savetempfiles=1)
-                let merged_bin = Path::new(pullauta::merge::MERGED_DXF_BIN);
-                if fs.exists(merged_bin) {
-                    fs.remove_file(merged_bin).unwrap();
-                }
                 pullauta::merge::bindxfmerge(&fs, &config).unwrap();
                 pullauta::geojson::merge_geojson(&fs, out).unwrap();
-                pullauta::geojson::export_combined(
-                    &fs,
-                    out,
-                    merged_bin,
-                    &config.map_frame,
-                    config.epsg,
-                )
-                .unwrap();
+                pullauta::geojson::export_combined(&fs, out, &config.map_frame, config.epsg)
+                    .unwrap();
             }
+            // the tiles' .dxf.bin crops are the merge's input, not output
+            pullauta::process::remove_tile_bins(
+                &fs,
+                &config.batchoutfolder,
+                config.debug_intermediates,
+            )
+            .unwrap();
         }
 
         Command::PerlOnly => {
@@ -388,7 +393,7 @@ fn main() {
                 .and_then(|s| s.parse::<usize>().ok())
                 .expect("expected second argument to be nwidth");
             let nodepressions: bool = args.len() > 2 && args[2] == "nodepressions";
-            pullauta::render::render(
+            or_exit(pullauta::render::render(
                 &fs,
                 &config,
                 &thread,
@@ -396,15 +401,15 @@ fn main() {
                 angle,
                 nwidth,
                 nodepressions,
-            )
-            .unwrap();
+            ));
         }
 
         Command::Zip(first) => {
             let mut zips: Vec<String> = vec![first];
             zips.extend(args);
-            pullauta::process::process_zip(&fs, &config, &thread, &tmpfolder, &zips, false)
-                .unwrap();
+            or_exit(pullauta::process::process_zip(
+                &fs, &config, &thread, &tmpfolder, &zips, false,
+            ));
         }
 
         Command::Tile(input) => {
@@ -435,18 +440,38 @@ fn main() {
                     norender,
                 )
                 .unwrap();
+                pullauta::process::prune_tile_folder(
+                    &fs,
+                    &tmpfolder,
+                    config.debug_intermediates,
+                    config.vege_bitmode,
+                )
+                .unwrap();
 
-                // now write the output files to disk
-                fn copy(fs: &MemoryFileSystem, name: &str) {
-                    if fs.exists(name) {
-                        info!("Copying {name} from memory fs to disk");
-                        fs.save_to_disk(name, name)
+                // now write the output files to disk: the maps and what the temp folder
+                // keeps
+                fn copy(fs: &MemoryFileSystem, path: &Path) {
+                    if fs.exists(path) {
+                        info!("Copying {} from memory fs to disk", path.display());
+                        fs.save_to_disk(path, path)
                             .expect("Could not copy from memory fs to disk");
                     }
                 }
-                copy(&fs, "pullautus.png");
-                copy(&fs, "pullautus_depr.png");
+                copy(&fs, Path::new("pullautus.png"));
+                copy(&fs, Path::new("pullautus_depr.png"));
+                for path in fs.list(&tmpfolder).unwrap() {
+                    copy(&fs, &path);
+                }
             } else {
+                // start from an empty temp folder, unless the input point file is in it
+                // (such as temp/xyztemp.xyz.bin kept by debug_intermediates=1)
+                let input_in_temp = fs::canonicalize(&input)
+                    .ok()
+                    .zip(fs::canonicalize(&tmpfolder).ok())
+                    .is_some_and(|(input, temp)| input.starts_with(temp));
+                if !input_in_temp {
+                    pullauta::process::clear_tile_folder(&fs, &tmpfolder).unwrap();
+                }
                 pullauta::process::process_tile(
                     &fs,
                     &config,
@@ -457,11 +482,27 @@ fn main() {
                     norender,
                 )
                 .unwrap();
+                pullauta::process::prune_tile_folder(
+                    &fs,
+                    &tmpfolder,
+                    config.debug_intermediates,
+                    config.vege_bitmode,
+                )
+                .unwrap();
             }
         }
 
         Command::Unknown => {}
     }
+}
+
+/// The value, or exit with the error: for an error the user can act on, such as
+/// re-rendering without the temp files.
+fn or_exit<T, E: std::fmt::Display>(result: Result<T, E>) -> T {
+    result.unwrap_or_else(|e| {
+        error!("{e}");
+        std::process::exit(1);
+    })
 }
 
 /// The command line after the program name: an optional thread number, the

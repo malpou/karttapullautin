@@ -35,8 +35,10 @@ pub struct Config {
 
     pub lazfolder: String,
     pub batchoutfolder: String,
-    pub savetempfiles: bool,
-    pub savetempfolders: bool,
+    /// Keep the debug intermediates (ini `debug_intermediates`): every stage result in
+    /// the temp folder, each batch tile's folder as `temp_{tile}_dir`, and the `.dxf.bin`
+    /// files. They have no format guarantee; without the flag only the products are left.
+    pub debug_intermediates: bool,
 
     /// Padding in metres: the strip of the neighbouring tiles processed with each tile
     /// in batch mode, so features meet at the tile edges.
@@ -178,8 +180,7 @@ impl Config {
 
         let lazfolder = gs.get("lazfolder").unwrap_or("").to_string();
         let batchoutfolder = gs.get("batchoutfolder").unwrap_or("").to_string();
-        let savetempfiles = flag(gs, "savetempfiles", None)?;
-        let savetempfolders = flag(gs, "savetempfolders", None)?;
+        let debug_intermediates = flag(gs, "debug_intermediates", Some(false))?;
         let batchbuffer: f64 = match gs.get("batchbuffer") {
             None => 127.0,
             Some(v) => match v.trim().parse::<f64>() {
@@ -480,8 +481,7 @@ impl Config {
             batchoutfolder,
             batchbuffer,
             batchmerge,
-            savetempfolders,
-            savetempfiles,
+            debug_intermediates,
             map_frame,
             vege_bitmode,
             zoff,
@@ -596,7 +596,7 @@ impl<'a> Keys<'a> {
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
 /// unknown. A key ending in `{i}` stands for that prefix and a number.
-const REMOVED_KEYS: [(&str, &str); 11] = [
+const REMOVED_KEYS: [(&str, &str); 13] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
@@ -624,6 +624,16 @@ const REMOVED_KEYS: [(&str, &str); 11] = [
     (
         "cliffnosmallciffs",
         "renamed to `cliffnosmallcliffs`, same value",
+    ),
+    (
+        "savetempfiles",
+        "the tile rasters are always written to the batch output folder; with \
+         output_dxf=1 each tile's DXF as <tile>_<layer>.dxf, with vector_vege=1 its \
+         tables as <tile>_<table>.geojson; debug_intermediates=1 keeps the .dxf.bin files",
+    ),
+    (
+        "savetempfolders",
+        "debug_intermediates=1 keeps each tile's temp folder as temp_<tile>_dir",
     ),
 ];
 
@@ -833,6 +843,8 @@ mod test {
             "thresold1",
             "yellowthresold",
             "cliffnosmallciffs",
+            "savetempfiles",
+            "savetempfolders",
         ] {
             let err = load_appended(&format!("{key}=1")).err().unwrap();
             assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
@@ -847,7 +859,7 @@ mod test {
 
     #[test]
     fn required_keys_error_when_missing_or_malformed() {
-        for key in ["processes", "savetempfiles", "savetempfolders", "batch"] {
+        for key in ["processes", "batch"] {
             let err = load_without(key).err().unwrap();
             assert!(err.contains(&format!("`{key}` is missing")), "{err}");
             let err = load_with(&[(key, "yes")]).err().unwrap();
@@ -1296,6 +1308,25 @@ mod test {
         assert_eq!(config.batchbuffer, 127.0);
         assert!(!config.batchmerge);
         assert_eq!(config.epsg, None);
+    }
+
+    #[test]
+    fn debug_intermediates_is_an_optional_flag() {
+        assert!(!load_with(&[]).unwrap().debug_intermediates);
+        assert!(
+            !load_without("debug_intermediates")
+                .unwrap()
+                .debug_intermediates
+        );
+        assert!(
+            load_with(&[("debug_intermediates", "1")])
+                .unwrap()
+                .debug_intermediates
+        );
+        for bad in ["yes", "", "2"] {
+            let err = load_with(&[("debug_intermediates", bad)]).err().unwrap();
+            assert!(err.contains("debug_intermediates"), "{bad}: {err}");
+        }
     }
 
     #[test]

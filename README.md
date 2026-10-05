@@ -50,13 +50,13 @@ You can run the `pullauta` executable with the path to your file as argument:
 > ```
 > Other log level available is `warn`, in which no info of current run will be displayed, `error`, which will only show errors, and `trace` which will output a lot of log messages about small details during the processing.
 
-As output Karttapullautin writes two 600 dpi png map images. One without depressions and one with purple depressions. It also writes contours and cliffs as dxf files to temp folder to be post processed, for example using Open Orienteering Mapper or OCAD.
+As output Karttapullautin writes two 600 dpi png map images. One without depressions and one with purple depressions. It also writes contours and cliffs as dxf files to temp folder (with `output_dxf=1`, the default) to be post processed, for example using Open Orienteering Mapper or OCAD. The temp folder keeps only these products (see [Vectors](#vectors)); every other stage result is a debug intermediate, kept only with `debug_intermediates=1`, with no format guarantee.
 
-You can re-render png map files (like with changed north line settings) by running the binary without arguments.  
+You can re-render png map files (like with changed north line settings) by running the binary without arguments. Re-rendering reads the debug intermediates, so the tile must have been processed with `debug_intermediates=1`:
     
     ./pullauta
 
-Karttapullautin can also render zip files containing shape files downloaded from differents sources. After normal process just run the binary with the zip(s) as arguments. You must define your configuration file describing the shape file content, in the ini file, parameter `vectorconf` (see osm.txt and fastighetskartan.txt).
+Karttapullautin can also render zip files containing shape files downloaded from differents sources. After normal process (with `debug_intermediates=1`) just run the binary with the zip(s) as arguments. You must define your configuration file describing the shape file content, in the ini file, parameter `vectorconf` (see osm.txt and fastighetskartan.txt).
 
     ./pullauta yourzipfile1.zip yourzipfile2.zip yourzipfile3.zip yourzipfile4.zip
 
@@ -82,7 +82,7 @@ You will have a zip file `map.shp.zip` that you can use with karttapullautin.
 
 #### Converting the internal XYZ format
 
-Previously, Karttapullautin used regular text-based `.xyz` files to store the temporary files which could be opened and visualized by many external tools. But with the introduction of an internal (non-stable) binary format for increased performance and reduced disk usage, there is now a new command that can do the conversion into the previous format for you. This will, for example, convert the `xyztemp.xyz.bin` file into a regular `xyztemp.xyz` file (with one line per point) which can be opened by external tools:
+Previously, Karttapullautin used regular text-based `.xyz` files to store the temporary files which could be opened and visualized by many external tools. But with the introduction of an internal (non-stable) binary format for increased performance and reduced disk usage, there is now a new command that can do the conversion into the previous format for you. This will, for example, convert the `xyztemp.xyz.bin` file (kept with `debug_intermediates=1`) into a regular `xyztemp.xyz` file (with one line per point) which can be opened by external tools:
 ```
 ./pullauta internal2xyz temp/xyztemp.xyz.bin temp/xyztemp.xyz
 ```
@@ -95,7 +95,7 @@ Similar as the XYZ files mentioned above, Karttapullautin previously used regula
 ./pullauta bin2dxf temp/c2g.dxf.bin temp/c2g.dxf
 ```
 
-There is also a configuration option `output_dxf` which when set to `1` will output regular `.dxf` files next to the binary files at the expense of higher disk usage and performance.
+There is also a configuration option `output_dxf` which when set to `1` will output regular `.dxf` files next to the binary files at the expense of higher disk usage and performance. The `.dxf.bin` files are debug intermediates, kept only with `debug_intermediates=1`.
 
 ### Fine tuning the output
 
@@ -105,7 +105,7 @@ For Ini file configuration explanation, see ini file comments.
 
 ### Re-processing steps again
 
-When the process is done and you find there is too much green or too small cliffs, you can make parts of the process again with different parameters without having to do it all again. To re-generate only vegetation type from command line:
+When the process is done and you find there is too much green or too small cliffs, you can make parts of the process again with different parameters without having to do it all again. The stages read the previous run's debug intermediates, so run the tile with `debug_intermediates=1` first. To re-generate only vegetation type from command line:
 
     ./pullauta makevege
     ./pullauta 
@@ -117,13 +117,15 @@ To make cliffs again:
 
 ### Vectors
 
-In additon to the png raster map imges, Karttapullautin makes also vector contours and cliffs and also some raster vector files one might find intresting for mapping use. After the process you can find them in temp folder.
+In additon to the png raster map imges, Karttapullautin makes also vector contours and cliffs and also some raster vector files one might find intresting for mapping use. After the process you can find them in temp folder, which keeps only these products unless `debug_intermediates=1`. The DXF files are written with `output_dxf=1`.
 
 - `out2.dxf`: final contours with 2.5 m interval
 - `dotknolls.dxf`: dot knolls and small U -depressions. Some are not rendered to png files for legibility reasons.
-- `c1g.dxf`: small cliffs
-- `c2g.dxf`: big cliffs
-- `vegetation.png + vegetation.pgw`: generalized green/yellow as raster, same as at the background of final map png files.
+- `c2g.dxf`: small cliffs
+- `c3g.dxf`: big cliffs
+- `formlines.dxf`: the form lines the renderer drew
+- `vegetation.dxf` (with `vector_vege=1`) and `basemap.dxf` (with `basemapinterval` above 0)
+- `vegetation.png + vegetation.pgw`: generalized green/yellow as raster, same as at the background of final map png files; `undergrowth.png + undergrowth.pgw` the undergrowth (and with `vege_bitmode=1` the one-channel `vegetation_bit.png` and `undergrowth_bit.png`).
 - `<table>.geojson` (with `vector_vege=1`): the vector output for the [isom-maplibre](https://github.com/MetsaApp/isom-maplibre) style, one file per table it reads (`contours`, `knolls_points`, `cliffs`, `vegetation_areas`, and with a `vectorconf` also `water`, `paths`, `manmade`), each feature with its ISOM 2017-2 symbol code as `isom_code` (`"101.000"`).
 
 For importing Maastotietokanta, try reading shape filed directly to your mapping app. Note that the `dxf` files need to be converted from the internal `.bin.dxf` format using the command `bin2dxf` as mentioned above.
@@ -131,7 +133,7 @@ For importing Maastotietokanta, try reading shape filed directly to your mapping
 ### Batch processing
 
 Karttapulautin can also batch process all las/las files + Maastotietokanta zips in a directory. To do it, turn batch processing on in ini file. configure your input file directory and output directory for map tiles. Copy your input files to input directory and run `./pullauta`. It starts processing las/laz files one by one until everything is done. If you have several cores 
-in your CPU, you can make use of all of them to process multiple file at once. you can configure it with `processes` parameter in ini file. Note, processes parameter effects only batch mode, in normal mode it uses just one worker process. You will also need lots of RAM to process simultaneously several large laser files. To re-process tiles in bach mode you need to remove previous png files from output folder.
+in your CPU, you can make use of all of them to process multiple file at once. you can configure it with `processes` parameter in ini file. Note, processes parameter effects only batch mode, in normal mode it uses just one worker process. You will also need lots of RAM to process simultaneously several large laser files. To re-process tiles in bach mode you need to remove previous png files from output folder. Each tile's temp folder is removed when the tile is done; with `debug_intermediates=1` it is kept as `temp_<tile>_dir`.
 
 You can merge png files in output folder with Karttapullautin.
 
@@ -143,7 +145,7 @@ and depression versions
 
     ./pullauta pngmergedepr 1
 
-vegetation backround images (if saved, there is parameter for saving there)
+vegetation backround images (each tile's `<tile>_vege.png` and `<tile>_undergrowth.png` in the output folder)
 
     ./pullauta pngmergevege
 
@@ -151,7 +153,7 @@ vegetation backround images (if saved, there is parameter for saving there)
 The last paramameter (number) is scale factor. 2 reduces size to 50%, 4 to 25%, 20 to 5% and so on. Command writes out jpg and png versions (merged.png, merged.jpg and their world files) into the batch output folder. 
 Note, you easily run out of memory if you try merging together too large area with too high resolution.
 
-You can also merge dxf files (if saved, there is parameter for saving there)
+You can also merge dxf files. The merge reads each tile's `.dxf.bin` crops, which the batch removes when it is done unless `debug_intermediates=1`; `batchmerge=1` merges them during the run. With `output_dxf=1` each tile's crops are also kept as `<tile>_<layer>.dxf` in the output folder, and the merge writes `merged.dxf` and `merged_<layer>.dxf` in the working directory.
 
     ./pullauta dxfmerge
 

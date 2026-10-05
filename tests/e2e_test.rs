@@ -367,11 +367,11 @@ fn table_path(folder: &Path, table: IsomTable) -> PathBuf {
     folder.join(geojson::file_name(table))
 }
 
-/// Check the terrain tables a tile's temp folder holds with vector_vege=1: contours with
+/// Check a tile's terrain tables with vector_vege=1, each at `path(table)`: contours with
 /// the renderer's form lines, knoll points and cliffs.
-fn assert_terrain_outputs(tile: &Path) {
+fn assert_terrain_outputs(path: impl Fn(IsomTable) -> PathBuf) {
     let contours = assert_terrain_features(
-        &table_path(tile, IsomTable::Contours),
+        &path(IsomTable::Contours),
         "LineString",
         &["101.000", "101.001", "102.000", "103.000"],
     );
@@ -397,7 +397,7 @@ fn assert_terrain_outputs(tile: &Path) {
     }));
 
     let knolls = assert_terrain_features(
-        &table_path(tile, IsomTable::KnollsPoints),
+        &path(IsomTable::KnollsPoints),
         "Point",
         &["109.000", "111.000"],
     );
@@ -407,7 +407,7 @@ fn assert_terrain_outputs(tile: &Path) {
     );
 
     let cliffs = assert_terrain_features(
-        &table_path(tile, IsomTable::Cliffs),
+        &path(IsomTable::Cliffs),
         "LineString",
         &["201.000", "202.000"],
     );
@@ -420,14 +420,14 @@ fn assert_terrain_outputs(tile: &Path) {
 
 /// Single job on the regression tile: run.sh's single job plus vector_vege=1. The
 /// terrain and vegetation tables land in temp/, declaring the tile's CRS, the green
-/// areas without `shade` (vector_shade=0).
+/// areas without `shade` (vector_shade=0), and temp/ keeps only the products.
 #[test]
 #[ignore]
 fn single_job_writes_terrain_geojson() {
     let dir = run_single_job("e2e-single", &[]);
 
     let temp = dir.join("temp");
-    assert_terrain_outputs(&temp);
+    assert_terrain_outputs(|t| table_path(&temp, t));
     assert_crs(&table_path(&temp, IsomTable::Contours));
     for name in ["pullautus.png", "pullautus_depr.png"] {
         assert_raster_crs(&dir.join(name));
@@ -435,10 +435,52 @@ fn single_job_writes_terrain_geojson() {
     let vegetation = table_path(&temp, IsomTable::VegetationAreas);
     let green = assert_vegetation_features(&vegetation, false);
     assert!(green.contains("406.000"), "{green:?}");
+    assert_closed_dxf_areas(&temp.join("vegetation.dxf"), &green);
 
     // contours, knolls_points, cliffs and vegetation_areas; no OSM tables without a
     // vectorconf
     assert_eq!(assert_schema_conformance(&dir), 4);
+
+    // debug_intermediates=0: temp/ keeps only the products, the tables, the DXF files
+    // (output_dxf=1) and the vegetation rasters
+    let kept: BTreeSet<String> = std::fs::read_dir(&temp)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let products: BTreeSet<String> = [
+        "cliffs.geojson",
+        "contours.geojson",
+        "knolls_points.geojson",
+        "vegetation_areas.geojson",
+        "c2g.dxf",
+        "c3g.dxf",
+        "dotknolls.dxf",
+        "formlines.dxf",
+        "out2.dxf",
+        "vegetation.dxf",
+        "undergrowth.pgw",
+        "undergrowth.png",
+        "vegetation.pgw",
+        "vegetation.png",
+    ]
+    .map(String::from)
+    .into();
+    assert_eq!(kept, products);
+}
+
+/// Check the DXF holds each of the vegetation `codes` as closed polylines, one DXF layer
+/// per symbol code.
+fn assert_closed_dxf_areas(dxf_path: &Path, codes: &BTreeSet<String>) {
+    assert!(dxf_path.exists(), "{} was not written", dxf_path.display());
+    let dxf = std::fs::read_to_string(dxf_path).unwrap();
+    for code in codes {
+        assert!(
+            dxf.contains(&format!(
+                "POLYLINE\r\n 66\r\n1\r\n  8\r\n{code}\r\n 70\r\n1\r\n"
+            )),
+            "no closed polyline on layer {code}"
+        );
+    }
 }
 
 /// Run the single job on the regression tile in a fresh run directory `name`, with
@@ -454,27 +496,24 @@ fn run_single_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
 
 /// Batch job as in regression/run.sh: one tile plus the OSM shapefile zip, with
 /// `vectorconf=osm.txt`, and vegetation vectorization on, with the greenshade index
-/// (`vector_shade=1`). `savetempfolders=1` keeps the
-/// tile's temp folder as `temp_test_file_dir/`. `batchmerge=1` runs the merges and the
-/// combined export into `out/`. `epsg` is unset: every GeoJSON file declares the EPSG
-/// code the tile's GeoTIFF CRS keys name.
+/// (`vector_shade=1`). `batchmerge=1` runs the merges and the combined export into
+/// `out/`. `epsg` is unset: every GeoJSON file declares the EPSG code the tile's GeoTIFF
+/// CRS keys name. Without debug_intermediates nothing but the products is left: the
+/// tile's tables are read from their crops in `out/`.
 #[test]
 #[ignore]
 fn batch_with_osm_vectorconf() {
     let dir = run_batch_job("e2e-batch-osm", &[]);
 
-    let tile = dir.join("temp_test_file_dir");
+    let out = dir.join("out");
+    let tile = |table| out.join(geojson::tile_file_name(table, "test_file"));
 
     // osm.txt rules, each feature in the table of its code: primary roads are wide
     // roads and paths small footpaths (paths), buildings and fences are manmade, lakes
     // water
     let osm: Vec<(IsomTable, Value)> = [IsomTable::Paths, IsomTable::Manmade, IsomTable::Water]
         .into_iter()
-        .flat_map(|t| {
-            osm_features(&table_path(&tile, t))
-                .into_iter()
-                .map(move |f| (t, f))
-        })
+        .flat_map(|t| osm_features(&tile(t)).into_iter().map(move |f| (t, f)))
         .collect();
     let has = |geometry: &str, code: &str, category: &str| {
         osm.iter().any(|(_, f)| {
@@ -502,8 +541,7 @@ fn batch_with_osm_vectorconf() {
 
     // vegetation: the default vector_greenshade_isom maps the greenshades to 406/408/410,
     // open land is 403, undergrowth 407; only the green areas carry a shade
-    let vegetation =
-        assert_vegetation_features(&table_path(&tile, IsomTable::VegetationAreas), true);
+    let vegetation = assert_vegetation_features(&tile(IsomTable::VegetationAreas), true);
     assert!(
         vegetation.is_subset(
             &["403.000", "406.000", "407.000", "408.000", "410.000"]
@@ -516,27 +554,68 @@ fn batch_with_osm_vectorconf() {
         assert!(vegetation.contains(code), "{vegetation:?}");
     }
 
-    // the same areas as closed DXF polylines, one DXF layer per symbol code
-    let dxf_path = tile.join("vegetation.dxf");
-    assert!(dxf_path.exists(), "{} was not written", dxf_path.display());
-    let dxf = std::fs::read_to_string(dxf_path).unwrap();
-    for code in &vegetation {
+    assert_terrain_outputs(tile);
+
+    assert_batch_merge(&out);
+
+    // every table cropped, merged and combined in out/
+    assert_eq!(assert_schema_conformance(&dir), 3 * IsomTable::ALL.len());
+
+    // debug_intermediates=0: no tile temp folder, point file, working copy of the map
+    // or .dxf.bin file is left
+    for name in [
+        "temp1",
+        "temp_test_file_dir",
+        "temp1.xyz.bin",
+        "pullautus1.png",
+        "pullautus_depr1.png",
+        "merged.dxf.bin",
+        "out/test_file_contours03.dxf",
+        "out/test_file_detected.dxf",
+    ] {
+        assert!(!dir.join(name).exists(), "{name} is left");
+    }
+    let bins: Vec<PathBuf> = files(&dir)
+        .into_iter()
+        .filter(|p| p.to_string_lossy().ends_with(".dxf.bin"))
+        .collect();
+    assert!(bins.is_empty(), "{bins:?}");
+    // the tile's vegetation rasters and DXF crops (output_dxf=1), and the merged DXF
+    for name in [
+        "out/test_file_vege.png",
+        "out/test_file_undergrowth.png",
+        "out/test_file_c2g.dxf",
+        "out/test_file_vegetation.dxf",
+        "out/merged_vege.png",
+        "merged.dxf",
+    ] {
+        assert!(dir.join(name).exists(), "{name} was not written");
+    }
+}
+
+/// The batch job with debug_intermediates=1 keeps the tile's temp folder as
+/// `temp_test_file_dir/` and the `.dxf.bin` files.
+#[test]
+#[ignore]
+fn batch_with_debug_intermediates_keeps_the_tile_folder() {
+    let dir = run_batch_job("e2e-batch-debug", &[("debug_intermediates", "1")]);
+
+    let tile = dir.join("temp_test_file_dir");
+    for name in ["xyz2.hmap", "out2.dxf.bin", "contours.geojson"] {
         assert!(
-            dxf.contains(&format!(
-                "POLYLINE\r\n 66\r\n1\r\n  8\r\n{code}\r\n 70\r\n1\r\n"
-            )),
-            "no closed polyline on layer {code}"
+            tile.join(name).exists(),
+            "{name} is not in {}",
+            tile.display()
         );
     }
-    assert!(tile.join("vegetation.dxf.bin").exists());
-
-    assert_terrain_outputs(&tile);
-
-    assert_batch_merge(&dir.join("out"));
-
-    // every table in the thread's temp1/ and its savetempfolders copy, cropped, merged
-    // and combined in out/
-    assert_eq!(assert_schema_conformance(&dir), 5 * IsomTable::ALL.len());
+    assert!(!dir.join("temp1").exists(), "temp1 is left");
+    for name in [
+        "out/test_file_c2g.dxf.bin",
+        "out/test_file_contours03.dxf.bin",
+        "merged.dxf.bin",
+    ] {
+        assert!(dir.join(name).exists(), "{name} was not written");
+    }
 }
 
 /// Run the batch job of [`batch_with_osm_vectorconf`] in a fresh run directory `name`,
@@ -560,7 +639,6 @@ fn run_batch_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
         ("vector_vege", "1"),
         ("vector_shade", "1"),
         ("output_dxf", "1"),
-        ("savetempfolders", "1"),
         ("batchmerge", "1"),
     ];
     write_ini(&dir, &[&batch, settings].concat());
@@ -655,7 +733,6 @@ fn assert_batch_merge(out: &Path) {
         }
         combined.extend(feature_collection(&table_path(out, table)));
     }
-    // (merged_vege.png needs savetempfiles=1, which writes the tile vegetation rasters)
     for name in [
         "test_file.png",
         "test_file_depr.png",

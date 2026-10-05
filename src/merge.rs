@@ -1,7 +1,6 @@
 use image::{RgbImage, Rgba, RgbaImage};
 use log::info;
 use std::error::Error;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
@@ -17,8 +16,8 @@ use crate::vec2d::Vec2D;
 use image::buffer::ConvertBuffer;
 
 /// The merged `.dxf.bin` of every tile's terrain, written to the working directory by
-/// [`bindxfmerge`] and read by the combined export.
-pub const MERGED_DXF_BIN: &str = "merged.dxf.bin";
+/// [`bindxfmerge`] with debug_intermediates=1.
+const MERGED_DXF_BIN: &str = "merged.dxf.bin";
 
 /// Whether a file in the batch output folder is a merge output (`merged.png`,
 /// `merged_vege.png`, ...), which the png merges write there and must not read back.
@@ -230,6 +229,10 @@ pub fn pngmerge(
     Ok(())
 }
 
+/// Merge the tiles' `.dxf.bin` crops in the batch output folder, per stage and all
+/// together, into `merged_<stage>.dxf` and `merged.dxf` in the working directory with
+/// output_dxf=1; the `.dxf.bin` merges are intermediates, written with
+/// debug_intermediates=1.
 pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> {
     let batchoutfolder = &config.batchoutfolder;
 
@@ -345,8 +348,9 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
                 .expect("this should be set since we load at least one file"),
             geometries,
         );
-        output.to_writer(&mut fs.create(&output_file)?)?;
-
+        if config.debug_intermediates {
+            output.to_writer(&mut fs.create(&output_file)?)?;
+        }
         if config.output_dxf {
             let output_file = PathBuf::from(format!("merged_{suffix}.dxf"));
             output.to_dxf(&mut fs.create(&output_file)?)?;
@@ -356,8 +360,9 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
     // output all geometries to a single file
     if let Some(all_bounds) = first_file_bounds {
         let out_merged = BinaryDxf::new(all_bounds, all_geometries);
-        out_merged.to_writer(&mut fs.create(MERGED_DXF_BIN)?)?;
-
+        if config.debug_intermediates {
+            out_merged.to_writer(&mut fs.create(MERGED_DXF_BIN)?)?;
+        }
         if config.output_dxf {
             out_merged.to_dxf(&mut fs.create("merged.dxf")?)?;
         }
@@ -579,13 +584,7 @@ pub fn smoothjoin(
 
     let mut out2_lines = Polylines::<Point3, (Classification, f64)>::new();
 
-    let depr_output = tmpfolder.join("depressions.txt");
-    let mut depr_fp = fs.create(depr_output).expect("Unable to create file");
-
     let mut dotknolls = Vec::new();
-
-    let knollhead_output = tmpfolder.join("knollheads.txt");
-    let mut knollhead_fp = fs.create(knollhead_output).expect("Unable to create file");
 
     let joined = join_contours(&input_lines, usize::MAX);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
@@ -646,13 +645,6 @@ pub fn smoothjoin(
                 depression = 1;
                 if (h_center < h && inside) || (h_center > h && !inside) {
                     depression = -1;
-                    write!(&mut depr_fp, "{},{}", el_x[l][0], el_y[l][0])
-                        .expect("Unable to write file");
-                    for k in 1..el_x[l].len() {
-                        write!(&mut depr_fp, "|{},{}", el_x[l][k], el_y[l][k])
-                            .expect("Unable to write file");
-                    }
-                    writeln!(&mut depr_fp).expect("Unable to write file");
                 }
                 if !skip {
                     // Check if knoll is distinct enough
@@ -718,9 +710,6 @@ pub fn smoothjoin(
             }
 
             if !skip {
-                // not skipped, lets save first coordinate pair for later form line knoll PIP analysis
-                write!(&mut knollhead_fp, "{} {}\r\n", el_x[l][0], el_y[l][0])
-                    .expect("Unable to write to file");
                 // adaptive generalization
                 if el_x_len > 101 {
                     let mut newx: Vec<f64> = vec![];

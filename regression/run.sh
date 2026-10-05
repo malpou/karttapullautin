@@ -10,9 +10,11 @@
 # Jobs, both on the regression tile:
 #   single  `pullauta test_file.laz` with the default ini (the out-of-the-box map)
 #   batch   the tile and the OSM shapefile zip in in/, with batch=1,
-#           vectorconf=osm.txt, vector_vege=1, batchmerge=1 and savetempfolders=1,
-#           then `pullauta pngmerge 1` and `pullauta pngmergedepr 1` (full-scale
-#           merges; they replace batchmerge's 4x ones)
+#           vectorconf=osm.txt, vector_vege=1 and batchmerge=1, then
+#           `pullauta pngmerge 1` and `pullauta pngmergedepr 1` (full-scale merges;
+#           they replace batchmerge's 4x ones)
+# Both jobs leave only their products (debug_intermediates=0): the gate compares the
+# rendered maps and the vector output, not the debug intermediates (ADR 0004).
 #
 # Layout:
 #   <out-dir>/output/single/  the single job's run directory, inputs removed
@@ -64,7 +66,6 @@ batch_settings=(
     vectorconf=osm.txt
     vector_vege=1
     batchmerge=1
-    savetempfolders=1
 )
 
 download() { # file url

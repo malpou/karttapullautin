@@ -297,6 +297,7 @@ pub fn process_zip(
     filenames: &[String],
     batch: bool,
 ) -> Result<(), Box<dyn Error>> {
+    render::check_inputs(fs, tmpfolder)?;
     let mut timing = Timing::start_now("process_zip");
     let &Config {
         pnorthlineswidth,
@@ -607,8 +608,8 @@ pub fn process_tile(
         timing.start_section("contour generation part 4");
         knolls::dotknolls(fs, &config.knoll, config.output_dxf, tmpfolder).unwrap();
 
-        // The .dxf.bin files leave this folder only when savetempfiles is on, so the
-        // terrain reaches vector output as GeoJSON written next to its source.
+        // The terrain reaches vector output as GeoJSON written next to its source: the
+        // .dxf.bin files are intermediates.
         if config.vector_vege {
             for (input, source) in [
                 ("out2.dxf.bin", geojson::Source::Contours),
@@ -710,8 +711,8 @@ pub fn batch_process(
         vegeonly,
         cliffsonly,
         contoursonly,
-        savetempfolders,
-        savetempfiles,
+        debug_intermediates,
+        output_dxf,
         map_frame: frame,
         vege_bitmode,
         ..
@@ -746,19 +747,10 @@ pub fn batch_process(
         fs.rename(&file_to_process.staging_path, &tmp_filename)
             .expect("Could not move file to temporary folder");
 
+        // every tile starts from an empty folder: finish_tile_folder removes it, and
+        // one left by a failed tile or an older build is cleared here
         let tmpfolder = PathBuf::from(format!("temp{thread}"));
-
-        if !has_zip {
-            // Delete artifacts of a previous run where there would have been a zip
-            let low_file = tmpfolder.join("low.png");
-            if fs.exists(&low_file) {
-                fs.remove_file(low_file).unwrap();
-            }
-            let high_file = tmpfolder.join("high.png");
-            if fs.exists(&high_file) {
-                fs.remove_file(high_file).unwrap();
-            }
-        }
+        clear_tile_folder(fs, &tmpfolder).expect("Could not clear the tile's temp folder");
 
         // Process the tile
         if let Err(e) = process_tile(fs, conf, thread, &tmpfolder, &tmp_filename, laz, has_zip) {
@@ -865,154 +857,149 @@ pub fn batch_process(
             }
         }
 
-        if savetempfiles {
-            if !contoursonly && !cliffsonly {
-                let path = format!("temp{thread}/undergrowth.pgw");
-                let tfw_in = Path::new(&path);
-                let tfw = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
+        // the vegetation rasters, cropped to the tile like the map
+        if !contoursonly && !cliffsonly {
+            let path = format!("temp{thread}/undergrowth.pgw");
+            let tfw_in = Path::new(&path);
+            let tfw = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
 
-                let dx = minx - tfw.x_origin;
-                let dy = -maxy + tfw.y_origin;
+            let dx = minx - tfw.x_origin;
+            let dy = -maxy + tfw.y_origin;
 
-                let mut pgw_file_out = fs
-                    .create(PathBuf::from(&format!(
-                        "{batchoutfolder}/{laz}_undergrowth.pgw"
-                    )))
-                    .expect("Unable to create file");
-                WorldFile {
-                    x_origin: minx + tfw.pixel_size_x / 2.0,
-                    y_origin: maxy - tfw.pixel_size_x / 2.0,
-                    ..tfw
-                }
+            let mut pgw_file_out = fs
+                .create(PathBuf::from(&format!(
+                    "{batchoutfolder}/{laz}_undergrowth.pgw"
+                )))
+                .expect("Unable to create file");
+            WorldFile {
+                x_origin: minx + tfw.pixel_size_x / 2.0,
+                y_origin: maxy - tfw.pixel_size_x / 2.0,
+                ..tfw
+            }
+            .write(&mut pgw_file_out)
+            .expect("Unable to write to file");
+            drop(pgw_file_out);
+
+            let mut orig_img_reader = image::ImageReader::new(
+                fs.open(format!("temp{thread}/undergrowth.png"))
+                    .expect("Opening undergrowth image failed"),
+            );
+            orig_img_reader.set_format(image::ImageFormat::Png);
+            orig_img_reader.no_limits();
+            let orig_img = orig_img_reader.decode().unwrap();
+            let mut img = RgbaImage::from_pixel(
+                (frame.to_px(maxx - minx) + 2.0) as u32,
+                (frame.to_px(maxy - miny) + 2.0) as u32,
+                Rgba([255, 255, 255, 0]),
+            );
+            image::imageops::overlay(
+                &mut img,
+                &orig_img,
+                frame.to_px(-dx) as i64,
+                frame.to_px(-dy) as i64,
+            );
+
+            img.write_to(
+                &mut fs
+                    .create(format!("{batchoutfolder}/{laz}_undergrowth.png"))
+                    .expect("could not save output png"),
+                image::ImageFormat::Png,
+            )
+            .expect("could not save output png");
+
+            let mut orig_img_reader = image::ImageReader::new(
+                fs.open(format!("temp{thread}/vegetation.png"))
+                    .expect("Opening vegetation image failed"),
+            );
+            orig_img_reader.set_format(image::ImageFormat::Png);
+            orig_img_reader.no_limits();
+            let orig_img = orig_img_reader.decode().unwrap();
+            let mut img = RgbImage::from_pixel(
+                ((maxx - minx) + 1.0) as u32,
+                ((maxy - miny) + 1.0) as u32,
+                Rgb([255, 255, 255]),
+            );
+            image::imageops::overlay(&mut img, &orig_img.to_rgb8(), -dx as i64, -dy as i64);
+
+            img.write_to(
+                &mut fs
+                    .create(format!("{batchoutfolder}/{laz}_vege.png"))
+                    .expect("could not save output png"),
+                image::ImageFormat::Png,
+            )
+            .expect("could not save output png");
+
+            let mut pgw_file_out = fs
+                .create(format!("{batchoutfolder}/{laz}_vege.pgw"))
+                .expect("Unable to create file");
+            WorldFile::north_up(1.0, minx + 0.5, maxy - 0.5)
                 .write(&mut pgw_file_out)
                 .expect("Unable to write to file");
-                drop(pgw_file_out);
 
+            drop(pgw_file_out);
+
+            if vege_bitmode {
                 let mut orig_img_reader = image::ImageReader::new(
-                    fs.open(format!("temp{thread}/undergrowth.png"))
-                        .expect("Opening undergrowth image failed"),
+                    fs.open(format!("temp{thread}/vegetation_bit.png"))
+                        .expect("Opening vegetation bit bit image failed"),
                 );
                 orig_img_reader.set_format(image::ImageFormat::Png);
                 orig_img_reader.no_limits();
                 let orig_img = orig_img_reader.decode().unwrap();
-                let mut img = RgbaImage::from_pixel(
-                    (frame.to_px(maxx - minx) + 2.0) as u32,
-                    (frame.to_px(maxy - miny) + 2.0) as u32,
-                    Rgba([255, 255, 255, 0]),
-                );
-                image::imageops::overlay(
-                    &mut img,
-                    &orig_img,
-                    frame.to_px(-dx) as i64,
-                    frame.to_px(-dy) as i64,
-                );
-
-                img.write_to(
-                    &mut fs
-                        .create(format!("{batchoutfolder}/{laz}_undergrowth.png"))
-                        .expect("could not save output png"),
-                    image::ImageFormat::Png,
-                )
-                .expect("could not save output png");
-
-                let mut orig_img_reader = image::ImageReader::new(
-                    fs.open(format!("temp{thread}/vegetation.png"))
-                        .expect("Opening vegetation image failed"),
-                );
-                orig_img_reader.set_format(image::ImageFormat::Png);
-                orig_img_reader.no_limits();
-                let orig_img = orig_img_reader.decode().unwrap();
-                let mut img = RgbImage::from_pixel(
+                let mut img = GrayImage::from_pixel(
                     ((maxx - minx) + 1.0) as u32,
                     ((maxy - miny) + 1.0) as u32,
-                    Rgb([255, 255, 255]),
+                    Luma([0]),
                 );
-                image::imageops::overlay(&mut img, &orig_img.to_rgb8(), -dx as i64, -dy as i64);
-
+                image::imageops::overlay(&mut img, &orig_img.to_luma8(), -dx as i64, -dy as i64);
                 img.write_to(
                     &mut fs
-                        .create(format!("{batchoutfolder}/{laz}_vege.png"))
+                        .create(format!("{batchoutfolder}/{laz}_vege_bit.png"))
                         .expect("could not save output png"),
                     image::ImageFormat::Png,
                 )
                 .expect("could not save output png");
 
-                let mut pgw_file_out = fs
-                    .create(format!("{batchoutfolder}/{laz}_vege.pgw"))
-                    .expect("Unable to create file");
-                WorldFile::north_up(1.0, minx + 0.5, maxy - 0.5)
-                    .write(&mut pgw_file_out)
-                    .expect("Unable to write to file");
+                let mut orig_img_reader = image::ImageReader::new(
+                    fs.open(format!("temp{thread}/undergrowth_bit.png"))
+                        .expect("Opening undergrowth bit image failed"),
+                );
+                orig_img_reader.set_format(image::ImageFormat::Png);
+                orig_img_reader.no_limits();
+                let orig_img = orig_img_reader.decode().unwrap();
+                let mut img = GrayImage::from_pixel(
+                    ((maxx - minx) + 1.0) as u32,
+                    ((maxy - miny) + 1.0) as u32,
+                    Luma([0]),
+                );
+                image::imageops::overlay(&mut img, &orig_img.to_luma8(), -dx as i64, -dy as i64);
+                img.write_to(
+                    &mut fs
+                        .create(format!("{batchoutfolder}/{laz}_undergrowth_bit.png"))
+                        .expect("could not save output png"),
+                    image::ImageFormat::Png,
+                )
+                .expect("could not save output png");
 
-                drop(pgw_file_out);
+                fs.copy(
+                    format!("{batchoutfolder}/{laz}_vege.pgw"),
+                    format!("{batchoutfolder}/{laz}_vege_bit.pgw"),
+                )
+                .expect("Could not copy file");
 
-                if vege_bitmode {
-                    let mut orig_img_reader = image::ImageReader::new(
-                        fs.open(format!("temp{thread}/vegetation_bit.png"))
-                            .expect("Opening vegetation bit bit image failed"),
-                    );
-                    orig_img_reader.set_format(image::ImageFormat::Png);
-                    orig_img_reader.no_limits();
-                    let orig_img = orig_img_reader.decode().unwrap();
-                    let mut img = GrayImage::from_pixel(
-                        ((maxx - minx) + 1.0) as u32,
-                        ((maxy - miny) + 1.0) as u32,
-                        Luma([0]),
-                    );
-                    image::imageops::overlay(
-                        &mut img,
-                        &orig_img.to_luma8(),
-                        -dx as i64,
-                        -dy as i64,
-                    );
-                    img.write_to(
-                        &mut fs
-                            .create(format!("{batchoutfolder}/{laz}_vege_bit.png"))
-                            .expect("could not save output png"),
-                        image::ImageFormat::Png,
-                    )
-                    .expect("could not save output png");
-
-                    let mut orig_img_reader = image::ImageReader::new(
-                        fs.open(format!("temp{thread}/undergrowth_bit.png"))
-                            .expect("Opening undergrowth bit image failed"),
-                    );
-                    orig_img_reader.set_format(image::ImageFormat::Png);
-                    orig_img_reader.no_limits();
-                    let orig_img = orig_img_reader.decode().unwrap();
-                    let mut img = GrayImage::from_pixel(
-                        ((maxx - minx) + 1.0) as u32,
-                        ((maxy - miny) + 1.0) as u32,
-                        Luma([0]),
-                    );
-                    image::imageops::overlay(
-                        &mut img,
-                        &orig_img.to_luma8(),
-                        -dx as i64,
-                        -dy as i64,
-                    );
-                    img.write_to(
-                        &mut fs
-                            .create(format!("{batchoutfolder}/{laz}_undergrowth_bit.png"))
-                            .expect("could not save output png"),
-                        image::ImageFormat::Png,
-                    )
-                    .expect("could not save output png");
-
-                    fs.copy(
-                        format!("{batchoutfolder}/{laz}_vege.pgw"),
-                        format!("{batchoutfolder}/{laz}_vege_bit.pgw"),
-                    )
-                    .expect("Could not copy file");
-
-                    fs.copy(
-                        format!("{batchoutfolder}/{laz}_vege.pgw"),
-                        format!("{batchoutfolder}/{laz}_undergrowth_bit.pgw"),
-                    )
-                    .expect("Could not copy file");
-                }
+                fs.copy(
+                    format!("{batchoutfolder}/{laz}_vege.pgw"),
+                    format!("{batchoutfolder}/{laz}_undergrowth_bit.pgw"),
+                )
+                .expect("Could not copy file");
             }
+        }
 
+        // the .dxf.bin crops: the batch merge's input for the merged DXF, and with
+        // output_dxf=1 each tile's DXF crop. The .dxf.bin crops are removed after the
+        // batch unless debug_intermediates=1 (remove_tile_bins); contours03, which the
+        // merge does not read, and detected, the knoll candidates, are debug only.
+        if output_dxf || debug_intermediates {
             let out2_path = PathBuf::from(format!("temp{thread}/out2.dxf.bin"));
             if fs.exists(&out2_path) {
                 crop::polylinebindxfcrop(
@@ -1027,8 +1014,19 @@ pub fn batch_process(
                 )
                 .unwrap();
             }
-            let dxf_files = ["c2g", "c3g", "contours03", "detected", "formlines"];
-            for dxf_file in dxf_files.iter() {
+            let dxf_files: &[&str] = if debug_intermediates {
+                &[
+                    "c2g",
+                    "c3g",
+                    "contours03",
+                    "detected",
+                    "formlines",
+                    "vegetation",
+                ]
+            } else {
+                &["c2g", "c3g", "formlines", "vegetation"]
+            };
+            for dxf_file in dxf_files {
                 let dxf_path = PathBuf::from(format!("temp{thread}/{dxf_file}.dxf.bin"));
                 if fs.exists(&dxf_path) {
                     crop::polylinebindxfcrop(
@@ -1058,21 +1056,20 @@ pub fn batch_process(
                 )
                 .unwrap();
             }
-        }
-
-        let basemap_file = PathBuf::from(format!("temp{thread}/basemap.dxf.bin"));
-        if fs.exists(&basemap_file) {
-            crop::polylinebindxfcrop(
-                fs,
-                &basemap_file,
-                Path::new(&format!("{batchoutfolder}/{laz}_basemap.dxf.bin")),
-                conf.output_dxf,
-                minx,
-                miny,
-                maxx,
-                maxy,
-            )
-            .unwrap();
+            let basemap_file = PathBuf::from(format!("temp{thread}/basemap.dxf.bin"));
+            if fs.exists(&basemap_file) {
+                crop::polylinebindxfcrop(
+                    fs,
+                    &basemap_file,
+                    Path::new(&format!("{batchoutfolder}/{laz}_basemap.dxf.bin")),
+                    conf.output_dxf,
+                    minx,
+                    miny,
+                    maxx,
+                    maxy,
+                )
+                .unwrap();
+            }
         }
         // the tables (vector_vege=1, or a vectorconf with shapefiles), cropped to the
         // tile like the rasters
@@ -1088,18 +1085,126 @@ pub fn batch_process(
                 .unwrap();
             }
         }
-        if savetempfolders {
-            fs.create_dir_all(format!("temp_{laz}_dir"))
-                .expect("Could not create output folder");
-            for path in fs.list(format!("temp{thread}")).unwrap() {
-                if fs.exists(&path) {
-                    let filename = path.file_name().unwrap().to_str().unwrap();
-                    fs.copy(&path, Path::new(&format!("temp_{laz}_dir/{filename}")))
-                        .unwrap();
-                }
+        finish_tile_folder(fs, thread, laz, debug_intermediates)
+            .expect("Could not clean up the tile's temp folder");
+    }
+}
+
+/// Remove `tmpfolder` if it exists, so a tile starts from an empty temp folder: files
+/// another run left there (such as `low.png` and `high.png`, drawn into the map when
+/// present) would leak into this tile's outputs.
+pub fn clear_tile_folder(fs: &impl FileSystem, tmpfolder: &Path) -> std::io::Result<()> {
+    if fs.exists(tmpfolder) {
+        fs.remove_dir_all(tmpfolder)?;
+    }
+    Ok(())
+}
+
+/// Clear a batch tile's working files once its outputs are in the batch output folder,
+/// so the next tile on `thread` starts from an empty temp folder. With `debug`
+/// (debug_intermediates=1) the folder `temp{thread}` is moved to `temp_{laz}_dir` and
+/// the rest is kept; otherwise it is removed with the tile's point file
+/// `temp{thread}.xyz.bin` and the map's working copies `pullautus{thread}.*` and
+/// `pullautus_depr{thread}.*`, already cropped into the output folder.
+fn finish_tile_folder(
+    fs: &impl FileSystem,
+    thread: &str,
+    laz: &str,
+    debug: bool,
+) -> std::io::Result<()> {
+    let tmpfolder = PathBuf::from(format!("temp{thread}"));
+    if debug {
+        let kept = PathBuf::from(format!("temp_{laz}_dir"));
+        fs.create_dir_all(&kept)?;
+        for path in fs.list(&tmpfolder)? {
+            if let Some(name) = path.file_name() {
+                fs.copy(&path, kept.join(name))?;
+            }
+        }
+    } else {
+        let mut files = vec![format!("temp{thread}.xyz.bin")];
+        for map in [
+            format!("pullautus{thread}"),
+            format!("pullautus_depr{thread}"),
+        ] {
+            for ext in ["png", "pgw", "png.aux.xml"] {
+                files.push(format!("{map}.{ext}"));
+            }
+        }
+        for file in files {
+            if fs.exists(&file) {
+                fs.remove_file(&file)?;
             }
         }
     }
+    fs.remove_dir_all(&tmpfolder)
+}
+
+/// Whether `name`, a file in a tile's temp folder, is a product: a GeoJSON table, a DXF
+/// (written with output_dxf=1) of the contours, cliffs, knolls, form lines, vegetation
+/// or base map, or the vegetation and undergrowth rasters with their world files (and
+/// the one-channel `_bit` rasters with vege_bitmode=1). Everything else is a debug
+/// intermediate.
+fn is_tile_product(name: &str, vege_bitmode: bool) -> bool {
+    const PRODUCTS: [&str; 11] = [
+        "out2.dxf",
+        "c2g.dxf",
+        "c3g.dxf",
+        "dotknolls.dxf",
+        "formlines.dxf",
+        "vegetation.dxf",
+        "basemap.dxf",
+        "vegetation.png",
+        "vegetation.pgw",
+        "undergrowth.png",
+        "undergrowth.pgw",
+    ];
+    name.ends_with(".geojson")
+        || PRODUCTS.contains(&name)
+        || (vege_bitmode && ["vegetation_bit.png", "undergrowth_bit.png"].contains(&name))
+}
+
+/// Leave only the products ([`is_tile_product`]) in a single tile's temp folder, unless
+/// `debug` (debug_intermediates=1) keeps everything.
+pub fn prune_tile_folder(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    debug: bool,
+    vege_bitmode: bool,
+) -> std::io::Result<()> {
+    if debug {
+        return Ok(());
+    }
+    for path in fs.list(tmpfolder)? {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if is_tile_product(&name, vege_bitmode) {
+            continue;
+        }
+        // the trait cannot tell a file from a folder: a folder fails remove_file
+        if fs.remove_file(&path).is_err() {
+            fs.remove_dir_all(&path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove the tiles' `.dxf.bin` crops from the batch output folder once the batch (and
+/// its merge) is done, unless `debug` (debug_intermediates=1) keeps them.
+pub fn remove_tile_bins(
+    fs: &impl FileSystem,
+    batchoutfolder: impl AsRef<Path>,
+    debug: bool,
+) -> std::io::Result<()> {
+    // a batch with no tiles may never create the folder
+    if debug || !fs.exists(&batchoutfolder) {
+        return Ok(());
+    }
+    for path in fs.list(batchoutfolder)? {
+        if path.to_string_lossy().ends_with(".dxf.bin") {
+            fs.remove_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1120,6 +1225,149 @@ mod test {
             .with_format(format)
             .build_from_bytes(bytes)
             .unwrap()
+    }
+
+    use crate::io::fs::memory::MemoryFileSystem;
+
+    fn touch(fs: &MemoryFileSystem, path: &str) {
+        if let Some(parent) = Path::new(path).parent()
+            && parent != Path::new("")
+        {
+            fs.create_dir_all(parent).unwrap();
+        }
+        fs.create(path).unwrap();
+    }
+
+    /// The files `fs` holds under `dir`, by name, in order.
+    fn names(fs: &MemoryFileSystem, dir: &str) -> Vec<String> {
+        let mut names: Vec<String> = fs
+            .list(dir)
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A batch tile's working files on thread 1, as process_tile and the crop leave them.
+    fn tile_working_files(fs: &MemoryFileSystem) {
+        for path in [
+            "temp1.xyz.bin",
+            "temp1/xyz2.hmap",
+            "temp1/out2.dxf.bin",
+            "temp1/contours.geojson",
+            "pullautus1.png",
+            "pullautus1.pgw",
+            "pullautus1.png.aux.xml",
+            "pullautus_depr1.png",
+            "pullautus_depr1.pgw",
+        ] {
+            touch(fs, path);
+        }
+    }
+
+    #[test]
+    fn a_finished_tile_leaves_no_working_files() {
+        let fs = MemoryFileSystem::new();
+        tile_working_files(&fs);
+        touch(&fs, "out/tile.png");
+
+        finish_tile_folder(&fs, "1", "tile", false).unwrap();
+
+        assert_eq!(names(&fs, "."), ["out"]);
+        assert_eq!(names(&fs, "out"), ["tile.png"]);
+    }
+
+    #[test]
+    fn a_debug_tile_moves_its_folder_and_keeps_the_rest() {
+        let fs = MemoryFileSystem::new();
+        tile_working_files(&fs);
+
+        finish_tile_folder(&fs, "1", "tile", true).unwrap();
+
+        // the next tile on the thread starts from an empty folder
+        assert!(!fs.exists("temp1"));
+        assert_eq!(
+            names(&fs, "temp_tile_dir"),
+            ["contours.geojson", "out2.dxf.bin", "xyz2.hmap"]
+        );
+        assert!(fs.exists("temp1.xyz.bin"));
+        assert!(fs.exists("pullautus1.png"));
+    }
+
+    #[test]
+    fn a_single_tile_folder_is_pruned_to_its_products() {
+        let fs = MemoryFileSystem::new();
+        let products = [
+            "c2g.dxf",
+            "c3g.dxf",
+            "cliffs.geojson",
+            "contours.geojson",
+            "dotknolls.dxf",
+            "formlines.dxf",
+            "out2.dxf",
+            "undergrowth.pgw",
+            "undergrowth.png",
+            "vegetation.dxf",
+            "vegetation.pgw",
+            "vegetation.png",
+        ];
+        let intermediates = [
+            "c2g.dxf.bin",
+            "contours03.dxf",
+            "detected.dxf",
+            "out.dxf",
+            "pins.bin",
+            "undergrowth_bit.png",
+            "xyz2.hmap",
+            "xyztemp.xyz.bin",
+            "sub/extracted.shp",
+        ];
+        for name in products.iter().chain(&intermediates) {
+            touch(&fs, &format!("temp/{name}"));
+        }
+
+        prune_tile_folder(&fs, Path::new("temp"), true, false).unwrap();
+        assert_eq!(
+            names(&fs, "temp").len(),
+            products.len() + intermediates.len()
+        );
+
+        prune_tile_folder(&fs, Path::new("temp"), false, false).unwrap();
+        assert_eq!(names(&fs, "temp"), products);
+    }
+
+    #[test]
+    fn the_bit_rasters_are_products_with_vege_bitmode() {
+        assert!(is_tile_product("undergrowth_bit.png", true));
+        assert!(is_tile_product("vegetation_bit.png", true));
+        assert!(!is_tile_product("undergrowth_bit.png", false));
+        assert!(!is_tile_product("greens_bit.png", true));
+    }
+
+    #[test]
+    fn the_tile_bins_are_removed_unless_debug() {
+        let fs = MemoryFileSystem::new();
+        for name in ["tile_c2g.dxf.bin", "tile_c2g.dxf", "tile.png"] {
+            touch(&fs, &format!("out/{name}"));
+        }
+        remove_tile_bins(&fs, "out", true).unwrap();
+        assert_eq!(names(&fs, "out").len(), 3);
+        remove_tile_bins(&fs, "out", false).unwrap();
+        assert_eq!(names(&fs, "out"), ["tile.png", "tile_c2g.dxf"]);
+        // a batch with no tiles has no output folder
+        remove_tile_bins(&fs, "missing", false).unwrap();
+    }
+
+    #[test]
+    fn a_tile_folder_left_by_another_run_is_cleared() {
+        let fs = MemoryFileSystem::new();
+        touch(&fs, "temp1/low.png");
+        clear_tile_folder(&fs, Path::new("temp1")).unwrap();
+        assert!(!fs.exists("temp1"));
+        // nothing to clear
+        clear_tile_folder(&fs, Path::new("temp1")).unwrap();
     }
 
     #[test]

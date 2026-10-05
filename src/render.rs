@@ -19,6 +19,38 @@ use std::error::Error;
 use std::f64::consts::PI;
 use std::path::Path;
 
+/// The temp folder files [`render`] reads; a tile run leaves them only with
+/// debug_intermediates=1.
+const RENDER_INPUTS: [&str; 8] = [
+    "vegetation.png",
+    "vegetation.pgw",
+    "undergrowth.png",
+    "xyz2.hmap",
+    "out2.dxf.bin",
+    "dotknolls.dxf.bin",
+    "c2g.dxf.bin",
+    "c3g.dxf.bin",
+];
+
+/// An error naming the [`RENDER_INPUTS`] missing from `tmpfolder`, if any: re-rendering
+/// needs the debug intermediates of a tile run.
+pub fn check_inputs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dyn Error>> {
+    let missing: Vec<&str> = RENDER_INPUTS
+        .into_iter()
+        .filter(|name| !fs.exists(tmpfolder.join(name)))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "cannot render from {}: {} missing. Re-rendering reads the tile's debug \
+         intermediates: re-run the tile with debug_intermediates=1",
+        tmpfolder.display(),
+        missing.join(", ")
+    )
+    .into())
+}
+
 pub fn render(
     fs: &impl FileSystem,
     config: &Config,
@@ -29,6 +61,7 @@ pub fn render(
     nodepressions: bool,
 ) -> Result<(), Box<dyn Error>> {
     info!("Rendering...");
+    check_inputs(fs, tmpfolder)?;
 
     let frame = config.map_frame;
 
@@ -956,7 +989,7 @@ pub fn write_formlines(
     }
 
     // As for contours (process_tile): 103.000 in the contours table is this
-    // selected set, not the half-interval contours, whether or not savetempfiles is on.
+    // selected set, not the half-interval contours.
     if config.vector_vege {
         crate::geojson::bindxf_to_tables(
             fs,
@@ -1001,6 +1034,33 @@ mod tests {
             scale_denominator,
             ..MapFrame::default()
         }
+    }
+
+    #[test]
+    fn rendering_a_pruned_folder_asks_for_the_debug_intermediates() {
+        use crate::io::fs::FileSystem;
+        use std::path::Path;
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let temp = Path::new("temp");
+        fs.create_dir_all(temp).unwrap();
+        // what a tile run without debug_intermediates leaves
+        for name in [
+            "vegetation.png",
+            "vegetation.pgw",
+            "undergrowth.png",
+            "out2.dxf",
+        ] {
+            fs.create(temp.join(name)).unwrap();
+        }
+        let err = super::check_inputs(&fs, temp).unwrap_err().to_string();
+        assert!(err.contains("debug_intermediates=1"), "{err}");
+        assert!(err.contains("xyz2.hmap, out2.dxf.bin"), "{err}");
+        assert!(!err.contains("vegetation.png"), "{err}");
+
+        for name in super::RENDER_INPUTS {
+            fs.create(temp.join(name)).unwrap();
+        }
+        assert!(super::check_inputs(&fs, temp).is_ok());
     }
 
     #[test]

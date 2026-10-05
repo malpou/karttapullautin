@@ -74,12 +74,6 @@ pub enum Source {
 }
 
 impl Source {
-    /// The stages whose features the batch `merged.dxf.bin` also carries, so that the
-    /// combined export takes them from there when it exists: contours, form lines and
-    /// cliffs. Not the knolls: `merged.dxf.bin` carries them too, but its points are read
-    /// only without the merged knolls table.
-    const IN_MERGED_BIN: [Source; 3] = [Self::Contours, Self::FormLines, Self::Cliffs];
-
     /// Whether a feature with these properties comes from this stage.
     fn owns(self, props: &FeatureProperties) -> bool {
         use FeatureProperties as P;
@@ -1262,15 +1256,11 @@ impl Combined {
 /// earlier run) and [`COMBINED_DXF`] (layer names = symbol codes), plus [`COMBINED_CRT`],
 /// the cross reference table for OCAD's "Import DXF" layer-to-symbol conversion.
 ///
-/// Sources: `merged_bin` (the batch `merged.dxf.bin`, which exists when the tiles kept
-/// their `.dxf.bin` files, `savetempfiles=1`) for the stages it carries (see
-/// [`Source::IN_MERGED_BIN`]), and the `merged_<table>.geojson` files for every other
-/// feature (and for all of them when `merged_bin` is missing), such as a vector mapping's
-/// features in `contours` or `cliffs`. On the way:
+/// The source is the `merged_<table>.geojson` files: the terrain and vegetation tables
+/// (vector_vege=1) and a vector mapping's features. On the way:
 /// - knoll and small depression points: spacing-filtered by [`published_knolls`];
 /// - contours and form lines: one Chaikin pass, ISOM generalisation, broken around the
-///   published knolls, with the ISOM sizes at `frame`'s map scale (`merged.dxf.bin`
-///   leaves the half-interval contours out, as the tables do);
+///   published knolls, with the ISOM sizes at `frame`'s map scale;
 /// - cliffs: KP's per-cell dashes chained into cliff lines, too-short faces dropped;
 /// - curve symbols get Bezier SPLINEs in the DXF and the same curve, sampled, in the
 ///   GeoJSON.
@@ -1279,47 +1269,17 @@ impl Combined {
 pub fn export_combined(
     fs: &impl FileSystem,
     batchoutfolder: &Path,
-    merged_bin: &Path,
     frame: &MapFrame,
     epsg: Option<u32>,
 ) -> anyhow::Result<()> {
     use geojson_types::FeatureProperties as P;
 
-    let have_merged_bin = fs.exists(merged_bin);
-    let mut bin_lines: Vec<(Vec<[f64; 2]>, Classification, Option<f64>)> = Vec::new();
-    let mut bin_knolls = Vec::new();
-    if have_merged_bin {
-        let dxf = BinaryDxf::from_reader(&mut fs.open(merged_bin)?)?;
-        for geom in dxf.take_geometry() {
-            match geom {
-                Geometry::Polylines2(pl) => bin_lines.extend(
-                    pl.into_iter()
-                        .map(|(p, c)| (p.iter().map(|q| [q.x, q.y]).collect(), c, None)),
-                ),
-                Geometry::Polylines3(pl) => bin_lines.extend(
-                    pl.into_iter()
-                        .map(|(p, (c, h))| (p.iter().map(|q| [q.x, q.y]).collect(), c, Some(h))),
-                ),
-                Geometry::Points(pts) => {
-                    bin_knolls.extend(pts.into_iter().filter_map(
-                        |(p, c)| match terrain_properties(c, None)? {
-                            P::KnollProperties(props) => Some(([p.x, p.y], props)),
-                            _ => None,
-                        },
-                    ))
-                }
-            }
-        }
-    }
-
     // The point symbols are settled first: ISOM makes the contours give way to them.
-    // The merged knolls table is their source; merged.dxf.bin carries the same points
-    // and stands in only without it (vector_vege=0).
     let knolls_table = batchoutfolder.join(merged_file_name(IsomTable::KnollsPoints));
     let knolls = if fs.exists(&knolls_table) {
         published_knolls(fs, &knolls_table)?
     } else {
-        space_knolls(bin_knolls)
+        Vec::new()
     };
     let knoll_pts: Vec<[f64; 2]> = knolls.iter().map(|(p, _)| *p).collect();
 
@@ -1337,27 +1297,12 @@ pub fn export_combined(
         }
     };
 
-    for (pts, c, level_m) in bin_lines {
-        match terrain_properties(c, level_m) {
-            None => {} // the knoll-detector artifact
-            Some(P::CliffProperties(p)) => add_dash(p, &pts),
-            Some(props) => out.line(&pts, &props, &knoll_pts),
-        }
-    }
-
-    // taken from merged.dxf.bin above
-    let in_bin = |props: &FeatureProperties| {
-        have_merged_bin && Source::IN_MERGED_BIN.iter().any(|s| s.owns(props))
-    };
     for &table in IsomTable::ALL {
         let path = batchoutfolder.join(merged_file_name(table));
         if !fs.exists(&path) {
             continue;
         }
         for f in read_collection(fs, &path)?.features {
-            if in_bin(&f.properties) {
-                continue;
-            }
             let coords = &f.geometry.coordinates;
             match (f.geometry.type_, f.properties) {
                 // the knoll points, spacing-filtered, are published below
@@ -2339,14 +2284,7 @@ mod tests {
         let out = Path::new("out");
         merged_outputs(&fs, out);
 
-        export_combined(
-            &fs,
-            out,
-            Path::new(crate::merge::MERGED_DXF_BIN),
-            &MapFrame::default(),
-            Some(25832),
-        )
-        .unwrap();
+        export_combined(&fs, out, &MapFrame::default(), Some(25832)).unwrap();
 
         let contours = read(&fs, &out.join(file_name(IsomTable::Contours)));
         assert_eq!(
@@ -2425,122 +2363,33 @@ mod tests {
     }
 
     #[test]
-    fn export_combined_takes_terrain_from_merged_bin_and_keeps_mapped_features() {
-        use crate::geometry::{Bounds, Point3, Polylines};
-
-        let fs = crate::io::fs::memory::MemoryFileSystem::new();
-        let out = Path::new("out");
-        merged_outputs(&fs, out);
-        // a vector mapping's features in the contours and cliffs tables: merged.dxf.bin
-        // does not carry them, so they must still be published
-        let add = |table, f| {
-            let path = out.join(merged_file_name(table));
-            let mut features = read(&fs, &path).features;
-            features.push(f);
-            write_feature_collection(&fs, &path, features, None).unwrap();
-        };
-        add(
-            IsomTable::Contours,
-            osm_line(
-                IsomCode::C104_000,
-                "embankment",
-                false,
-                &[[0.0, 800.0], [9.0, 800.0]],
-            ),
-        );
-        let boulder = vec![[0.0, 900.0], [4.0, 900.0], [4.0, 904.0], [0.0, 900.0]];
-        add(
-            IsomTable::Cliffs,
-            osm_area(IsomCode::C206_000, "boulder", false, &[boulder]),
-        );
-        // merged.dxf.bin with one index contour (3D) and a 201 cliff face of five dashes
-        let mut contours = Polylines::new();
-        contours.push(
-            (0..=10)
-                .map(|x| Point3::new(x as f64, 500.0, 12.0))
-                .collect(),
-            (Classification::Contour(ContourKind::INDEX), 12.0),
-        );
-        let mut cliffs = Polylines::new();
-        for i in 0..5 {
-            let x = i as f64 * 2.5;
-            cliffs.push(
-                vec![Point2::new(x, 600.0), Point2::new(x + 3.0, 600.0)],
-                Classification::Cliff3,
-            );
-        }
-        let bin = Path::new(crate::merge::MERGED_DXF_BIN);
-        BinaryDxf::new(
-            Bounds::new(0.0, 100.0, 0.0, 700.0),
-            vec![Geometry::Polylines3(contours), Geometry::Polylines2(cliffs)],
-        )
-        .to_writer(&mut fs.create(bin).unwrap())
-        .unwrap();
-
-        export_combined(&fs, out, bin, &MapFrame::default(), None).unwrap();
-
-        let combined = read_combined(&fs, out);
-        assert!(
-            read(&fs, &out.join(file_name(IsomTable::Contours)))
-                .crs
-                .is_none()
-        );
-        let codes: BTreeSet<&str> = combined
-            .iter()
-            .map(|(_, f)| isom_code(&f.properties).as_str())
-            .collect();
-        // contours, form lines and cliffs (Source::IN_MERGED_BIN) come from the bin only; the
-        // knolls, vegetation and OSM features, in whichever table, from the merged GeoJSON
-        assert_eq!(
-            codes,
-            [
-                "102.000", "104.000", "109.000", "201.000", "206.000", "406.000", "502.000"
-            ]
-            .into()
-        );
-        let index = combined
-            .iter()
-            .find_map(|(_, f)| match &f.properties {
-                FeatureProperties::ContourProperties(p) => Some(p),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(index.level_m, Some(12.0));
-    }
-
-    #[test]
-    fn export_combined_takes_knolls_from_merged_bin_without_the_geojson() {
-        use crate::geometry::{Bounds, Point3, Points, Polylines};
-
+    fn export_combined_breaks_lines_around_knolls_and_keeps_loops_closed() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
-        // vector_vege=0: no merged GeoJSON, only merged.dxf.bin with a straight contour
-        // through a knoll, and a closed contour loop well away from it
-        let mut contours = Polylines::new();
-        contours.push(
-            (0..=100)
-                .map(|x| Point3::new(x as f64, 0.0, 10.0))
-                .collect(),
-            (CONTOUR, 10.0),
+        // a straight contour through a knoll, and a closed contour loop well away from it
+        let straight: Vec<[f64; 2]> = (0..=100).map(|x| [x as f64, 0.0]).collect();
+        let mut ring: Vec<[f64; 2]> = (0..40).map(|i| [200.0 + i as f64, 0.0]).collect();
+        ring.extend((0..40).map(|i| [240.0, i as f64]));
+        ring.extend((0..40).map(|i| [240.0 - i as f64, 40.0]));
+        ring.extend((0..=40).map(|i| [200.0, 40.0 - i as f64]));
+        let write = |table, features| {
+            write_feature_collection(&fs, &out.join(merged_file_name(table)), features, None)
+                .unwrap();
+        };
+        write(
+            IsomTable::Contours,
+            vec![
+                terrain_line(CONTOUR, &straight),
+                terrain_line(CONTOUR, &ring),
+            ],
         );
-        let lp = |x: f64, y: f64| Point3::new(x, y, 20.0);
-        let mut ring: Vec<Point3> = (0..40).map(|i| lp(200.0 + i as f64, 0.0)).collect();
-        ring.extend((0..40).map(|i| lp(240.0, i as f64)));
-        ring.extend((0..40).map(|i| lp(240.0 - i as f64, 40.0)));
-        ring.extend((0..=40).map(|i| lp(200.0, 40.0 - i as f64)));
-        contours.push(ring, (CONTOUR, 20.0));
-        let mut points = Points::new();
-        points.push(Point2::new(50.0, 0.0), Classification::Dotknoll);
-        let bin = Path::new(crate::merge::MERGED_DXF_BIN);
-        BinaryDxf::new(
-            Bounds::new(0.0, 300.0, 0.0, 100.0),
-            vec![Geometry::Polylines3(contours), Geometry::Points(points)],
-        )
-        .to_writer(&mut fs.create(bin).unwrap())
-        .unwrap();
+        write(
+            IsomTable::KnollsPoints,
+            vec![terrain_point(Classification::Dotknoll, [50.0, 0.0])],
+        );
 
-        export_combined(&fs, out, bin, &MapFrame::default(), None).unwrap();
+        export_combined(&fs, out, &MapFrame::default(), None).unwrap();
 
         let combined = read_combined(&fs, out);
         let lines: Vec<Vec<[f64; 2]>> = combined
@@ -2564,14 +2413,7 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
-        export_combined(
-            &fs,
-            out,
-            Path::new(crate::merge::MERGED_DXF_BIN),
-            &MapFrame::default(),
-            None,
-        )
-        .unwrap();
+        export_combined(&fs, out, &MapFrame::default(), None).unwrap();
         for &table in IsomTable::ALL {
             assert!(!fs.exists(out.join(file_name(table))));
         }
