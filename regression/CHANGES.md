@@ -28,7 +28,12 @@ or vector feature on the regression tile) lands in two commits:
 
 1. The change, plus `regression/expected.json`: the report of the change,
    `pullauta eval base/output head/output --format json > regression/expected.json`
-   (CI uploads it as `report.json`).
+   (CI uploads it as `report.json`). Commit the CI report, not a local one:
+   the batch job's rasters differ in absolute colour counts between the CI
+   runner and other machines (ENG-339), so a locally made report gates
+   locally but never equals CI's. Push commit 1 with a local report, take
+   `report.json` from its Regression artifact, check it shows the same
+   change, and commit it on top; that commit is the new `ref`.
 2. "Rebase regression baseline for <slug>": `ref` = the sha of commit 1 and a
    new `note`, `expected.json` deleted, and a dated entry below giving the
    reason, the share of changed pixels (single job and batch job) and the
@@ -194,3 +199,28 @@ rejected as stale. Baseline moves to 2daa479.
   classification variant indices, same size, except `out2.dxf.bin`
   5 053 274 -> 5 055 215 bytes, one kind byte per smoothed contour line.
 - DXF text output (layers are symbol codes) is identical.
+
+### 2026-10-05: pr/degenerate-lines
+
+`write_collection`, which every GeoJSON file goes through, leaves out
+LineStrings with fewer than two distinct positions as written (rounded to
+cm); RFC 7946 wants two or more. The schema now requires LineString >= 2
+positions and Polygon rings >= 4. The renderer's form-line selection can
+end a form line after one vertex; that line reached the per-tile
+`contours.geojson`. Baseline moves to 666b5e4 (fe3e2bb plus the CI-made expected.json).
+
+The baseline between pr/contour-kind and this entry stayed at 2daa479:
+pr/config-strict, pr/knoll-params, pr/contour-params,
+pr/vegetation-params, pr/cliff-params, pr/map-frame-render,
+pr/metre-lengths and pr/command-enum are byte-identical to it.
+
+- Pixels: 0 changed in the single job and the batch job.
+- GeoJSON: `batch/temp1/contours.geojson` and its
+  `batch/temp_test_file_dir/` copy lose one 103.000 feature (571 -> 570),
+  a one-position form line at 265625.54 6707286.82; 103.000 length
+  unchanged, precision/recall 1.0. The tile, merged and combined tables
+  never had it: the crop already dropped one-position parts.
+- Every other file is byte-identical.
+- Off this tile: a crop that cuts a line to a corner touch or a sub-cm
+  sliver no longer writes a zero-length LineString to
+  `<tile>_<table>.geojson` or `merged_<table>.geojson`.
