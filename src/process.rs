@@ -4,6 +4,7 @@ use itertools::izip;
 use las::{PointData, PointDataBuilder, Reader};
 use log::debug;
 use log::info;
+use log::warn;
 use rand::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::hash_map::Entry;
@@ -25,8 +26,10 @@ use crate::io::xyz::XyzInternalWriter;
 use crate::io::xyz::XyzRecord;
 use crate::isom::IsomTable;
 use crate::knolls;
+use crate::knolls::DotKnollSet;
 use crate::mapframe::WorldFile;
 use crate::merge;
+use crate::merge::ContourSet;
 use crate::plan::InputFileIndex;
 use crate::plan::Operation;
 use crate::plan::Plan;
@@ -290,13 +293,13 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
 }
 
 /// Renders the shape files in `filenames` (or, in a batch, the ones already unzipped)
-/// and the map of the tile in `tmpfolder`, whose ground model is `ground`.
+/// and the map of the tile in `tmpfolder` from `inputs`.
 pub fn process_zip(
     fs: &impl FileSystem,
     config: &Config,
     thread: &String,
     tmpfolder: &Path,
-    ground: &HeightMap,
+    inputs: &render::MapInputs,
     filenames: &[String],
     batch: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -318,7 +321,6 @@ pub fn process_zip(
         }
     }
 
-    let inputs = &render::MapInputs { ground };
     info!("Rendering png map with depressions");
     timing.start_section("Rendering png map with depressions");
     render::render(
@@ -350,8 +352,17 @@ pub fn process_zip(
     Ok(())
 }
 
+/// The terrain values of a tile that a batch crops and draws the shape files' map on.
+pub struct TileTerrain {
+    /// smoothjoin's contours.
+    pub contours: ContourSet,
+    /// The dot knolls.
+    pub dot_knolls: DotKnollSet,
+}
+
 /// Runs every stage on the returns of `input_file` and, unless `skip_rendering`, renders
-/// the map. Returns the tile's ground model, which a batch draws the shape files' map on.
+/// the map. Returns the tile's ground model and, unless vegeonly or cliffsonly, its
+/// terrain: what a batch draws the shape files' map on and crops.
 pub fn process_tile(
     fs: &impl FileSystem,
     config: &Config,
@@ -360,7 +371,7 @@ pub fn process_tile(
     input_file: &Path,
     tile: &str,
     skip_rendering: bool,
-) -> Result<HeightMap, Box<dyn Error>> {
+) -> Result<(HeightMap, Option<TileTerrain>), Box<dyn Error>> {
     let mut timing = Timing::start_now("process_tile");
     fs.create_dir_all(tmpfolder)
         .expect("Could not create tmp folder");
@@ -406,9 +417,10 @@ pub fn process_tile(
         .expect("Could not copy file");
     }
 
-    // out.dxf.bin is traced at the levels smoothjoin reads it at
+    // the contours smoothjoin starts from are traced at the levels it classes them at
     let trace_interval = config.smoothjoin.levels().trace_interval;
 
+    let mut terrain = None;
     if !vegeonly && !cliffsonly {
         if let Some(basemapcontours) = config.basemapcontours {
             info!("Basemap contours");
@@ -477,49 +489,55 @@ pub fn process_tile(
 
         info!("Contour generation part 2");
         timing.start_section("contour generation part 2");
-        // with skipknolldetection out.dxf.bin is traced on the unlifted ground model,
+        // with skipknolldetection the contours are traced on the unlifted ground model,
         // while smoothjoin and dotknolls read the flattened one
-        contours::heightmap2contours(
-            fs,
-            tmpfolder,
-            trace_interval,
-            if skipknolldetection { &ground } else { &lifted },
-            "out.dxf.bin", // generates dxf curves
-            config.outputs.dxf,
-        )
-        .unwrap();
+        let traced_on = if skipknolldetection { &ground } else { &lifted };
+        let traced = contours::trace(traced_on, trace_interval);
+        if config.debug_intermediates {
+            let dxf = contours::contours_to_bindxf(&traced, traced_on);
+            contours::write_bindxf(fs, tmpfolder, merge::TRACED_DUMP, &dxf, config.outputs.dxf)
+                .map_err(|e| format!("contour tracing in {}: {e}", tmpfolder.display()))?;
+        }
         info!("Contour generation part 3");
         timing.start_section("contour generation part 3");
-        merge::smoothjoin(
+        let (contours, candidates) = merge::smoothjoin(&traced, &lifted, &config.smoothjoin);
+        merge::write_contours(
             fs,
-            &config.smoothjoin,
-            config.outputs.dxf,
             tmpfolder,
-            &lifted,
+            &contours,
+            &candidates,
+            config.debug_intermediates,
+            config.outputs.dxf,
         )
-        .unwrap();
+        .map_err(|e| {
+            format!(
+                "contour smoothing (smoothjoin) in {}: {e}",
+                tmpfolder.display()
+            )
+        })?;
 
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
-        knolls::dotknolls(fs, &config.knoll, config.outputs.dxf, tmpfolder, &lifted).unwrap();
+        let dot_knolls = knolls::dotknolls(&contours, &candidates, &lifted, &config.knoll);
+        knolls::write_dot_knolls(
+            fs,
+            tmpfolder,
+            &dot_knolls,
+            config.debug_intermediates,
+            config.outputs.dxf,
+        )
+        .map_err(|e| format!("dot knolls (dotknolls) in {}: {e}", tmpfolder.display()))?;
 
-        // The terrain reaches vector output as GeoJSON written next to its source: the
-        // .dxf.bin files are intermediates.
+        // The terrain reaches vector output as GeoJSON written from the values, contours
+        // first
         if config.vector_tables() {
-            for (input, source) in [
-                ("out2.dxf.bin", geojson::Source::Contours),
-                ("dotknolls.dxf.bin", geojson::Source::Knolls),
-            ] {
-                geojson::bindxf_to_tables(
-                    fs,
-                    &[tmpfolder.join(input)],
-                    tmpfolder,
-                    source,
-                    config.epsg,
-                )
-                .unwrap();
-            }
+            geojson::write_contour_tables(fs, tmpfolder, &contours, config.epsg)?;
+            geojson::write_knoll_tables(fs, tmpfolder, &dot_knolls, config.epsg)?;
         }
+        terrain = Some(TileTerrain {
+            contours,
+            dot_knolls,
+        });
     }
 
     if !cliffsonly && !contoursonly {
@@ -566,9 +584,17 @@ pub fn process_tile(
     drop(returns);
     // the map, or without the raster family the form lines alone (the renderer selects
     // them) when a vector family takes them
-    let terrain = !vegeonly && !contoursonly && !cliffsonly;
-    if !skip_rendering && terrain && config.outputs.raster {
-        let inputs = &render::MapInputs { ground: &ground };
+    let full = !vegeonly && !contoursonly && !cliffsonly;
+    if let Some(values) = &terrain
+        && !skip_rendering
+        && full
+        && config.outputs.raster
+    {
+        let inputs = &render::MapInputs {
+            ground: &ground,
+            contours: &values.contours,
+            dot_knolls: &values.dot_knolls,
+        };
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
         render::render(
@@ -596,17 +622,18 @@ pub fn process_tile(
             true,
         )
         .unwrap();
-    } else if contoursonly || (terrain && !config.outputs.raster) {
+    } else if let Some(values) = &terrain
+        && (contoursonly || (full && !config.outputs.raster))
+    {
         // outputs is never empty: without raster a vector family takes the form lines
         info!("Selecting formlines");
         timing.start_section("selecting formlines");
         let mut img = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
         if let Some(formlines) = render::draw_curves(
-            fs,
             &config.curves,
             &mut img,
-            tmpfolder,
             &ground,
+            &values.contours,
             false,
             false,
         )
@@ -614,11 +641,14 @@ pub fn process_tile(
         {
             render::write_formlines(fs, config, tmpfolder, &formlines).unwrap();
         }
+    } else if contoursonly && (vegeonly || cliffsonly) {
+        let other = if vegeonly { "vegeonly" } else { "cliffsonly" };
+        warn!("contoursonly=1 with {other}=1: no contours are made, so no form lines are selected");
     } else {
         info!("Skipped rendering");
     }
     info!("All done!");
-    Ok(ground)
+    Ok((ground, terrain))
 }
 
 /// The returns of `input_file` (`.xyz`, `.las`, `.laz` or `.xyz.bin`), in file order: the
@@ -794,23 +824,35 @@ pub fn batch_process(
         // Process the tile
         // the tile's returns, buffered from its neighbours, are staged by launch_threads
         let staged = &file_to_process.staging_path;
-        let ground = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
+        let (ground, terrain) = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
             .unwrap_or_else(|e| panic!("processing tile {laz} failed: {e}"));
         // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
         fs.remove_file(staged)
             .expect("Could not remove the staged point file");
 
-        if has_zip && !vegeonly && !cliffsonly && !contoursonly {
+        if has_zip
+            && !vegeonly
+            && !cliffsonly
+            && !contoursonly
+            && let Some(terrain) = &terrain
+        {
             if outputs.raster {
-                process_zip(fs, conf, thread, &tmpfolder, &ground, &[], true).unwrap();
+                let inputs = &render::MapInputs {
+                    ground: &ground,
+                    contours: &terrain.contours,
+                    dot_knolls: &terrain.dot_knolls,
+                };
+                process_zip(fs, conf, thread, &tmpfolder, inputs, &[], true).unwrap();
             } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
                 // the vector mapping's tables, without drawing the shapes
                 #[cfg(feature = "shapefile")]
                 crate::shapefile::vector_tables(fs, conf, &tmpfolder).unwrap();
             }
         }
-        // the crop below re-encodes the PNGs: free the ground model first
+        // the crop below re-encodes the PNGs: free the ground model first, and the
+        // terrain unless the .dxf.bin crops take it
         drop(ground);
+        let terrain = terrain.filter(|_| outputs.dxf || debug_intermediates);
 
         // crop
         let tfw_in = PathBuf::from(format!("pullautus{thread}.pgw"));
@@ -1052,19 +1094,20 @@ pub fn batch_process(
         // which the merge does not read, and detected, the knoll rings, are debug
         // only.
         if outputs.dxf || debug_intermediates {
-            let out2_path = PathBuf::from(format!("temp{thread}/out2.dxf.bin"));
-            if fs.exists(&out2_path) {
-                crop::polylinebindxfcrop(
-                    fs,
-                    &out2_path,
-                    Path::new(&format!("{batchoutfolder}/{laz}_contours.dxf.bin")),
-                    outputs.dxf,
-                    minx,
-                    miny,
-                    maxx,
-                    maxy,
-                )
-                .unwrap();
+            // the terrain is consumed here, without a copy
+            if let Some(TileTerrain {
+                contours,
+                dot_knolls,
+            }) = terrain
+            {
+                let crop =
+                    crop::crop_polylines(contours.into_bindxf(), minx, miny, maxx, maxy).unwrap();
+                let output = format!("{batchoutfolder}/{laz}_contours.dxf.bin");
+                crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
+                let crop =
+                    crop::crop_points(dot_knolls.into_bindxf(), minx, miny, maxx, maxy).unwrap();
+                let output = format!("{batchoutfolder}/{laz}_dotknolls.dxf.bin");
+                crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
             }
             let dxf_files: &[&str] = if debug_intermediates {
                 &[
@@ -1093,20 +1136,6 @@ pub fn batch_process(
                     )
                     .unwrap();
                 }
-            }
-            let dotknolls_file = PathBuf::from(format!("temp{thread}/dotknolls.dxf.bin"));
-            if fs.exists(&dotknolls_file) {
-                crop::pointbindxfcrop(
-                    fs,
-                    &dotknolls_file,
-                    Path::new(&format!("{batchoutfolder}/{laz}_dotknolls.dxf.bin")),
-                    outputs.dxf,
-                    minx,
-                    miny,
-                    maxx,
-                    maxy,
-                )
-                .unwrap();
             }
             let basemap_file = PathBuf::from(format!("temp{thread}/basemap.dxf.bin"));
             if fs.exists(&basemap_file) {

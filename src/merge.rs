@@ -1,15 +1,18 @@
+use anyhow::Context;
 use image::{RgbImage, Rgba, RgbaImage};
 use log::info;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::contours::{contours_from_lines, join_contours};
+use crate::contours::join_contours;
 use crate::geometry::{
-    BinaryDxf, Classification, ContourLevels, Geometry, Point2, Point3, Points, Polylines, Ring,
+    BinaryDxf, Bounds, Classification, Contour, ContourLevels, Geometry, Point2, Point3, Points,
+    Polylines, Ring,
 };
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
+use crate::knolls::DotKnollCandidate;
 use crate::mapframe::{IsomMinima, WorldFile};
 use crate::vec2d::Vec2D;
 use image::buffer::ConvertBuffer;
@@ -519,16 +522,85 @@ impl SmoothJoinParams {
     }
 }
 
-/// Smooths and joins the contours in `out.dxf.bin`, classes them on `lifted`, the
-/// lifted ground model, and picks the dot knolls; writes `out2.dxf.bin` and
-/// `dotknolls.bin`.
-pub fn smoothjoin(
+/// The debug intermediate of the contours smoothjoin starts from, traced on the lifted
+/// ground model (on the unlifted one with skipknolldetection).
+pub const TRACED_DUMP: &str = "out.dxf.bin";
+/// The debug intermediate of smoothjoin's [`ContourSet`]; `out2.dxf`, its text DXF, is a
+/// DXF-family product.
+pub const CONTOURS_DUMP: &str = "out2.dxf.bin";
+/// The debug intermediate of smoothjoin's dot knoll candidates.
+pub const DOT_KNOLL_CANDIDATES_DUMP: &str = "dotknolls.bin";
+
+/// What [`smoothjoin`] leaves of the traced lines: every smoothed traced line it keeps
+/// (contours, index contours, half-interval lines, depression contours and small
+/// depressions) and the slope lines of the depressions, each at its level.
+#[derive(Debug, Clone)]
+pub struct ContourSet {
+    /// The lines in world coordinates, each with its class and level in metres; every
+    /// vertex's z is the level.
+    pub lines: Polylines<Point3, (Classification, f64)>,
+    /// The extent of the ground model they were traced on, in world coordinates.
+    pub bounds: Bounds,
+}
+
+impl ContourSet {
+    /// The `out2.dxf.bin` debug intermediate.
+    pub fn to_bindxf(&self) -> BinaryDxf {
+        BinaryDxf::new(self.bounds.clone(), vec![self.lines.clone().into()])
+    }
+
+    /// [`ContourSet::to_bindxf`] without copying the lines.
+    pub fn into_bindxf(self) -> BinaryDxf {
+        BinaryDxf::new(self.bounds, vec![self.lines.into()])
+    }
+
+    /// The contours in `out2.dxf.bin`, as [`ContourSet::to_bindxf`] writes them.
+    pub fn from_bindxf(dxf: BinaryDxf) -> anyhow::Result<Self> {
+        let bounds = dxf.bounds().clone();
+        match dxf.take_geometry().swap_remove(0) {
+            Geometry::Polylines3(lines) => Ok(Self { lines, bounds }),
+            _ => anyhow::bail!("it holds no 3D contour lines"),
+        }
+    }
+}
+
+/// Writes `contours` and `candidates` to `tmpfolder`: with `debug` the debug
+/// intermediates [`CONTOURS_DUMP`] and [`DOT_KNOLL_CANDIDATES_DUMP`], with `output_dxf`
+/// the text DXF `out2.dxf`.
+pub fn write_contours(
     fs: &impl FileSystem,
-    params: &SmoothJoinParams,
-    output_dxf: bool,
     tmpfolder: &Path,
-    lifted: &HeightMap,
+    contours: &ContourSet,
+    candidates: &[DotKnollCandidate],
+    debug: bool,
+    output_dxf: bool,
 ) -> Result<(), Box<dyn Error>> {
+    if debug {
+        let path = tmpfolder.join(DOT_KNOLL_CANDIDATES_DUMP);
+        fs.create(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|f| crate::util::write_object(f, &candidates))
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    crate::contours::write_dxf_files(
+        fs,
+        tmpfolder,
+        CONTOURS_DUMP,
+        &contours.to_bindxf(),
+        debug,
+        output_dxf,
+    )
+}
+
+/// Smooths and joins `traced`, the contours traced at the trace interval, classes them
+/// on `lifted`, the lifted ground model, and picks the dot knoll candidates among the
+/// small closed lines. The contours are bounded by `lifted`'s extent, which is the
+/// extent `traced` was traced on.
+pub fn smoothjoin(
+    traced: &[Contour],
+    lifted: &HeightMap,
+    params: &SmoothJoinParams,
+) -> (ContourSet, Vec<DotKnollCandidate>) {
     info!("Smooth curves...");
 
     let &SmoothJoinParams {
@@ -570,23 +642,11 @@ pub fn smoothjoin(
         }
     }
 
-    // read the binary input
-    let input = tmpfolder.join("out.dxf.bin");
-    let input_dxf =
-        BinaryDxf::from_reader(&mut fs.open(input)?).expect("Unable to read out.dxf.bin");
-
-    let input_bounds = input_dxf.bounds().clone(); // store the bounds for usage in the output
-    let Geometry::Polylines3(input_lines) = input_dxf.take_geometry().swap_remove(0) else {
-        return Err(anyhow::anyhow!(
-            "out.dxf.bin holds no 3D contour lines: it is a stale temp file from another build; re-run the full pipeline"
-        ).into());
-    };
-
     let mut out2_lines = Polylines::<Point3, (Classification, f64)>::new();
 
     let mut dotknolls = Vec::new();
 
-    let joined = join_contours(&contours_from_lines(&input_lines), usize::MAX);
+    let joined = join_contours(traced, usize::MAX);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
     let mut el_x: Vec<Vec<f64>> = joined
         .iter()
@@ -596,7 +656,7 @@ pub fn smoothjoin(
         .iter()
         .map(|c| c.line.iter().map(|p| p.y).collect())
         .collect();
-    for l in 0..input_lines.len() {
+    for l in 0..joined.len() {
         let mut el_x_len = el_x[l].len();
         if el_x_len > 0 {
             let mut skip = false;
@@ -700,7 +760,7 @@ pub fn smoothjoin(
                 x_avg /= (el_x_len - 1) as f64;
                 y_avg /= (el_x_len - 1) as f64;
 
-                dotknolls.push(super::knolls::Dotknoll {
+                dotknolls.push(DotKnollCandidate {
                     x: x_avg,
                     y: y_avg,
                     is_knoll: depression == 1,
@@ -903,30 +963,95 @@ pub fn smoothjoin(
         }
     }
 
-    crate::util::write_object(
-        &mut fs.create(tmpfolder.join("dotknolls.bin"))?,
-        &super::knolls::Dotknolls { dotknolls },
-    )?;
-
-    let out2_dxf = BinaryDxf::new(input_bounds, vec![out2_lines.into()]);
-
-    let output = tmpfolder.join("out2.dxf.bin");
-    let mut fp = fs.create(output).expect("Unable to create file");
-    out2_dxf.to_writer(&mut fp)?;
-
-    if output_dxf {
-        out2_dxf.to_dxf(&mut fs.create(tmpfolder.join("out2.dxf"))?)?;
-    }
-
+    let bounds = Bounds::new(xstart, lifted.maxx(), ystart, lifted.maxy());
     info!("Done");
-    Ok(())
+    (
+        ContourSet {
+            lines: out2_lines,
+            bounds,
+        },
+        dotknolls,
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Classification;
+    use super::{Classification, FormLineMode, SmoothJoinParams, smoothjoin};
     use crate::geometry::{Point2, Point3, Ring};
+    use crate::io::heightmap::HeightMap;
     use crate::mapframe::MapFrame;
+    use crate::vec2d::Vec2D;
+
+    /// The template's smoothjoin parameters: 5 m contours with form lines.
+    fn params() -> SmoothJoinParams {
+        SmoothJoinParams {
+            contour_interval: 5.0,
+            form_lines: FormLineMode::Selective,
+            smoothing: 1.0,
+            curviness: 1.1,
+            depression_length: 181,
+            decorate_depressions: false,
+            inidotknolls: 0.6,
+            isom_minima: MapFrame::default().isom_minima(),
+        }
+    }
+
+    /// A 41 x 41 cell, 2 m ground model of `f(distance in cells from the centre cell)` at
+    /// (1000 m, 2000 m), traced at the trace interval and smoothed.
+    fn smoothjoin_on(
+        f: impl Fn(f64) -> f64,
+    ) -> (super::ContourSet, Vec<crate::knolls::DotKnollCandidate>) {
+        let mut grid = Vec2D::new(41, 41, 0.0);
+        for i in 0..41 {
+            for j in 0..41 {
+                let (dx, dy) = (i as f64 - 20.0, j as f64 - 20.0);
+                grid[(i, j)] = f((dx * dx + dy * dy).sqrt());
+            }
+        }
+        let lifted = HeightMap {
+            xoffset: 1000.0,
+            yoffset: 2000.0,
+            scale: 2.0,
+            grid,
+        };
+        let params = params();
+        let traced = crate::contours::trace(&lifted, params.levels().trace_interval);
+        smoothjoin(&traced, &lifted, &params)
+    }
+
+    /// A bowl's closed contours are depressions, and none is a dot knoll.
+    #[test]
+    fn a_bowl_gives_depression_contours() {
+        let (contours, candidates) = smoothjoin_on(|r| 100.0 + 0.02 * r.min(18.0).powi(2));
+        assert!(candidates.is_empty(), "{candidates:?}");
+        let classes: Vec<Classification> = contours.lines.iter().map(|(_, (c, _))| *c).collect();
+        assert!(!classes.is_empty());
+        assert!(
+            classes.iter().all(Classification::is_depression),
+            "{classes:?}"
+        );
+        // bounded by the ground model's extent
+        let b = &contours.bounds;
+        assert_eq!(
+            (b.xmin, b.xmax, b.ymin, b.ymax),
+            (1000.0, 1082.0, 2000.0, 2082.0)
+        );
+    }
+
+    /// A small steep cone's one closed contour is too small to draw: it becomes a dot
+    /// knoll candidate near the apex, and no contour is left.
+    #[test]
+    fn a_small_cone_gives_a_dot_knoll_candidate() {
+        let (contours, candidates) = smoothjoin_on(|r| 100.5 + 2.0 * (1.6 - r).max(0.0));
+        assert_eq!(contours.lines.len(), 0, "{:?}", contours.lines);
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+        let c = &candidates[0];
+        assert!(c.is_knoll);
+        assert!(
+            (c.x - 1040.0).abs() < 1.0 && (c.y - 2040.0).abs() < 1.0,
+            "{c:?}"
+        );
+    }
 
     /// decorate_depression at the default map scale.
     fn decorate_depression(x: &[f64], y: &[f64], h: f64) -> Option<(Vec<Point3>, Classification)> {

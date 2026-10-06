@@ -17,8 +17,20 @@ pub fn polylinebindxfcrop(
 ) -> anyhow::Result<()> {
     log::debug!("Cropping polylines in binary DXF file: {input:?} to {output:?}");
 
-    // read input file
     let input = BinaryDxf::from_reader(&mut fs.open(input)?)?;
+    let out = crop_polylines(input, minx, miny, maxx, maxy)?;
+    write_crop(fs, &out, output, output_dxf)
+}
+
+/// The lines of `input` (2D or 3D) cut to the bounds, as [`polylinebindxfcrop`] crops a
+/// file; the bounds of `input` are kept.
+pub fn crop_polylines(
+    input: BinaryDxf,
+    minx: f64,
+    miny: f64,
+    maxx: f64,
+    maxy: f64,
+) -> anyhow::Result<BinaryDxf> {
     let bounds = input.bounds().clone();
 
     let output_lines = match input.take_geometry().swap_remove(0) {
@@ -31,13 +43,23 @@ pub fn polylinebindxfcrop(
         _ => anyhow::bail!("input file should contain 2D or 3D lines"),
     };
 
-    // write the output (TODO: should we populate the new bounds here or keep the old?)
-    let out = BinaryDxf::new(bounds, vec![output_lines]);
-    out.to_writer(&mut fs.create(output)?)?;
+    // (TODO: should we populate the new bounds here or keep the old?)
+    Ok(BinaryDxf::new(bounds, vec![output_lines]))
+}
+
+/// Write a crop to `output` (a `.dxf.bin` name) and, with `output_dxf`, as text DXF next
+/// to it.
+pub fn write_crop(
+    fs: &impl FileSystem,
+    crop: &BinaryDxf,
+    output: &Path,
+    output_dxf: bool,
+) -> anyhow::Result<()> {
+    crop.to_writer(&mut fs.create(output)?)?;
 
     if output_dxf {
         // remove the .bin extension for the DXF output
-        out.to_dxf(&mut fs.create(output.with_extension(""))?)?;
+        crop.to_dxf(&mut fs.create(output.with_extension(""))?)?;
     }
 
     Ok(())
@@ -107,9 +129,20 @@ pub fn pointbindxfcrop(
     maxy: f64,
 ) -> anyhow::Result<()> {
     log::debug!("Cropping points in binary DXF file: {input:?} to {output:?}");
-    // read input file
     let input = BinaryDxf::from_reader(&mut fs.open(input)?)?;
+    let out = crop_points(input, minx, miny, maxx, maxy)?;
+    write_crop(fs, &out, output, output_dxf)
+}
 
+/// The points of `input` inside the bounds, as [`pointbindxfcrop`] crops a file; the
+/// bounds of `input` are kept.
+pub fn crop_points(
+    input: BinaryDxf,
+    minx: f64,
+    miny: f64,
+    maxx: f64,
+    maxy: f64,
+) -> anyhow::Result<BinaryDxf> {
     let bounds = input.bounds().clone();
     let Geometry::Points(points) = input.take_geometry().swap_remove(0) else {
         anyhow::bail!("input file should contain points");
@@ -123,14 +156,6 @@ pub fn pointbindxfcrop(
         }
     }
 
-    // write the output (TODO: should we populate the new bounds here or keep the old?)
-    let out = BinaryDxf::new(bounds, vec![output_points.into()]);
-    out.to_writer(&mut fs.create(output)?)?;
-
-    if output_dxf {
-        // remove the .bin extension for the DXF output
-        out.to_dxf(&mut fs.create(output.with_extension(""))?)?;
-    }
-
-    Ok(())
+    // (TODO: should we populate the new bounds here or keep the old?)
+    Ok(BinaryDxf::new(bounds, vec![output_points.into()]))
 }

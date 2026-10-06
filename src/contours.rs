@@ -329,11 +329,26 @@ pub fn write_bindxf(
     dxf: &BinaryDxf,
     output_dxf: bool,
 ) -> Result<(), Box<dyn Error>> {
+    write_dxf_files(fs, tmpfolder, dxffile, dxf, true, output_dxf)
+}
+
+/// Write `dxf` to `tmpfolder/dxffile` (a `.dxf.bin` name) with `binary`, and as text DXF
+/// next to it (the name without `.bin`) with `output_dxf`.
+pub fn write_dxf_files(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    dxffile: &str,
+    dxf: &BinaryDxf,
+    binary: bool,
+    output_dxf: bool,
+) -> Result<(), Box<dyn Error>> {
     let path = tmpfolder.join(dxffile);
-    fs.create(&path)
-        .map_err(anyhow::Error::from)
-        .and_then(|mut f| dxf.to_writer(&mut f))
-        .with_context(|| format!("writing {}", path.display()))?;
+    if binary {
+        fs.create(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut f| dxf.to_writer(&mut f))
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
 
     if output_dxf {
         let path = path.with_extension("");

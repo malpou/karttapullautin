@@ -5,8 +5,9 @@ use pullauta::config::Config;
 use pullauta::io::fs::FileSystem;
 use pullauta::io::fs::memory::MemoryFileSystem;
 use pullauta::io::heightmap::HeightMap;
-use pullauta::knolls::KNOLL_GROUND_DUMP;
-use pullauta::render::GROUND_DUMP;
+use pullauta::knolls::{DotKnollSet, KNOLL_GROUND_DUMP};
+use pullauta::merge::ContourSet;
+use pullauta::render::{GROUND_DUMP, MapInputs};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -101,8 +102,8 @@ fn main() {
         // re-render a tile run with debug_intermediates=1; a normal run keeps only
         // products in temp/, so `pullauta` alone prints the usage there
         Command::Default if !batch && pullauta::render::check_inputs(&fs, &tmpfolder).is_ok() => {
-            let ground = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
-            let inputs = &pullauta::render::MapInputs { ground: &ground };
+            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
+            let inputs = &loaded.map_inputs();
             info!("Rendering png map with depressions");
             or_exit(pullauta::render::render(
                 &fs,
@@ -258,12 +259,16 @@ fn main() {
 
         Command::DotKnolls => {
             let lifted = or_exit(read_lifted_ground(&fs, &tmpfolder));
-            pullauta::knolls::dotknolls(
+            let contours = or_exit(read_contours(&fs, &tmpfolder));
+            let candidates = or_exit(read_dot_knoll_candidates(&fs, &tmpfolder));
+            let dot_knolls =
+                pullauta::knolls::dotknolls(&contours, &candidates, &lifted, &config.knoll);
+            pullauta::knolls::write_dot_knolls(
                 &fs,
-                &config.knoll,
-                config.outputs.dxf,
                 &tmpfolder,
-                &lifted,
+                &dot_knolls,
+                true,
+                config.outputs.dxf,
             )
             .unwrap();
         }
@@ -399,12 +404,21 @@ fn main() {
 
         Command::SmoothJoin => {
             let lifted = or_exit(read_lifted_ground(&fs, &tmpfolder));
-            pullauta::merge::smoothjoin(
+            let traced = or_exit(read_contour_lines(
                 &fs,
-                &config.smoothjoin,
-                config.outputs.dxf,
                 &tmpfolder,
-                &lifted,
+                pullauta::merge::TRACED_DUMP,
+                "traced contours",
+            ));
+            let (contours, candidates) =
+                pullauta::merge::smoothjoin(&traced, &lifted, &config.smoothjoin);
+            pullauta::merge::write_contours(
+                &fs,
+                &tmpfolder,
+                &contours,
+                &candidates,
+                true,
+                config.outputs.dxf,
             )
             .unwrap();
         }
@@ -471,13 +485,13 @@ fn main() {
                 .and_then(|s| s.parse::<usize>().ok())
                 .expect("expected second argument to be nwidth");
             let nodepressions: bool = args.len() > 2 && args[2] == "nodepressions";
-            let ground = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
+            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
             or_exit(pullauta::render::render(
                 &fs,
                 &config,
                 &thread,
                 &tmpfolder,
-                &pullauta::render::MapInputs { ground: &ground },
+                &loaded.map_inputs(),
                 angle,
                 nwidth,
                 nodepressions,
@@ -487,9 +501,15 @@ fn main() {
         Command::Zip(first) => {
             let mut zips: Vec<String> = vec![first];
             zips.extend(args);
-            let ground = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
+            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
             or_exit(pullauta::process::process_zip(
-                &fs, &config, &thread, &tmpfolder, &ground, &zips, false,
+                &fs,
+                &config,
+                &thread,
+                &tmpfolder,
+                &loaded.map_inputs(),
+                &zips,
+                false,
             ));
         }
 
@@ -627,8 +647,24 @@ fn read_candidates(
     fs: &impl FileSystem,
     tmpfolder: &Path,
 ) -> Result<Vec<pullauta::geometry::Contour>, String> {
-    let path = tmpfolder.join(pullauta::knolls::CANDIDATES_DUMP);
-    read_debug_dump(fs, &path, "knoll candidate contours", || {
+    read_contour_lines(
+        fs,
+        tmpfolder,
+        pullauta::knolls::CANDIDATES_DUMP,
+        "knoll candidate contours",
+    )
+}
+
+/// The contours in the contour file dump `name` (`contours03.dxf.bin`, `out.dxf.bin`),
+/// which holds the tile's `what`.
+fn read_contour_lines(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    name: &str,
+    what: &str,
+) -> Result<Vec<pullauta::geometry::Contour>, String> {
+    let path = tmpfolder.join(name);
+    read_debug_dump(fs, &path, what, || {
         let dxf = pullauta::geometry::BinaryDxf::from_reader(&mut fs.open(&path)?)?;
         match dxf.take_geometry().swap_remove(0) {
             pullauta::geometry::Geometry::Polylines3(lines) => {
@@ -636,6 +672,37 @@ fn read_candidates(
             }
             _ => Err(anyhow::anyhow!("it holds no 3D contour lines")),
         }
+    })
+}
+
+/// smoothjoin's contours dump (`out2.dxf.bin`), for dotknolls and a re-render.
+fn read_contours(fs: &impl FileSystem, tmpfolder: &Path) -> Result<ContourSet, String> {
+    let path = tmpfolder.join(pullauta::merge::CONTOURS_DUMP);
+    read_debug_dump(fs, &path, "contours", || {
+        ContourSet::from_bindxf(pullauta::geometry::BinaryDxf::from_reader(
+            &mut fs.open(&path)?,
+        )?)
+    })
+}
+
+/// The dot knoll candidates dump (`dotknolls.bin`), for dotknolls.
+fn read_dot_knoll_candidates(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+) -> Result<Vec<pullauta::knolls::DotKnollCandidate>, String> {
+    let path = tmpfolder.join(pullauta::merge::DOT_KNOLL_CANDIDATES_DUMP);
+    read_debug_dump(fs, &path, "dot knoll candidates", || {
+        pullauta::util::read_object(fs.open(&path)?)
+    })
+}
+
+/// The dot knolls dump (`dotknolls.dxf.bin`), for a re-render.
+fn read_dot_knolls(fs: &impl FileSystem, tmpfolder: &Path) -> Result<DotKnollSet, String> {
+    let path = tmpfolder.join(pullauta::knolls::DOT_KNOLLS_DUMP);
+    read_debug_dump(fs, &path, "dot knolls", || {
+        DotKnollSet::from_bindxf(pullauta::geometry::BinaryDxf::from_reader(
+            &mut fs.open(&path)?,
+        )?)
     })
 }
 
@@ -666,16 +733,37 @@ fn read_debug_dump<T, E: std::fmt::Display>(
     read().map_err(|e| format!("cannot read the {what} from {}: {e}", path.display()))
 }
 
-/// The ground model of a re-render (`render`, a shape-file zip, `pullauta` in a debug
-/// run's folder), once the raster family and every file it reads are there.
+/// The values a re-render draws the map from, read from a debug run's intermediates.
+struct RenderInputs {
+    ground: HeightMap,
+    contours: ContourSet,
+    dot_knolls: DotKnollSet,
+}
+
+impl RenderInputs {
+    fn map_inputs(&self) -> MapInputs<'_> {
+        MapInputs {
+            ground: &self.ground,
+            contours: &self.contours,
+            dot_knolls: &self.dot_knolls,
+        }
+    }
+}
+
+/// The inputs of a re-render (`render`, a shape-file zip, `pullauta` in a debug run's
+/// folder), once the raster family and every file it reads are there.
 fn read_render_inputs(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
-) -> Result<HeightMap, String> {
+) -> Result<RenderInputs, String> {
     pullauta::render::check_raster(config).map_err(|e| e.to_string())?;
     pullauta::render::check_inputs(fs, tmpfolder).map_err(|e| e.to_string())?;
-    read_ground(fs, &tmpfolder.join(GROUND_DUMP))
+    Ok(RenderInputs {
+        ground: read_ground(fs, &tmpfolder.join(GROUND_DUMP))?,
+        contours: read_contours(fs, tmpfolder)?,
+        dot_knolls: read_dot_knolls(fs, tmpfolder)?,
+    })
 }
 
 /// The value, or exit with the error: for an error the user can act on, such as
@@ -855,18 +943,28 @@ mod tests {
     }
 
     #[test]
-    fn knoll_stage_commands_ask_for_debug_intermediates_without_their_dumps() {
+    fn terrain_stage_commands_ask_for_debug_intermediates_without_their_dumps() {
         let fs = MemoryFileSystem::new();
         let temp = Path::new("temp");
         let errors = [
             read_candidates(&fs, temp).unwrap_err(),
             read_pins(&fs, temp).unwrap_err(),
             read_lifted_ground(&fs, temp).unwrap_err(),
+            read_contour_lines(&fs, temp, pullauta::merge::TRACED_DUMP, "traced contours")
+                .unwrap_err(),
+            read_contours(&fs, temp).unwrap_err(),
+            read_dot_knoll_candidates(&fs, temp).unwrap_err(),
+            read_dot_knolls(&fs, temp).unwrap_err(),
         ];
-        for (err, dump) in errors
-            .iter()
-            .zip(["contours03.dxf.bin", "pins.bin", "xyz_knolls.hmap"])
-        {
+        for (err, dump) in errors.iter().zip([
+            "contours03.dxf.bin",
+            "pins.bin",
+            "xyz_knolls.hmap",
+            "out.dxf.bin",
+            "out2.dxf.bin",
+            "dotknolls.bin",
+            "dotknolls.dxf.bin",
+        ]) {
             assert!(err.contains(&format!("temp/{dump} is missing")), "{err}");
             assert!(err.contains("debug_intermediates=1"), "{err}");
         }

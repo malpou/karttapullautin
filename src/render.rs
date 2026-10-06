@@ -7,8 +7,9 @@ use crate::geometry::Point2;
 use crate::geometry::Polylines;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
+use crate::knolls::DotKnollSet;
 use crate::mapframe::{MapFrame, WorldFile};
-use crate::merge::FormLineMode;
+use crate::merge::{ContourSet, FormLineMode};
 use crate::vec2d::Vec2D;
 use image::ImageBuffer;
 use image::Rgba;
@@ -22,15 +23,15 @@ use std::path::Path;
 /// tile run writes it only with debug_intermediates=1.
 pub const GROUND_DUMP: &str = "xyz2.hmap";
 
-/// The temp folder files a re-render reads: [`GROUND_DUMP`] and the files [`render`]
-/// opens itself. A tile run leaves them only with debug_intermediates=1.
+/// The temp folder files a re-render reads: the dumps of the [`MapInputs`] and the files
+/// [`render`] opens itself. A tile run leaves them only with debug_intermediates=1.
 const RENDER_INPUTS: [&str; 8] = [
     "vegetation.png",
     "vegetation.pgw",
     "undergrowth.png",
     GROUND_DUMP,
-    "out2.dxf.bin",
-    "dotknolls.dxf.bin",
+    crate::merge::CONTOURS_DUMP,
+    crate::knolls::DOT_KNOLLS_DUMP,
     "c2g.dxf.bin",
     "c3g.dxf.bin",
 ];
@@ -70,6 +71,10 @@ pub fn check_inputs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dy
 pub struct MapInputs<'a> {
     /// The ground model (`xyz2.hmap` in the debug intermediates).
     pub ground: &'a HeightMap,
+    /// smoothjoin's contours (`out2.dxf.bin` in the debug intermediates).
+    pub contours: &'a ContourSet,
+    /// The dot knolls (`dotknolls.dxf.bin` in the debug intermediates).
+    pub dot_knolls: &'a DotKnollSet,
 }
 
 /// Draws the map from `inputs` and the stages' files in `tmpfolder`; a re-render first
@@ -177,11 +182,10 @@ pub fn render(
     }
 
     if let Some(formlines) = draw_curves(
-        fs,
         &config.curves,
         &mut img,
-        tmpfolder,
         inputs.ground,
+        inputs.contours,
         nodepressions,
         true,
     )? {
@@ -189,13 +193,7 @@ pub fn render(
     }
 
     // dotknolls----------
-    let input = tmpfolder.join("dotknolls.dxf.bin");
-    let data = BinaryDxf::from_reader(&mut fs.open(input)?)?;
-    let Geometry::Points(points) = data.take_geometry().swap_remove(0) else {
-        return Err(anyhow::anyhow!("dotknolls.dxf.bin should contain points").into());
-    };
-
-    for (point, layer) in points.iter() {
+    for (point, layer) in inputs.dot_knolls.points.iter() {
         if *layer != Classification::Dotknoll {
             continue;
         }
@@ -444,15 +442,14 @@ pub struct CurveRenderParams {
     pub depressions_color: (u8, u8, u8),
 }
 
-/// Draw the contours onto `canvas` (when `draw_image`), and return the selected form
+/// Draw `contours` onto `canvas` (when `draw_image`), and return the selected form
 /// lines, None without form lines or with `nodepressions`. The `ground` model places the
 /// map and, with selective form lines, gives the local relief they are selected by.
 pub fn draw_curves(
-    fs: &impl FileSystem,
     params: &CurveRenderParams,
     canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
-    tmpfolder: &Path,
     ground: &HeightMap,
+    contours: &ContourSet,
     nodepressions: bool,
     draw_image: bool,
 ) -> Result<Option<BinaryDxf>, Box<dyn Error>> {
@@ -587,14 +584,8 @@ pub fn draw_curves(
         }
     }
 
-    // read the binary file
-
-    let input_dxf = BinaryDxf::from_reader(&mut fs.open(tmpfolder.join("out2.dxf.bin"))?)
-        .expect("Unable to read out2.dxf.bin");
-    let bounds = input_dxf.bounds().clone();
-    let Geometry::Polylines3(input_lines) = input_dxf.take_geometry().swap_remove(0) else {
-        return Err(anyhow::anyhow!("out2.dxf.bin does not contain polylines").into());
-    };
+    let bounds = contours.bounds.clone();
+    let input_lines = &contours.lines;
 
     let should_generate_formlines = selective && !nodepressions;
     let mut formlines = Polylines::<Point2, Classification>::new();
@@ -612,7 +603,8 @@ pub fn draw_curves(
             }
         })
         .collect::<Vec<_>>();
-    for (ii, (mut line, (layer, _height))) in input_lines.into_iter().enumerate() {
+    for (ii, (line, &(layer, _height))) in input_lines.iter().enumerate() {
+        let mut line = line.clone();
         if layer == Classification::SlopeLine && (!last_curve_drawn || !should_draw_next_slope_line)
         {
             should_draw_next_slope_line = true;

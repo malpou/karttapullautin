@@ -13,6 +13,7 @@ use crate::geometry::{
 };
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
+use crate::merge::ContourSet;
 use crate::vec2d::Vec2D;
 
 /// Parameters of the knoll stage: [`knolldetector`] picks the closed contours that become
@@ -166,27 +167,81 @@ impl Default for KnollParams {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Dotknolls {
-    pub dotknolls: Vec<Dotknoll>,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct Dotknoll {
+/// A dot knoll candidate: a small closed contour [`crate::merge::smoothjoin`] takes out
+/// of the contours, at the mean of its vertices. The `dotknolls.bin` debug intermediate
+/// holds a `Vec<DotKnollCandidate>`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DotKnollCandidate {
+    /// Its position in world coordinates.
     pub x: f64,
     pub y: f64,
+    /// A knoll; a small depression when false.
     pub is_knoll: bool,
 }
 
-/// Sorts smoothjoin's dot knolls (`dotknolls.bin`) into clean and ugly ones by their
-/// clearance from the contours in `out2.dxf.bin`, on the frame of `lifted`, the lifted
-/// ground model; writes `dotknolls.dxf.bin`.
-pub fn dotknolls(
+/// The debug intermediate of the [`DotKnollSet`]; `dotknolls.dxf`, its text DXF, is a
+/// DXF-family product.
+pub const DOT_KNOLLS_DUMP: &str = "dotknolls.dxf.bin";
+
+/// The dot knolls and small depressions [`dotknolls`] placed, each classed clean or ugly.
+#[derive(Debug, Clone)]
+pub struct DotKnollSet {
+    /// The points in world coordinates, classed [`Classification::Dotknoll`],
+    /// [`Classification::Udepression`] or their ugly variants.
+    pub points: Points,
+    /// The lifted ground model's extent as `xmax * size + xstart` (and likewise in y),
+    /// kept as the original wrote it.
+    pub bounds: Bounds,
+}
+
+impl DotKnollSet {
+    /// The `dotknolls.dxf.bin` debug intermediate.
+    pub fn to_bindxf(&self) -> BinaryDxf {
+        BinaryDxf::new(self.bounds.clone(), vec![self.points.clone().into()])
+    }
+
+    /// [`DotKnollSet::to_bindxf`] without copying the points.
+    pub fn into_bindxf(self) -> BinaryDxf {
+        BinaryDxf::new(self.bounds, vec![self.points.into()])
+    }
+
+    /// The dot knolls in `dotknolls.dxf.bin`, as [`DotKnollSet::to_bindxf`] writes them.
+    pub fn from_bindxf(dxf: BinaryDxf) -> anyhow::Result<Self> {
+        let bounds = dxf.bounds().clone();
+        match dxf.take_geometry().swap_remove(0) {
+            Geometry::Points(points) => Ok(Self { points, bounds }),
+            _ => anyhow::bail!("it holds no points"),
+        }
+    }
+}
+
+/// Write `dot_knolls` to `tmpfolder`: with `debug` the debug intermediate
+/// [`DOT_KNOLLS_DUMP`], with `output_dxf` the text DXF `dotknolls.dxf`.
+pub fn write_dot_knolls(
     fs: &impl FileSystem,
-    params: &KnollParams,
-    output_dxf: bool,
     tmpfolder: &Path,
-    lifted: &HeightMap,
+    dot_knolls: &DotKnollSet,
+    debug: bool,
+    output_dxf: bool,
 ) -> Result<(), Box<dyn Error>> {
+    crate::contours::write_dxf_files(
+        fs,
+        tmpfolder,
+        DOT_KNOLLS_DUMP,
+        &dot_knolls.to_bindxf(),
+        debug,
+        output_dxf,
+    )
+}
+
+/// Sorts smoothjoin's dot knoll `candidates` into clean and ugly ones by their clearance
+/// from `contours`, on the frame of `lifted`, the lifted ground model.
+pub fn dotknolls(
+    contours: &ContourSet,
+    candidates: &[DotKnollCandidate],
+    lifted: &HeightMap,
+    params: &KnollParams,
+) -> DotKnollSet {
     info!("Identifying dotknolls...");
 
     let pixel = params.dot_pixel_m;
@@ -207,12 +262,7 @@ pub fn dotknolls(
         Luma([0xff]),
     );
 
-    let data = BinaryDxf::from_reader(&mut fs.open(tmpfolder.join("out2.dxf.bin"))?)?;
-    let Geometry::Polylines3(lines) = data.take_geometry().swap_remove(0) else {
-        return Err(anyhow::anyhow!("out2.dxf.bin should contain polylines").into());
-    };
-
-    for (line, _) in lines.iter() {
+    for (line, _) in contours.lines.iter() {
         for i in 1..line.len() {
             draw_line_segment_mut(
                 &mut im,
@@ -231,12 +281,7 @@ pub fn dotknolls(
 
     let mut dotknoll_points = Points::new();
 
-    let dotknolls: Dotknolls =
-        crate::util::read_object(&mut fs.open(tmpfolder.join("dotknolls.bin"))?)?;
-
-    for dot in dotknolls.dotknolls {
-        let Dotknoll { x, y, is_knoll } = dot;
-
+    for &DotKnollCandidate { x, y, is_knoll } in candidates {
         let mut ok = true;
         let mut i = (x - xstart) / pixel - clearance;
         while i < (x - xstart) / pixel + (clearance + 1.0) && ok {
@@ -270,24 +315,11 @@ pub fn dotknolls(
         dotknoll_points.push(Point2::new(x, y), layer2);
     }
 
-    let dxf = BinaryDxf::new(
-        Bounds::new(xstart, xmax * size + xstart, ystart, ymax * size + ystart),
-        vec![dotknoll_points.into()],
-    );
-
-    // write binary
-    let mut f = fs
-        .create(tmpfolder.join("dotknolls.dxf.bin"))
-        .expect("Unable to create file");
-    dxf.to_writer(&mut f)
-        .expect("could not write dotknolls.dxf.bin");
-
-    if output_dxf {
-        dxf.to_dxf(&mut fs.create(tmpfolder.join("dotknolls.dxf"))?)?;
-    }
-
     info!("Done");
-    Ok(())
+    DotKnollSet {
+        points: dotknoll_points,
+        bounds: Bounds::new(xstart, xmax * size + xstart, ystart, ymax * size + ystart),
+    }
 }
 
 /// The ground model's debug intermediate that the knoll stage commands read
