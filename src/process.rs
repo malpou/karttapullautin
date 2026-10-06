@@ -406,18 +406,6 @@ pub fn process_tile(
         .expect("Could not copy file");
     }
 
-    if !(vegeonly || cliffsonly) {
-        contours::heightmap2contours(
-            fs,
-            tmpfolder,
-            config.knoll.candidate_interval_m,
-            &ground,
-            "contours03.dxf.bin", // dxf curves generated from the heightmap
-            config.outputs.dxf,
-        )
-        .expect("contour generation failed");
-    }
-
     // out.dxf.bin is traced at the levels smoothjoin reads it at
     let trace_interval = config.smoothjoin.levels().trace_interval;
 
@@ -434,61 +422,86 @@ pub fn process_tile(
             )
             .expect("contour generation failed");
         }
-        if !skipknolldetection {
-            info!("Knoll detection part 2");
-            timing.start_section("knoll detection part 2");
-            knolls::knolldetector(fs, &config.knoll, config.outputs.dxf, tmpfolder, &ground)
+        // the fine contours the knoll candidates come from; with skipknolldetection
+        // traced only for their debug dump
+        let candidates = if !skipknolldetection || config.debug_intermediates {
+            let candidates = contours::trace(&ground, config.knoll.candidate_interval_m);
+            if config.debug_intermediates {
+                let dxf = contours::contours_to_bindxf(&candidates, &ground);
+                contours::write_bindxf(
+                    fs,
+                    tmpfolder,
+                    knolls::CANDIDATES_DUMP,
+                    &dxf,
+                    config.outputs.dxf,
+                )
                 .map_err(|e| {
                     format!(
-                        "knoll detection (knolldetector) in {}: {e:#}",
+                        "knoll detection (knolldetector) in {}: {e}",
                         tmpfolder.display()
                     )
                 })?;
-        }
+            }
+            candidates
+        } else {
+            Vec::new()
+        };
+        let pins = if skipknolldetection {
+            Vec::new()
+        } else {
+            info!("Knoll detection part 2");
+            timing.start_section("knoll detection part 2");
+            let (detected, pins) = knolls::knolldetector(&ground, &candidates, &config.knoll);
+            if config.debug_intermediates {
+                knolls::write_detected(fs, tmpfolder, &detected, &pins, config.outputs.dxf)
+                    .map_err(|e| {
+                        format!(
+                            "knoll detection (knolldetector) in {}: {e}",
+                            tmpfolder.display()
+                        )
+                    })?;
+            }
+            pins
+        };
         info!("Contour generation part 1");
         timing.start_section("contour generation part 1");
-        // writes a lifted copy of the ground model to xyz_knolls.hmap
-        knolls::xyzknolls(fs, &config.knoll, tmpfolder, &ground).map_err(|e| {
-            format!(
-                "knoll lifting (xyzknolls) in {}: {e:#}",
-                tmpfolder.display()
-            )
-        })?;
+        // the lifted ground model; with skipknolldetection only flattened
+        let lifted = knolls::xyzknolls(&ground, &pins, &config.knoll);
+        if config.debug_intermediates {
+            lifted
+                .to_file(fs, tmpfolder.join(knolls::LIFTED_GROUND_DUMP))
+                .map_err(|e| {
+                    format!("knoll lifting (xyzknolls) in {}: {e}", tmpfolder.display())
+                })?;
+        }
 
         info!("Contour generation part 2");
         timing.start_section("contour generation part 2");
-        if !skipknolldetection {
-            // contours 2.5
-            let xyz_knolls = HeightMap::from_file(fs, tmpfolder.join("xyz_knolls.hmap"))
-                .expect("could not read xyz_knolls heightmap");
-            contours::heightmap2contours(
-                fs,
-                tmpfolder,
-                trace_interval,
-                &xyz_knolls,
-                "out.dxf.bin", // generates dxf curves
-                config.outputs.dxf,
-            )
-            .unwrap();
-        } else {
-            // the unlifted ground model: xyz2heightmap again would build the same one
-            contours::heightmap2contours(
-                fs,
-                tmpfolder,
-                trace_interval,
-                &ground,
-                "out.dxf.bin", // generate dxf curves
-                config.outputs.dxf,
-            )
-            .unwrap();
-        }
+        // with skipknolldetection out.dxf.bin is traced on the unlifted ground model,
+        // while smoothjoin and dotknolls read the flattened one
+        contours::heightmap2contours(
+            fs,
+            tmpfolder,
+            trace_interval,
+            if skipknolldetection { &ground } else { &lifted },
+            "out.dxf.bin", // generates dxf curves
+            config.outputs.dxf,
+        )
+        .unwrap();
         info!("Contour generation part 3");
         timing.start_section("contour generation part 3");
-        merge::smoothjoin(fs, &config.smoothjoin, config.outputs.dxf, tmpfolder).unwrap();
+        merge::smoothjoin(
+            fs,
+            &config.smoothjoin,
+            config.outputs.dxf,
+            tmpfolder,
+            &lifted,
+        )
+        .unwrap();
 
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
-        knolls::dotknolls(fs, &config.knoll, config.outputs.dxf, tmpfolder).unwrap();
+        knolls::dotknolls(fs, &config.knoll, config.outputs.dxf, tmpfolder, &lifted).unwrap();
 
         // The terrain reaches vector output as GeoJSON written next to its source: the
         // .dxf.bin files are intermediates.
@@ -1036,7 +1049,7 @@ pub fn batch_process(
         // the .dxf.bin crops: the batch merge's input for the merged DXF, and with the
         // dxf family each tile's DXF crop. The .dxf.bin crops are removed after the
         // batch unless debug_intermediates=1 (remove_batch_intermediates); contours03,
-        // which the merge does not read, and detected, the knoll candidates, are debug
+        // which the merge does not read, and detected, the knoll rings, are debug
         // only.
         if outputs.dxf || debug_intermediates {
             let out2_path = PathBuf::from(format!("temp{thread}/out2.dxf.bin"));

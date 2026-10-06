@@ -166,7 +166,8 @@ pub struct Contour {
     /// it was traced with.
     pub level_m: f64,
     /// The vertices; a closed ring repeats its first vertex at the end. The coordinates
-    /// are the producer's: grid cells from the tracer, world metres from a contour file.
+    /// are the producer's: grid cells from `grid2contours`, world metres (thinned) from
+    /// `trace` and from a contour file.
     pub line: Vec<Point2>,
 }
 

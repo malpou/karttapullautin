@@ -34,7 +34,9 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Slope line**: The tick that marks the downhill side of a contour. _Avoid_: tick, decoration
 **Knoll**: A closed high point large enough to be drawn as a contour.
 **Dot knoll**: A high point too small for a contour, drawn as a point symbol (ISOM 109). _Avoid_: dotknoll, 1010
-**Knoll lift**: Raising the ground model under a prominent small knoll so that it earns a contour.
+**Knoll lift**: Raising the ground model under each knoll pin so that the small knoll earns a contour.
+**Knoll pin**: A knoll that knoll detection kept, given as its ring and centre; the knoll lift raises the ground model inside the ring. _Avoid_: pin (alone), candidate
+**Lifted ground model**: The ground model after the knoll lift, smoothed where the local relief is small and raised under each knoll pin; smoothjoin and the dot knolls read it (`xyz_knolls.hmap` under `debug_intermediates`). _Avoid_: xyz_knolls
 **Ring**: A closed contour line, first vertex repeated last, tested for what it encloses. _Avoid_: polygon, closed polyline
 **Cliff**: An abrupt drop mapped as a line; passable or impassable by height (ISOM 201/202). _Avoid_: c2g, c3g, cliff2, cliff3
 

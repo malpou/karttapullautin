@@ -4,11 +4,10 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::contours::join_contours;
+use crate::contours::{contours_from_lines, join_contours};
 use crate::geometry::{
     BinaryDxf, Classification, ContourLevels, Geometry, Point2, Point3, Points, Polylines, Ring,
 };
-use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::mapframe::{IsomMinima, WorldFile};
@@ -520,11 +519,15 @@ impl SmoothJoinParams {
     }
 }
 
+/// Smooths and joins the contours in `out.dxf.bin`, classes them on `lifted`, the
+/// lifted ground model, and picks the dot knolls; writes `out2.dxf.bin` and
+/// `dotknolls.bin`.
 pub fn smoothjoin(
     fs: &impl FileSystem,
     params: &SmoothJoinParams,
     output_dxf: bool,
     tmpfolder: &Path,
+    lifted: &HeightMap,
 ) -> Result<(), Box<dyn Error>> {
     info!("Smooth curves...");
 
@@ -538,16 +541,13 @@ pub fn smoothjoin(
     } = params;
     let levels = params.levels();
 
-    let heightmap_in = tmpfolder.join("xyz_knolls.hmap");
-    let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
-
     // in world coordinates
-    let xstart = hmap.xoffset;
-    let ystart = hmap.yoffset;
-    let size = hmap.scale;
-    let xmax = (hmap.grid.width() - 1) as u64;
-    let ymax = (hmap.grid.height() - 1) as u64;
-    let xyz = hmap.grid;
+    let xstart = lifted.xoffset;
+    let ystart = lifted.yoffset;
+    let size = lifted.scale;
+    let xmax = (lifted.grid.width() - 1) as u64;
+    let ymax = (lifted.grid.height() - 1) as u64;
+    let xyz = &lifted.grid;
 
     let mut steepness = Vec2D::new((xmax + 1) as usize, (ymax + 1) as usize, f64::NAN);
 
@@ -586,7 +586,7 @@ pub fn smoothjoin(
 
     let mut dotknolls = Vec::new();
 
-    let joined = join_contours(&input_lines, usize::MAX);
+    let joined = join_contours(&contours_from_lines(&input_lines), usize::MAX);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
     let mut el_x: Vec<Vec<f64>> = joined
         .iter()

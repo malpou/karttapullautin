@@ -257,8 +257,15 @@ fn main() {
         }
 
         Command::DotKnolls => {
-            pullauta::knolls::dotknolls(&fs, &config.knoll, config.outputs.dxf, &tmpfolder)
-                .unwrap();
+            let lifted = or_exit(read_lifted_ground(&fs, &tmpfolder));
+            pullauta::knolls::dotknolls(
+                &fs,
+                &config.knoll,
+                config.outputs.dxf,
+                &tmpfolder,
+                &lifted,
+            )
+            .unwrap();
         }
 
         Command::DxfMerge => {
@@ -276,14 +283,11 @@ fn main() {
 
         Command::KnollDetector => {
             let ground = or_exit(read_ground(&fs, &tmpfolder.join(KNOLL_GROUND_DUMP)));
-            pullauta::knolls::knolldetector(
-                &fs,
-                &config.knoll,
-                config.outputs.dxf,
-                &tmpfolder,
-                &ground,
-            )
-            .unwrap();
+            let candidates = or_exit(read_candidates(&fs, &tmpfolder));
+            let (detected, pins) =
+                pullauta::knolls::knolldetector(&ground, &candidates, &config.knoll);
+            pullauta::knolls::write_detected(&fs, &tmpfolder, &detected, &pins, config.outputs.dxf)
+                .unwrap();
         }
 
         Command::MakeCliffs => {
@@ -394,13 +398,29 @@ fn main() {
         }
 
         Command::SmoothJoin => {
-            pullauta::merge::smoothjoin(&fs, &config.smoothjoin, config.outputs.dxf, &tmpfolder)
-                .unwrap();
+            let lifted = or_exit(read_lifted_ground(&fs, &tmpfolder));
+            pullauta::merge::smoothjoin(
+                &fs,
+                &config.smoothjoin,
+                config.outputs.dxf,
+                &tmpfolder,
+                &lifted,
+            )
+            .unwrap();
         }
 
         Command::XyzKnolls => {
             let ground = or_exit(read_ground(&fs, &tmpfolder.join(KNOLL_GROUND_DUMP)));
-            pullauta::knolls::xyzknolls(&fs, &config.knoll, &tmpfolder, &ground).unwrap();
+            // as in a tile run: with skipknolldetection there are no pins
+            let pins = if config.skipknolldetection {
+                Vec::new()
+            } else {
+                or_exit(read_pins(&fs, &tmpfolder))
+            };
+            let lifted = pullauta::knolls::xyzknolls(&ground, &pins, &config.knoll);
+            lifted
+                .to_file(&fs, tmpfolder.join(pullauta::knolls::LIFTED_GROUND_DUMP))
+                .unwrap();
         }
 
         #[cfg(feature = "shapefile")]
@@ -591,16 +611,59 @@ fn read_dump(
 /// `xyz2.hmap`), for the stage commands. A tile run writes both only with debug_intermediates=1: a missing one asks
 /// for the flag.
 fn read_ground(fs: &impl FileSystem, path: &Path) -> Result<HeightMap, String> {
+    read_debug_dump(fs, path, "ground model", || HeightMap::from_file(fs, path))
+}
+
+/// The lifted ground model dump (`xyz_knolls.hmap`), for smoothjoin and dotknolls.
+fn read_lifted_ground(fs: &impl FileSystem, tmpfolder: &Path) -> Result<HeightMap, String> {
+    let path = tmpfolder.join(pullauta::knolls::LIFTED_GROUND_DUMP);
+    read_debug_dump(fs, &path, "lifted ground model", || {
+        HeightMap::from_file(fs, &path)
+    })
+}
+
+/// The knoll candidate contours dump (`contours03.dxf.bin`), for knolldetector.
+fn read_candidates(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+) -> Result<Vec<pullauta::geometry::Contour>, String> {
+    let path = tmpfolder.join(pullauta::knolls::CANDIDATES_DUMP);
+    read_debug_dump(fs, &path, "knoll candidate contours", || {
+        let dxf = pullauta::geometry::BinaryDxf::from_reader(&mut fs.open(&path)?)?;
+        match dxf.take_geometry().swap_remove(0) {
+            pullauta::geometry::Geometry::Polylines3(lines) => {
+                Ok(pullauta::contours::contours_from_lines(&lines))
+            }
+            _ => Err(anyhow::anyhow!("it holds no 3D contour lines")),
+        }
+    })
+}
+
+/// The knoll pins dump (`pins.bin`), for xyzknolls.
+fn read_pins(fs: &impl FileSystem, tmpfolder: &Path) -> Result<Vec<pullauta::knolls::Pin>, String> {
+    let path = tmpfolder.join(pullauta::knolls::PINS_DUMP);
+    read_debug_dump(fs, &path, "knoll pins", || {
+        pullauta::util::read_object(fs.open(&path)?)
+    })
+}
+
+/// Read the debug dump at `path`, which holds the tile's `what`, with `read`. A tile run
+/// writes the dumps only with debug_intermediates=1: a missing one asks for the flag.
+fn read_debug_dump<T, E: std::fmt::Display>(
+    fs: &impl FileSystem,
+    path: &Path,
+    what: &str,
+    read: impl FnOnce() -> Result<T, E>,
+) -> Result<T, String> {
     if !fs.exists(path) {
         return Err(format!(
-            "cannot read the ground model: {} is missing. The stage commands read the tile's \
-             ground model from its debug intermediates: re-run the tile with \
+            "cannot read the {what}: {} is missing. The stage commands read the tile's \
+             {what} from its debug intermediates: re-run the tile with \
              debug_intermediates=1",
             path.display()
         ));
     }
-    HeightMap::from_file(fs, path)
-        .map_err(|e| format!("cannot read the ground model from {}: {e}", path.display()))
+    read().map_err(|e| format!("cannot read the {what} from {}: {e}", path.display()))
 }
 
 /// The ground model of a re-render (`render`, a shape-file zip, `pullauta` in a debug
@@ -789,6 +852,24 @@ mod tests {
         fs.create_dir_all("temp").unwrap();
         ground.to_file(&fs, path).unwrap();
         assert_eq!(read_ground(&fs, path).unwrap(), ground);
+    }
+
+    #[test]
+    fn knoll_stage_commands_ask_for_debug_intermediates_without_their_dumps() {
+        let fs = MemoryFileSystem::new();
+        let temp = Path::new("temp");
+        let errors = [
+            read_candidates(&fs, temp).unwrap_err(),
+            read_pins(&fs, temp).unwrap_err(),
+            read_lifted_ground(&fs, temp).unwrap_err(),
+        ];
+        for (err, dump) in errors
+            .iter()
+            .zip(["contours03.dxf.bin", "pins.bin", "xyz_knolls.hmap"])
+        {
+            assert!(err.contains(&format!("temp/{dump} is missing")), "{err}");
+            assert!(err.contains("debug_intermediates=1"), "{err}");
+        }
     }
 
     fn parse(args: &[&str]) -> Invocation {

@@ -9,9 +9,8 @@ use std::path::Path;
 
 use crate::contours::join_contours;
 use crate::geometry::{
-    BinaryDxf, Bounds, Classification, Geometry, Point2, Points, Polylines, Ring,
+    BinaryDxf, Bounds, Classification, Contour, Geometry, Point2, Points, Polylines, Ring,
 };
-use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::vec2d::Vec2D;
@@ -178,28 +177,29 @@ pub(crate) struct Dotknoll {
     pub is_knoll: bool,
 }
 
+/// Sorts smoothjoin's dot knolls (`dotknolls.bin`) into clean and ugly ones by their
+/// clearance from the contours in `out2.dxf.bin`, on the frame of `lifted`, the lifted
+/// ground model; writes `dotknolls.dxf.bin`.
 pub fn dotknolls(
     fs: &impl FileSystem,
     params: &KnollParams,
     output_dxf: bool,
     tmpfolder: &Path,
+    lifted: &HeightMap,
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying dotknolls...");
 
     let pixel = params.dot_pixel_m;
     let clearance = params.dot_clearance_px;
 
-    let heightmap_in = tmpfolder.join("xyz_knolls.hmap");
-    let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
-
     // in world coordinates
-    let xstart = hmap.xoffset;
-    let ystart = hmap.yoffset;
+    let xstart = lifted.xoffset;
+    let ystart = lifted.yoffset;
 
     // in grid coordinates
-    let xmax = (hmap.grid.width() - 1) as f64;
-    let ymax = (hmap.grid.height() - 1) as f64;
-    let size = hmap.scale;
+    let xmax = (lifted.grid.width() - 1) as f64;
+    let ymax = (lifted.grid.height() - 1) as f64;
+    let size = lifted.scale;
 
     let mut im = GrayImage::from_pixel(
         (xmax * size / pixel) as u32,
@@ -295,15 +295,23 @@ pub fn dotknolls(
 /// the same bytes.
 pub const KNOLL_GROUND_DUMP: &str = "xyz_03.hmap";
 
-/// Detects knolls on `ground` from the fine contours in `contours03.dxf.bin`; writes
-/// `detected.dxf.bin` and `pins.bin`.
+/// The debug intermediate of the fine contours knolldetector picks its candidates from.
+pub const CANDIDATES_DUMP: &str = "contours03.dxf.bin";
+/// The debug intermediate of the knoll rings knolldetector found ([`DetectedKnolls`]).
+pub const DETECTED_DUMP: &str = "detected.dxf.bin";
+/// The debug intermediate of the knoll pins knolldetector found ([`Pin`]).
+pub const PINS_DUMP: &str = "pins.bin";
+/// The debug intermediate of the lifted ground model ([`xyzknolls`]).
+pub const LIFTED_GROUND_DUMP: &str = "xyz_knolls.hmap";
+
+/// Detects knolls on `ground` from `contours`, the fine contours traced every
+/// `params.candidate_interval_m` ([`trace`](crate::contours::trace)). Returns the
+/// detected knoll rings and one [`Pin`] per knoll, for [`xyzknolls`].
 pub fn knolldetector(
-    fs: &impl FileSystem,
-    params: &KnollParams,
-    output_dxf: bool,
-    tmpfolder: &Path,
     ground: &HeightMap,
-) -> anyhow::Result<()> {
+    contours: &[Contour],
+    params: &KnollParams,
+) -> (DetectedKnolls, Vec<Pin>) {
     info!("Detecting knolls...");
     let halfinterval = params.trace_interval;
 
@@ -320,23 +328,11 @@ pub fn knolldetector(
     let xmax = (ground.grid.width() - 1) as u64;
     let ymax = (ground.grid.height() - 1) as u64;
 
-    let contours_in = tmpfolder.join("contours03.dxf.bin");
-    let data = fs
-        .open(&contours_in)
-        .map_err(anyhow::Error::from)
-        .and_then(|mut f| BinaryDxf::from_reader(&mut f))
-        .with_context(|| format!("reading {}", contours_in.display()))?;
-    let Geometry::Polylines3(lines) = data.take_geometry().swap_remove(0) else {
-        anyhow::bail!(
-            "contours03.dxf.bin holds no 3D contour lines: it is a stale temp file from another build; re-run the full pipeline"
-        );
-    };
-
     let detected_bounds = Bounds::new(xmin as f64, xmax as f64, ymin as f64, ymax as f64);
     let mut detected_lines = Polylines::<Point2, Classification>::new();
 
     // TODO; might need to lower to 200
-    let joined = join_contours(&lines, params.join_max_vertices);
+    let joined = join_contours(contours, params.join_max_vertices);
     // TODO: this is not very efficient (collecting all x and y separately into Vecs), but it means the logic further down can stay the same
     let mut el_x: Vec<Vec<f64>> = joined
         .iter()
@@ -348,7 +344,7 @@ pub fn knolldetector(
         .collect();
 
     let mut elevation: HashMap<u64, f64> = HashMap::default();
-    for l in 0..lines.len() {
+    for l in 0..contours.len() {
         let mut skip = false;
         let el_x_len = el_x[l].len();
         if el_x_len > 0 {
@@ -441,7 +437,7 @@ pub fn knolldetector(
         ytest: f64,
     }
     let mut heads = Vec::<Head>::new();
-    for l in 0..lines.len() {
+    for l in 0..contours.len() {
         if !el_x[l].is_empty() {
             if el_x[l].first() == el_x[l].last() && el_y[l].first() == el_y[l].last() {
                 heads.push(Head {
@@ -468,7 +464,7 @@ pub fn knolldetector(
         maxy: f64,
     }
     let mut bb: HashMap<usize, BoundingBox> = HashMap::default();
-    for l in 0..lines.len() {
+    for l in 0..contours.len() {
         let mut skip = false;
         if !el_x[l].is_empty() {
             let mut x = el_x[l].to_vec();
@@ -541,7 +537,7 @@ pub fn knolldetector(
     }
     let mut canditates = Vec::<Candidate>::new();
 
-    for l in 0..lines.len() {
+    for l in 0..contours.len() {
         let mut skip = true;
         if !el_x[l].is_empty() {
             let mut x = el_x[l].to_vec();
@@ -657,7 +653,7 @@ pub fn knolldetector(
 
     let mut pins = Vec::new();
 
-    for l in 0..lines.len() {
+    for l in 0..contours.len() {
         let mut skip = false;
         let ll = l as u64;
         let mut ltopid = 0;
@@ -734,51 +730,88 @@ pub fn knolldetector(
         }
     }
 
-    let detected_dxf = BinaryDxf::new(detected_bounds, vec![detected_lines.into()]);
-    let detected_out = tmpfolder.join("detected.dxf.bin");
-    fs.create(&detected_out)
-        .map_err(anyhow::Error::from)
-        .and_then(|mut f| detected_dxf.to_writer(&mut f))
-        .with_context(|| format!("writing {}", detected_out.display()))?;
+    info!("Done");
+    (
+        DetectedKnolls {
+            lines: detected_lines,
+            bounds: detected_bounds,
+        },
+        pins,
+    )
+}
 
-    if output_dxf {
-        let detected_out = tmpfolder.join("detected.dxf");
-        fs.create(&detected_out)
-            .map_err(anyhow::Error::from)
-            .and_then(|mut f| detected_dxf.to_dxf(&mut f))
-            .with_context(|| format!("writing {}", detected_out.display()))?;
-    }
-
-    // write pins to file
-    let pins_out = tmpfolder.join("pins.bin");
+/// Write knolldetector's debug intermediates to `tmpfolder`: `detected` to [`DETECTED_DUMP`]
+/// (and as text DXF with `output_dxf`) and `pins` to [`PINS_DUMP`].
+pub fn write_detected(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    detected: &DetectedKnolls,
+    pins: &[Pin],
+    output_dxf: bool,
+) -> Result<(), Box<dyn Error>> {
+    crate::contours::write_bindxf(
+        fs,
+        tmpfolder,
+        DETECTED_DUMP,
+        &detected.to_bindxf(),
+        output_dxf,
+    )?;
+    let pins_out = tmpfolder.join(PINS_DUMP);
     fs.create(&pins_out)
         .map_err(anyhow::Error::from)
         .and_then(|f| crate::util::write_object(f, &pins))
         .with_context(|| format!("writing {}", pins_out.display()))?;
-
-    info!("Done");
     Ok(())
 }
 
-/// Struct used to store temporary data about pins on disk
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Pin {
-    xx: f64,
-    yy: f64,
-    ele: f64,
-    ele2: f64,
-    xlist: Vec<f64>,
-    ylist: Vec<f64>,
+/// The knoll rings [`knolldetector`] found, for the `detected.dxf.bin` debug intermediate.
+#[derive(Debug, Clone)]
+pub struct DetectedKnolls {
+    /// Each knoll's ring, in world coordinates, classed [`Classification::Knoll1010`].
+    pub lines: Polylines<Point2, Classification>,
+    /// The ground model's extent in grid cells (0 to width - 1, 0 to height - 1), not in
+    /// world coordinates as the lines are: kept as the original wrote it.
+    pub bounds: Bounds,
 }
 
-/// Flattens a copy of `ground` and lifts it under the pins in `pins.bin`; writes the
-/// lifted ground model to `xyz_knolls.hmap`.
-pub fn xyzknolls(
-    fs: &impl FileSystem,
-    params: &KnollParams,
-    tmpfolder: &Path,
-    ground: &HeightMap,
-) -> anyhow::Result<()> {
+impl DetectedKnolls {
+    /// The `detected.dxf.bin` debug intermediate.
+    pub fn to_bindxf(&self) -> BinaryDxf {
+        BinaryDxf::new(self.bounds.clone(), vec![self.lines.clone().into()])
+    }
+}
+
+/// A knoll pin: one knoll that knoll detection kept, which [`xyzknolls`] lifts the
+/// ground model under. The `pins.bin` debug intermediate holds a `Vec<Pin>`.
+///
+/// The fields keep three quirks of the original, which the knoll lift depends on: the
+/// centre counts the first vertex more than once, `ele2` is not this knoll's own top,
+/// and the ring ends with its first vertex repeated more than once.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Pin {
+    /// The x of the knoll's centre, in world coordinates: the mean x of the closed ring
+    /// with its first vertex appended once more, so the first vertex counts three times.
+    pub xx: f64,
+    /// The y of the knoll's centre, the same mean as `xx` over the y coordinates.
+    pub yy: f64,
+    /// The level of the knoll's ring, in metres.
+    pub ele: f64,
+    /// The level of the top of the last knoll candidate knolldetector looked at, in
+    /// metres, not of this knoll's own top: the loop that tests the ring against every
+    /// candidate assigns the top of each in turn and keeps the last.
+    pub ele2: f64,
+    /// The x of the ring's vertices, in world coordinates: the closed ring (first vertex
+    /// repeated last) with its first vertex appended twice more.
+    pub xlist: Vec<f64>,
+    /// The y of the ring's vertices, in the same order and with the same repeats as
+    /// `xlist`.
+    pub ylist: Vec<f64>,
+}
+
+/// Flattens a copy of `ground` and lifts it under `pins` (the knoll lift). Returns the
+/// lifted ground model, which smoothjoin and dotknolls read. With no pins the copy is
+/// only flattened.
+pub fn xyzknolls(ground: &HeightMap, pins: &[Pin], params: &KnollParams) -> HeightMap {
     info!("Identifying knolls...");
     let interval = params.trace_interval;
 
@@ -820,17 +853,6 @@ pub fn xyzknolls(
         }
     }
 
-    // read pins from file if it exists
-    let pins_file_in = tmpfolder.join("pins.bin");
-    let pins: Vec<Pin> = if fs.exists(&pins_file_in) {
-        fs.open(&pins_file_in)
-            .map_err(anyhow::Error::from)
-            .and_then(crate::util::read_object)
-            .with_context(|| format!("reading {}", pins_file_in.display()))?
-    } else {
-        Vec::new()
-    };
-
     // compute closest distance from each pin to another pin
     let mut dist: HashMap<usize, f64> = HashMap::default();
     for (l, pin) in pins.iter().enumerate() {
@@ -856,7 +878,7 @@ pub fn xyzknolls(
         dist.insert(l, min);
     }
 
-    for (l, line) in pins.into_iter().enumerate() {
+    for (l, line) in pins.iter().cloned().enumerate() {
         let Pin {
             xx,
             yy,
@@ -951,14 +973,8 @@ pub fn xyzknolls(
         }
     }
 
-    // write the updated heightmap
-    let heightmap_out = tmpfolder.join("xyz_knolls.hmap");
-    fs.create(&heightmap_out)
-        .and_then(|mut f| xyz2.to_bytes(&mut f))
-        .with_context(|| format!("writing {}", heightmap_out.display()))?;
-
     info!("Done");
-    Ok(())
+    xyz2
 }
 
 /// Knoll-lift smoothing around one pin: adds `move2` to the (2 * range + 1)² cells centred on
@@ -995,7 +1011,6 @@ fn smooth_around_pin(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::fs::memory::MemoryFileSystem;
 
     /// The defaults are the original (Perl-port) constants.
     #[test]
@@ -1038,12 +1053,8 @@ mod tests {
         assert_eq!((p.level_clearance_m, p.dot_clearance_px), (0.02, 3.0));
     }
 
-    /// Run `knolldetector` on a 2 m ground model of `f(cell x, cell y)`, contoured at
-    /// 0.3 m as the pipeline does, and return its pins.
-    fn detect(f: impl Fn(f64, f64) -> f64) -> Vec<Pin> {
-        let fs = MemoryFileSystem::new();
-        let tmp = Path::new("tmp");
-        fs.create_dir_all(tmp).unwrap();
+    /// A 41 x 41 cell, 2 m ground model of `f(cell x, cell y)` at (1000 m, 2000 m).
+    fn ground(f: impl Fn(f64, f64) -> f64) -> HeightMap {
         let (w, h) = (41, 41);
         let mut grid = Vec2D::new(w, h, 0.0);
         for i in 0..w {
@@ -1051,16 +1062,20 @@ mod tests {
                 grid[(i, j)] = f(i as f64, j as f64);
             }
         }
-        let hmap = HeightMap {
+        HeightMap {
             xoffset: 1000.0,
             yoffset: 2000.0,
             scale: 2.0,
             grid,
-        };
-        crate::contours::heightmap2contours(&fs, tmp, 0.3, &hmap, "contours03.dxf.bin", false)
-            .unwrap();
-        knolldetector(&fs, &KnollParams::default(), false, tmp, &hmap).unwrap();
-        crate::util::read_object(fs.open(tmp.join("pins.bin")).unwrap()).unwrap()
+        }
+    }
+
+    /// Run `knolldetector` on `ground(f)`, contoured at 0.3 m as the pipeline does, and
+    /// return its pins.
+    fn detect(f: impl Fn(f64, f64) -> f64) -> Vec<Pin> {
+        let hmap = ground(f);
+        let candidates = crate::contours::trace(&hmap, 0.3);
+        knolldetector(&hmap, &candidates, &KnollParams::default()).1
     }
 
     /// A 1 m cone (radius 5 cells) on flat ground at 100 m is one knoll: one pin, at the
@@ -1084,6 +1099,85 @@ mod tests {
             100.0 - (1.0 - ((x - 20.0).powi(2) + (y - 20.0).powi(2)).sqrt() / 5.0).max(0.0)
         };
         assert!(detect(pit).is_empty());
+    }
+
+    /// With no pins `xyzknolls` only flattens: steep ground (3 m a cell) is left as it
+    /// is, and gently rolling ground is smoothed away from the border.
+    #[test]
+    fn xyzknolls_without_pins_only_flattens() {
+        let params = KnollParams::default();
+        let steep = ground(|x, _| 100.3 + 3.0 * x);
+        assert_eq!(xyzknolls(&steep, &[], &params).grid, steep.grid);
+
+        let rolling = ground(|x, y| 100.3 + if (x + y) % 2.0 == 0.0 { 0.1 } else { -0.1 });
+        let flat = xyzknolls(&rolling, &[], &params);
+        for (i, j, z) in flat.grid.iter() {
+            let border = i < 2 || j < 2 || i > 38 || j > 38;
+            if border {
+                assert_eq!(z, rolling.grid[(i, j)]);
+            } else {
+                assert!((z - 100.3).abs() < 0.05, "cell ({i}, {j}) at {z}");
+            }
+        }
+    }
+
+    /// A pin just below the next knoll level (102.2 m, levels every 2.5 m) gets a small
+    /// lift with no surround: the cells inside its ring rise by 1.25 m and no other
+    /// cell changes.
+    ///
+    /// The lift with the default params: the next level is 102.5 m, so it starts at
+    /// 0.3 m; + 0.15 m margin = 0.45 m. That is below the low-lift ratio (0.25 x 2.5 m =
+    /// 0.625 m), so the surround lift is 0 and 0.3 m low-lift extra is added; + 0.5 m
+    /// lift extra = 1.25 m. 102.4 m + 1.25 m stays below 105 m, so there is no overshoot
+    /// cut. Cells outside the ring are unchanged only because the surround lift is 0.
+    #[test]
+    fn xyzknolls_lifts_only_the_cells_inside_the_pin_ring() {
+        let params = KnollParams::default();
+        let flat = ground(|_, _| 102.2);
+        // a square ring around cell (20, 20), cells 16 to 24
+        let (xlist, ylist) = [
+            (1032.0, 2032.0),
+            (1048.0, 2032.0),
+            (1048.0, 2048.0),
+            (1032.0, 2048.0),
+        ]
+        .iter()
+        .chain(&[(1032.0, 2032.0)])
+        .copied()
+        .unzip();
+        let pin = Pin {
+            xx: 1040.0,
+            yy: 2040.0,
+            ele: 102.2,
+            ele2: 102.4,
+            xlist,
+            ylist,
+        };
+        let unlifted = xyzknolls(&flat, &[], &params);
+        let lifted = xyzknolls(&flat, &[pin], &params);
+        for (i, j, z) in lifted.grid.iter() {
+            let rise = z - unlifted.grid[(i, j)];
+            if (17..=23).contains(&i) && (17..=23).contains(&j) {
+                assert!((rise - 1.25).abs() < 1e-9, "cell ({i}, {j}) rose {rise}");
+            } else if !(16..=24).contains(&i) || !(16..=24).contains(&j) {
+                assert_eq!(rise, 0.0, "cell ({i}, {j}) outside the ring");
+            }
+        }
+    }
+
+    /// The pins of a cone lift its apex: the knoll stage end to end, without files.
+    #[test]
+    fn the_cone_pin_lifts_the_apex() {
+        let cone = |x: f64, y: f64| {
+            100.0 + (1.0 - ((x - 20.0).powi(2) + (y - 20.0).powi(2)).sqrt() / 5.0).max(0.0)
+        };
+        let params = KnollParams::default();
+        let hmap = ground(cone);
+        let pins = detect(cone);
+        let lifted = xyzknolls(&hmap, &pins, &params);
+        let unlifted = xyzknolls(&hmap, &[], &params);
+        assert!(lifted.grid[(20, 20)] > unlifted.grid[(20, 20)] + 1.0);
+        assert_eq!(lifted.grid[(1, 1)], unlifted.grid[(1, 1)]);
     }
 
     /// Range 1.5 visits x, y in {3.5, 4.5, 5.5, 6.5} around (5, 5): fractional coordinates.

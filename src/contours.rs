@@ -1,3 +1,4 @@
+use anyhow::Context;
 use log::info;
 use rustc_hash::FxHashMap as HashMap;
 use std::error::Error;
@@ -232,53 +233,50 @@ fn snap_level(h: f64, interval: f64) -> f64 {
     (h / interval + 0.5).floor() * interval
 }
 
-/// Join the lines of a contour file written by [`heightmap2contours`] end to end (see
-/// [`join_polylines`]). Returns one [`Contour`] per input line, in input order: a joined
-/// line keeps the level of the slot it grew from, and absorbed and dropped lines come
-/// back with an empty `line`.
-pub fn join_contours(
-    lines: &Polylines<Point3, (Classification, f64)>,
-    max_vertices: usize,
-) -> Vec<Contour> {
-    let mut flat = Polylines::<Point2, f64>::with_capacity(lines.len());
-    for (line, &(_, level_m)) in lines.iter() {
-        flat.push(
-            line.iter().map(|p| Point2::new(p.x, p.y)).collect(),
-            level_m,
-        );
+/// Join contour lines end to end (see [`join_polylines`]). Returns one [`Contour`] per
+/// input line, in input order: a joined line keeps the level of the slot it grew from,
+/// and absorbed and dropped lines come back with an empty `line`.
+pub fn join_contours(contours: &[Contour], max_vertices: usize) -> Vec<Contour> {
+    let mut flat = Polylines::<Point2, f64>::with_capacity(contours.len());
+    for c in contours {
+        flat.push(c.line.clone(), c.level_m);
     }
     join_polylines(&flat, max_vertices)
         .into_iter()
-        .zip(flat.iter())
-        .map(|(line, (_, &level_m))| Contour { level_m, line })
+        .zip(contours)
+        .map(|(line, c)| Contour {
+            level_m: c.level_m,
+            line,
+        })
         .collect()
 }
 
-/// Creates contour lines from a heightmap and writes them as [`Polylines3`](crate::geometry::Geometry::Polylines3)
-/// with each line's traced level as its height and every vertex's z.
-pub fn heightmap2contours(
-    fs: &impl FileSystem,
-    tmpfolder: &Path,
-    cinterval: f64,
-    heightmap: &HeightMap,
-    dxffile: &str,
-    output_dxf: bool,
-) -> Result<(), Box<dyn Error>> {
-    info!("Generating curves...");
-    let contours = grid2contours(&heightmap.grid, cinterval);
+/// The contours of a contour file's lines ([`contours_to_bindxf`]): each line's vertices
+/// without their z, at its traced level.
+pub fn contours_from_lines(lines: &Polylines<Point3, (Classification, f64)>) -> Vec<Contour> {
+    lines
+        .iter()
+        .map(|(line, &(_, level_m))| Contour {
+            level_m,
+            line: line.iter().map(|p| Point2::new(p.x, p.y)).collect(),
+        })
+        .collect()
+}
 
+/// Trace the contours of `heightmap` every `cinterval` metres ([`grid2contours`]), in
+/// world coordinates. Lines of more than 13 vertices are thinned: from the sixth vertex
+/// to the eighth from the end, the even-numbered ones (counting from 1) are dropped.
+pub fn trace(heightmap: &HeightMap, cinterval: f64) -> Vec<Contour> {
+    info!("Generating curves...");
     let xmin = heightmap.xoffset;
     let ymin = heightmap.yoffset;
-    let xmax = heightmap.maxx();
-    let ymax = heightmap.maxy();
     let size = heightmap.scale;
 
-    // convert the contours to our internal binary dxf format,
-    // including some thinning of the lines
-    let mut lines = Polylines::new();
-    for Contour { level_m, line } in contours.into_iter() {
-        lines.push(
-            line.iter()
+    grid2contours(&heightmap.grid, cinterval)
+        .into_iter()
+        .map(|Contour { level_m, line }| {
+            let line = line
+                .iter()
                 .enumerate()
                 .filter_map(|(i, p)| {
                     // original logic for some kind of "thinning" of the lines
@@ -292,26 +290,74 @@ pub fn heightmap2contours(
                     let x: f64 = p.x * size + xmin;
                     let y: f64 = p.y * size + ymin;
 
-                    Some(Point3::new(x, y, level_m))
+                    Some(Point2::new(x, y))
                 })
-                .collect::<Vec<_>>(),
-            (Classification::ContourSimple, level_m),
+                .collect();
+            Contour { level_m, line }
+        })
+        .collect()
+}
+
+/// A contour file of `contours` traced on `heightmap`: [`Polylines3`](crate::geometry::Geometry::Polylines3)
+/// with each line's traced level as its height and every vertex's z, bounded by the
+/// heightmap.
+pub fn contours_to_bindxf(contours: &[Contour], heightmap: &HeightMap) -> BinaryDxf {
+    let mut lines = Polylines::with_capacity(contours.len());
+    for Contour { level_m, line } in contours {
+        lines.push(
+            line.iter()
+                .map(|p| Point3::new(p.x, p.y, *level_m))
+                .collect(),
+            (Classification::ContourSimple, *level_m),
         );
     }
-    let dxf = BinaryDxf::new(Bounds::new(xmin, xmax, ymin, ymax), vec![lines.into()]);
+    let bounds = Bounds::new(
+        heightmap.xoffset,
+        heightmap.maxx(),
+        heightmap.yoffset,
+        heightmap.maxy(),
+    );
+    BinaryDxf::new(bounds, vec![lines.into()])
+}
 
-    // write to disk
-    let mut f = fs
-        .create(tmpfolder.join(dxffile))
-        .expect("Unable to create file");
-    dxf.to_writer(&mut f).expect("Cannot write binary dxf file");
+/// Write `dxf` to `tmpfolder/dxffile` (a `.dxf.bin` name) and, with `output_dxf`, as
+/// text DXF next to it.
+pub fn write_bindxf(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    dxffile: &str,
+    dxf: &BinaryDxf,
+    output_dxf: bool,
+) -> Result<(), Box<dyn Error>> {
+    let path = tmpfolder.join(dxffile);
+    fs.create(&path)
+        .map_err(anyhow::Error::from)
+        .and_then(|mut f| dxf.to_writer(&mut f))
+        .with_context(|| format!("writing {}", path.display()))?;
 
     if output_dxf {
-        dxf.to_dxf(&mut fs.create(tmpfolder.join(dxffile.strip_suffix(".bin").unwrap()))?)?;
+        let path = path.with_extension("");
+        fs.create(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|mut f| dxf.to_dxf(&mut f))
+            .with_context(|| format!("writing {}", path.display()))?;
     }
+    Ok(())
+}
 
+/// Traces the contours of `heightmap` ([`trace`]) and writes them to `tmpfolder/dxffile`
+/// ([`contours_to_bindxf`], [`write_bindxf`]).
+pub fn heightmap2contours(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    cinterval: f64,
+    heightmap: &HeightMap,
+    dxffile: &str,
+    output_dxf: bool,
+) -> Result<(), Box<dyn Error>> {
+    let dxf = contours_to_bindxf(&trace(heightmap, cinterval), heightmap);
+    write_bindxf(fs, tmpfolder, dxffile, &dxf, output_dxf)?;
     info!("Done");
-
     Ok(())
 }
 
@@ -890,16 +936,68 @@ mod tests {
         }
     }
 
+    /// The contours read back from a contour file are the traced ones, bit for bit: the
+    /// stage commands run knolldetector on the `contours03.dxf.bin` dump.
+    #[test]
+    fn contour_file_round_trips_the_traced_contours() {
+        let hmap = HeightMap {
+            xoffset: 1000.1,
+            yoffset: 2000.3,
+            scale: 2.6,
+            grid: grid(31, 31, |x, y| cone(15.0, 30.0)(x, y) + 0.3 * x),
+        };
+        let traced = trace(&hmap, 0.3);
+        assert!(traced.iter().any(|c| c.line.len() > 20), "no thinned line");
+        let fs = MemoryFileSystem::new();
+        let dxf = contours_to_bindxf(&traced, &hmap);
+        write_bindxf(&fs, Path::new(""), "c.dxf.bin", &dxf, false).unwrap();
+        let dxf = BinaryDxf::from_reader(&mut fs.open("c.dxf.bin").unwrap()).unwrap();
+        let crate::geometry::Geometry::Polylines3(lines) = dxf.take_geometry().swap_remove(0)
+        else {
+            panic!("contour files hold Polylines3")
+        };
+        assert_eq!(contours_from_lines(&lines), traced);
+    }
+
+    /// `trace` keeps the first five and last seven vertices of a line of more than 13
+    /// and every other one between them, in world coordinates.
+    #[test]
+    fn trace_thins_long_lines_and_moves_them_to_world_coordinates() {
+        let hmap = HeightMap {
+            xoffset: 100.0,
+            yoffset: 200.0,
+            scale: 2.0,
+            grid: grid(31, 31, |x, y| cone(15.0, 30.0)(x, y)),
+        };
+        let interval = 5.0;
+        for (grid_c, world_c) in grid2contours(&hmap.grid, interval)
+            .iter()
+            .zip(trace(&hmap, interval))
+        {
+            assert_eq!(grid_c.level_m, world_c.level_m);
+            let n = grid_c.line.len();
+            let kept: Vec<Point2> = grid_c
+                .line
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| n <= 13 || i < 5 || i + 7 >= n || i % 2 == 0)
+                .map(|(_, p)| Point2::new(p.x * 2.0 + 100.0, p.y * 2.0 + 200.0))
+                .collect();
+            assert_eq!(world_c.line, kept);
+        }
+    }
+
     #[test]
     fn joining_keeps_the_level_of_the_slot_it_grew_from() {
-        let mut lines = Polylines::new();
-        let seg = |a: (f64, f64), b: (f64, f64), h| {
-            vec![Point3::new(a.0, a.1, h), Point3::new(b.0, b.1, h)]
+        let seg = |a: (f64, f64), b: (f64, f64), h| Contour {
+            level_m: h,
+            line: vec![Point2::new(a.0, a.1), Point2::new(b.0, b.1)],
         };
-        let c = Classification::ContourSimple;
-        lines.push(seg((5.0, 5.0), (6.0, 5.0), 4.0), (c, 4.0));
-        lines.push(seg((0.0, 0.0), (1.0, 0.0), 3.0), (c, 3.0));
-        lines.push(seg((1.0, 0.0), (2.0, 0.0), 3.0), (c, 3.0));
+        let lines = [
+            seg((5.0, 5.0), (6.0, 5.0), 4.0),
+            seg((0.0, 0.0), (1.0, 0.0), 3.0),
+            seg((1.0, 0.0), (2.0, 0.0), 3.0),
+        ];
         let joined = join_contours(&lines, usize::MAX);
         assert_eq!(joined.len(), 3);
         assert_eq!(joined[0].level_m, 4.0);
@@ -924,7 +1022,7 @@ mod tests {
         let interval = 1.25;
         let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
         let mut found = 0;
-        for c in join_contours(&file, usize::MAX) {
+        for c in join_contours(&contours_from_lines(&file), usize::MAX) {
             if c.line.len() < 3 {
                 continue;
             }
@@ -940,7 +1038,7 @@ mod tests {
         let interval = 0.3;
         let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
         let mut found = 0;
-        for c in join_contours(&file, 201) {
+        for c in join_contours(&contours_from_lines(&file), 201) {
             if c.line.len() < 3 || c.line.len() > 121 || !closed(&c.line) {
                 continue;
             }
@@ -963,7 +1061,7 @@ mod tests {
         let g = grid(31, 31, |x, y| cone(15.0, 30.0)(x, y) + 0.3 * x);
         let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
         let mut nan = 0;
-        for c in join_contours(&file, usize::MAX) {
+        for c in join_contours(&contours_from_lines(&file), usize::MAX) {
             if c.line.len() < 3 {
                 continue;
             }
@@ -993,7 +1091,7 @@ mod tests {
         let g = grid(31, 31, surface);
         let file = contour_file(g.clone(), (frame.0, frame.1), frame.2, interval);
         let mut zero = 0;
-        for c in join_contours(&file, 201) {
+        for c in join_contours(&contours_from_lines(&file), 201) {
             if c.line.len() < 3 || c.line.len() > 121 || !closed(&c.line) {
                 continue;
             }
