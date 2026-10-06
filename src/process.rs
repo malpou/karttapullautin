@@ -367,134 +367,12 @@ pub fn process_tile(
 
     timing.start_section("preparing input file");
     info!("Preparing input file");
-
-    let filename = input_file
-        .file_name()
-        .ok_or_else(|| format!("No extension for input file {}", input_file.display()))?
-        .to_string_lossy()
-        .to_lowercase();
-
-    let target_file = tmpfolder.join("xyztemp.xyz.bin");
-
-    if filename.ends_with(".xyz") {
-        // if we are here we don't know if the file has at least 6 columns, but we assume that it is in the format
-        // x y z classification number_of_returns return_number
-
-        info!("Converting points from .xyz to internal binary format");
-
+    let returns = read_returns(fs, config, input_file, tile)?;
+    if config.debug_intermediates {
+        let target_file = tmpfolder.join("xyztemp.xyz.bin");
         debug!("Writing records to {:?}", target_file);
-        let mut writer =
-            XyzInternalWriter::new(fs.create(&target_file).expect("Could not create writer"));
-        read_lines_no_alloc(fs, input_file, |line| {
-            let mut parts = line.split(' ');
-            let x = parts.next().unwrap().parse::<f64>().unwrap();
-            let y = parts.next().unwrap().parse::<f64>().unwrap();
-            let z = parts.next().unwrap().parse::<f32>().unwrap();
-
-            let classification = parts
-                .next()
-                .map_or(LasClass::Ground.into(), |c| c.parse::<u8>().unwrap());
-            let number_of_returns = parts.next().unwrap_or("0").parse::<u8>().unwrap();
-            let return_number = parts.next().unwrap_or("0").parse::<u8>().unwrap();
-
-            writer
-                .write_records(&[crate::io::xyz::XyzRecord {
-                    x,
-                    y,
-                    z,
-                    classification,
-                    number_of_returns,
-                    return_number,
-                    ..Default::default()
-                }])
-                .expect("Could not write record");
-        })
-        .expect("Could not read file");
-        writer.finish().expect("Unable to finish writing");
-    } else if filename.ends_with(".laz") || filename.ends_with(".las") {
-        info!("Converting points from .laz/laz to internal binary format");
-        let &Config {
-            thinfactor,
-            xfactor,
-            yfactor,
-            zfactor,
-            zoff,
-            ..
-        } = config;
-
-        if thinfactor != 1.0 {
-            info!("Using thinning factor {thinfactor}");
-        }
-
-        let mut rng = thinning_rng(tile, tile);
-        let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
-
-        let options = las::ReaderOptions::default().with_laz_parallelism(if config.laz_parallel {
-            las::LazParallelism::Yes
-        } else {
-            las::LazParallelism::No
-        });
-        let mut reader =
-            Reader::with_options(fs.open(input_file).expect("Could not open file"), options)
-                .expect("Could not create reader");
-
-        debug!("Writing records to {:?}", target_file);
-        let mut writer =
-            XyzInternalWriter::new(fs.create(&target_file).expect("Could not create writer"));
-
-        let mut records = Vec::with_capacity(LAZ_BUFFER_SIZE);
-        let mut pd = PointDataBuilder::new().for_header(reader.header()).build();
-        loop {
-            let n = reader.fill_points(LAZ_BUFFER_SIZE as u64, &mut pd).unwrap();
-
-            if n == 0 {
-                break;
-            }
-
-            // convert all read points to records
-            records.clear();
-            for (
-                pt_x,
-                pt_y,
-                pt_z,
-                pt_classification,
-                pt_number_of_returns,
-                pt_return_number,
-                pt_flags,
-            ) in izip!(
-                pd.x(),
-                pd.y(),
-                pd.z(),
-                pd.classification(),
-                pd.number_of_returns(),
-                pd.return_number(),
-                las_flags(&pd)
-            ) {
-                if thinfactor == 1.0 || rng.sample(randdist) {
-                    records.push(crate::io::xyz::XyzRecord {
-                        x: pt_x * xfactor,
-                        y: pt_y * yfactor,
-                        z: (pt_z * zfactor + zoff) as f32,
-                        classification: pt_classification,
-                        number_of_returns: pt_number_of_returns,
-                        return_number: pt_return_number,
-                        flags: pt_flags,
-                    });
-                }
-            }
-
-            // write all at once
-            writer.write_records(&records)?;
-        }
-        writer.finish().expect("Unable to finish writing");
-    } else if filename.ends_with(".xyz.bin") {
-        info!("Copying input file");
-        fs.copy(input_file, target_file)
-            .expect("Could not copy file");
-    } else {
-        return Err(format!("Unsupported input file: {}", input_file.display()).into());
+        crate::io::xyz::write_all(fs.create(&target_file)?, &returns)?;
     }
-
     info!("Done");
 
     info!("Knoll detection part 1");
@@ -507,13 +385,7 @@ pub fn process_tile(
         ..
     } = config;
 
-    let xyz_03 = contours::xyz2heightmap(
-        fs,
-        config,
-        tmpfolder,
-        "xyztemp.xyz.bin", //point cloud in
-    )
-    .expect("contour generation failed");
+    let xyz_03 = contours::xyz2heightmap(&returns, &config.ground, config.water_class);
     xyz_03.to_file(fs, tmpfolder.join("xyz_03.hmap")).unwrap();
 
     if !(vegeonly || cliffsonly) {
@@ -589,8 +461,7 @@ pub fn process_tile(
             )
             .unwrap();
         } else {
-            let hmap = contours::xyz2heightmap(fs, config, tmpfolder, "xyztemp.xyz.bin")
-                .expect("could not generate heightmap");
+            let hmap = contours::xyz2heightmap(&returns, &config.ground, config.water_class);
             contours::heightmap2contours(
                 fs,
                 tmpfolder,
@@ -631,7 +502,7 @@ pub fn process_tile(
     if !cliffsonly && !contoursonly {
         info!("Vegetation generation");
         timing.start_section("vegetation generation");
-        let classes = vegetation::makevege(fs, &config.vegetation, tmpfolder).unwrap();
+        let classes = vegetation::makevege(fs, &config.vegetation, tmpfolder, &returns).unwrap();
         if config.outputs.vectorizes_vegetation() {
             vege_vector::export_all(fs, config, tmpfolder, &classes).unwrap();
         }
@@ -640,7 +511,15 @@ pub fn process_tile(
     if !vegeonly && !contoursonly {
         info!("Cliff generation");
         timing.start_section("cliff generation");
-        cliffs::makecliffs(fs, &config.cliff, config.outputs.dxf, tmpfolder, tile).unwrap();
+        cliffs::makecliffs(
+            fs,
+            &config.cliff,
+            config.outputs.dxf,
+            tmpfolder,
+            tile,
+            &returns,
+        )
+        .unwrap();
 
         if config.vector_tables() {
             geojson::bindxf_to_tables(
@@ -656,8 +535,10 @@ pub fn process_tile(
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");
         timing.start_section("detecting buildings");
-        blocks::blocks(fs, config, tmpfolder).unwrap();
+        blocks::blocks(fs, config, tmpfolder, &returns).unwrap();
     }
+    // rendering reads the stages' outputs, not the returns
+    drop(returns);
     // the map, or without the raster family the form lines alone (the renderer selects
     // them) when a vector family takes them
     let terrain = !vegeonly && !contoursonly && !cliffsonly;
@@ -704,6 +585,133 @@ pub fn process_tile(
     Ok(())
 }
 
+/// The returns of `input_file` (`.xyz`, `.las`, `.laz` or `.xyz.bin`), in file order: the
+/// order the `vegethin` counter and the `cliffthin` draws follow. LAS/LAZ points are
+/// scaled by `xfactor`, `yfactor` and `zfactor`, lifted by `zoff` and thinned by
+/// `thinfactor` with a generator seeded by `tile`.
+fn read_returns(
+    fs: &impl FileSystem,
+    config: &Config,
+    input_file: &Path,
+    tile: &str,
+) -> Result<Vec<XyzRecord>, Box<dyn Error>> {
+    let filename = input_file
+        .file_name()
+        .ok_or_else(|| format!("No extension for input file {}", input_file.display()))?
+        .to_string_lossy()
+        .to_lowercase();
+
+    let mut returns = Vec::new();
+    if filename.ends_with(".xyz") {
+        // if we are here we don't know if the file has at least 6 columns, but we assume that it is in the format
+        // x y z classification number_of_returns return_number
+
+        info!("Reading points from .xyz");
+        read_lines_no_alloc(fs, input_file, |line| {
+            let mut parts = line.split(' ');
+            let x = parts.next().unwrap().parse::<f64>().unwrap();
+            let y = parts.next().unwrap().parse::<f64>().unwrap();
+            let z = parts.next().unwrap().parse::<f32>().unwrap();
+
+            let classification = parts
+                .next()
+                .map_or(LasClass::Ground.into(), |c| c.parse::<u8>().unwrap());
+            let number_of_returns = parts.next().unwrap_or("0").parse::<u8>().unwrap();
+            let return_number = parts.next().unwrap_or("0").parse::<u8>().unwrap();
+
+            returns.push(XyzRecord {
+                x,
+                y,
+                z,
+                classification,
+                number_of_returns,
+                return_number,
+                ..Default::default()
+            });
+        })
+        .expect("Could not read file");
+    } else if filename.ends_with(".laz") || filename.ends_with(".las") {
+        info!("Reading points from .las/.laz");
+        let &Config {
+            thinfactor,
+            xfactor,
+            yfactor,
+            zfactor,
+            zoff,
+            ..
+        } = config;
+
+        if thinfactor != 1.0 {
+            info!("Using thinning factor {thinfactor}");
+        }
+
+        let mut rng = thinning_rng(tile, tile);
+        let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
+
+        let options = las::ReaderOptions::default().with_laz_parallelism(if config.laz_parallel {
+            las::LazParallelism::Yes
+        } else {
+            las::LazParallelism::No
+        });
+        let mut reader =
+            Reader::with_options(fs.open(input_file).expect("Could not open file"), options)
+                .expect("Could not create reader");
+
+        if thinfactor == 1.0 {
+            returns.reserve_exact(reader.header().number_of_points() as usize);
+        }
+        let mut pd = PointDataBuilder::new().for_header(reader.header()).build();
+        loop {
+            let n = reader.fill_points(LAZ_BUFFER_SIZE as u64, &mut pd).unwrap();
+
+            if n == 0 {
+                break;
+            }
+
+            for (
+                pt_x,
+                pt_y,
+                pt_z,
+                pt_classification,
+                pt_number_of_returns,
+                pt_return_number,
+                pt_flags,
+            ) in izip!(
+                pd.x(),
+                pd.y(),
+                pd.z(),
+                pd.classification(),
+                pd.number_of_returns(),
+                pd.return_number(),
+                las_flags(&pd)
+            ) {
+                if thinfactor == 1.0 || rng.sample(randdist) {
+                    returns.push(XyzRecord {
+                        x: pt_x * xfactor,
+                        y: pt_y * yfactor,
+                        z: (pt_z * zfactor + zoff) as f32,
+                        classification: pt_classification,
+                        number_of_returns: pt_number_of_returns,
+                        return_number: pt_return_number,
+                        flags: pt_flags,
+                    });
+                }
+            }
+        }
+    } else if filename.ends_with(".xyz.bin") {
+        info!("Reading points from .xyz.bin");
+        returns = crate::io::xyz::read_all(fs.open(input_file)?)?;
+    } else {
+        return Err(format!("Unsupported input file: {}", input_file.display()).into());
+    }
+    if returns.is_empty() {
+        return Err(format!("no returns in {}", input_file.display()).into());
+    }
+    // the returns are held through every stage: no growth slack
+    returns.shrink_to_fit();
+    Ok(returns)
+}
+
 pub fn batch_process(
     conf: &Config,
     fs: &impl FileSystem,
@@ -742,25 +750,20 @@ pub fn batch_process(
             maxy,
         } = file_to_process.header.bounds;
 
-        // we need to move the input points from the staging to our own temporary folder
-        let tmp_filename = PathBuf::from(format!("temp{thread}.xyz.bin"));
-        debug!(
-            "Moving input file {} -> {}",
-            file_to_process.staging_path.display(),
-            tmp_filename.display()
-        );
-        fs.rename(&file_to_process.staging_path, &tmp_filename)
-            .expect("Could not move file to temporary folder");
-
         // every tile starts from an empty folder: finish_tile_folder removes it, and
         // one left by a failed tile or an older build is cleared here
         let tmpfolder = PathBuf::from(format!("temp{thread}"));
         clear_tile_folder(fs, &tmpfolder).expect("Could not clear the tile's temp folder");
 
         // Process the tile
-        if let Err(e) = process_tile(fs, conf, thread, &tmpfolder, &tmp_filename, laz, has_zip) {
+        // the tile's returns, buffered from its neighbours, are staged by launch_threads
+        let staged = &file_to_process.staging_path;
+        if let Err(e) = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip) {
             panic!("processing tile {laz} failed: {e}");
         }
+        // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
+        fs.remove_file(staged)
+            .expect("Could not remove the staged point file");
 
         if has_zip && !vegeonly && !cliffsonly && !contoursonly {
             if outputs.raster {
@@ -1115,9 +1118,9 @@ pub fn clear_tile_folder(fs: &impl FileSystem, tmpfolder: &Path) -> std::io::Res
 /// Clear a batch tile's working files once its outputs are in the batch output folder,
 /// so the next tile on `thread` starts from an empty temp folder. With `debug`
 /// (debug_intermediates=1) the folder `temp{thread}` is moved to `temp_{laz}_dir` and
-/// the rest is kept; otherwise it is removed with the tile's point file
-/// `temp{thread}.xyz.bin` and the map's working copies `pullautus{thread}.*` and
-/// `pullautus_depr{thread}.*`, already cropped into the output folder.
+/// the rest is kept; otherwise it is removed with the map's working copies
+/// `pullautus{thread}.*` and `pullautus_depr{thread}.*`, already cropped into the output
+/// folder.
 fn finish_tile_folder(
     fs: &impl FileSystem,
     thread: &str,
@@ -1134,7 +1137,7 @@ fn finish_tile_folder(
             }
         }
     } else {
-        let mut files = vec![format!("temp{thread}.xyz.bin")];
+        let mut files = Vec::new();
         for map in [
             format!("pullautus{thread}"),
             format!("pullautus_depr{thread}"),
@@ -1180,19 +1183,24 @@ fn is_tile_product(name: &str, outputs: Outputs, vege_bitmode: bool) -> bool {
                 || (vege_bitmode && ["vegetation_bit.png", "undergrowth_bit.png"].contains(&name))))
 }
 
-/// Leave only the products of `outputs` ([`is_tile_product`]) in a single tile's temp
-/// folder, unless `debug` (debug_intermediates=1) keeps everything.
+/// Leave only the products ([`is_tile_product`]) in a single tile's temp folder, unless
+/// `debug` (debug_intermediates=1) keeps everything. `input`, the name of the file or
+/// folder in `tmpfolder` that holds the run's input (such as `xyztemp.xyz.bin`), is kept.
 pub fn prune_tile_folder(
     fs: &impl FileSystem,
     tmpfolder: &Path,
     debug: bool,
     outputs: Outputs,
     vege_bitmode: bool,
+    input: Option<&std::ffi::OsStr>,
 ) -> std::io::Result<()> {
     if debug {
         return Ok(());
     }
     for path in fs.list(tmpfolder)? {
+        if input.is_some() && path.file_name() == input {
+            continue;
+        }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         if is_tile_product(&name, outputs, vege_bitmode) {
             continue;
@@ -1290,7 +1298,6 @@ mod test {
     /// A batch tile's working files on thread 1, as process_tile and the crop leave them.
     fn tile_working_files(fs: &MemoryFileSystem) {
         for path in [
-            "temp1.xyz.bin",
             "temp1/xyz2.hmap",
             "temp1/out2.dxf.bin",
             "temp1/contours.geojson",
@@ -1329,7 +1336,6 @@ mod test {
             names(&fs, "temp_tile_dir"),
             ["contours.geojson", "out2.dxf.bin", "xyz2.hmap"]
         );
-        assert!(fs.exists("temp1.xyz.bin"));
         assert!(fs.exists("pullautus1.png"));
     }
 
@@ -1365,13 +1371,13 @@ mod test {
             touch(&fs, &format!("temp/{name}"));
         }
 
-        prune_tile_folder(&fs, Path::new("temp"), true, Outputs::ALL, false).unwrap();
+        prune_tile_folder(&fs, Path::new("temp"), true, Outputs::ALL, false, None).unwrap();
         assert_eq!(
             names(&fs, "temp").len(),
             products.len() + intermediates.len()
         );
 
-        prune_tile_folder(&fs, Path::new("temp"), false, Outputs::ALL, false).unwrap();
+        prune_tile_folder(&fs, Path::new("temp"), false, Outputs::ALL, false, None).unwrap();
         assert_eq!(names(&fs, "temp"), products);
     }
 
@@ -1392,7 +1398,7 @@ mod test {
                 dxf,
                 geojson,
             };
-            prune_tile_folder(&fs, Path::new("temp"), false, outputs, false).unwrap();
+            prune_tile_folder(&fs, Path::new("temp"), false, outputs, false, None).unwrap();
             names(&fs, "temp")
         };
         assert_eq!(kept(false, false, true), ["contours.geojson"]);
@@ -1401,6 +1407,25 @@ mod test {
             kept(true, false, false),
             ["vegetation.pgw", "vegetation.png"]
         );
+    }
+
+    #[test]
+    fn pruning_keeps_the_runs_input() {
+        let fs = MemoryFileSystem::new();
+        for name in ["xyztemp.xyz.bin", "xyz2.hmap", "out2.dxf"] {
+            touch(&fs, &format!("temp/{name}"));
+        }
+        let input = std::ffi::OsStr::new("xyztemp.xyz.bin");
+        prune_tile_folder(
+            &fs,
+            Path::new("temp"),
+            false,
+            Outputs::ALL,
+            false,
+            Some(input),
+        )
+        .unwrap();
+        assert_eq!(names(&fs, "temp"), ["out2.dxf", "xyztemp.xyz.bin"]);
     }
 
     #[test]

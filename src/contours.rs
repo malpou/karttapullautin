@@ -3,13 +3,12 @@ use rustc_hash::FxHashMap as HashMap;
 use std::error::Error;
 use std::path::Path;
 
-use crate::config::Config;
 use crate::geometry::{
     BinaryDxf, Bounds, Classification, Contour, Point2, Point3, Polylines, join_polylines,
 };
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::io::xyz::{LasClass, XyzInternalReader};
+use crate::io::xyz::{LasClass, XyzRecord};
 use crate::vec2d::Vec2D;
 
 /// Parameters of [`xyz2heightmap`], which grids the ground returns into the ground model.
@@ -19,15 +18,11 @@ pub struct GroundParams {
     pub cell_size_m: f64,
 }
 
-/// Create a heightmap from a point cloud file.
+/// Create the ground model from the tile's returns.
 ///
-/// Loads all the points and uses those that are classified as ground or water to create a heightmap using averages.
-pub fn xyz2heightmap(
-    fs: &impl FileSystem,
-    config: &Config,
-    tmpfolder: &Path,
-    xyzfilein: &str, // this should be point cloud in
-) -> Result<HeightMap, Box<dyn Error>> {
+/// The grid covers every return; the ground returns and those of `water_class` give
+/// each cell the mean of their elevations, and the empty cells are interpolated.
+pub fn xyz2heightmap(returns: &[XyzRecord], ground: &GroundParams, water_class: u8) -> HeightMap {
     info!("Generating heightmap...");
 
     // read all points to find the bounding box
@@ -40,42 +35,37 @@ pub fn xyz2heightmap(
     let mut hmin: f64 = f64::MAX;
     let mut hmax: f64 = f64::MIN;
 
-    let xyz_file_in = tmpfolder.join(xyzfilein);
-    let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?)?;
-    while let Some(chunk) = reader.next_chunk()? {
-        for r in chunk {
-            let x: f64 = r.x;
-            let y: f64 = r.y;
-            let h: f64 = r.z as f64;
+    for r in returns {
+        let x: f64 = r.x;
+        let y: f64 = r.y;
+        let h: f64 = r.z as f64;
 
-            if xmin > x {
-                xmin = x;
-            }
+        if xmin > x {
+            xmin = x;
+        }
 
-            if xmax < x {
-                xmax = x;
-            }
+        if xmax < x {
+            xmax = x;
+        }
 
-            if ymin > y {
-                ymin = y;
-            }
+        if ymin > y {
+            ymin = y;
+        }
 
-            if ymax < y {
-                ymax = y;
-            }
+        if ymax < y {
+            ymax = y;
+        }
 
-            if hmin > h {
-                hmin = h;
-            }
+        if hmin > h {
+            hmin = h;
+        }
 
-            if hmax < h {
-                hmax = h;
-            }
+        if hmax < h {
+            hmax = h;
         }
     }
-    drop(reader);
 
-    let scale = config.ground.cell_size_m;
+    let scale = ground.cell_size_m;
 
     // align bounding box to a grid with the required scale
     let xmin = (xmin / scale).floor() * scale;
@@ -89,28 +79,22 @@ pub fn xyz2heightmap(
     // a two-dimensional vector of (sum, count) pairs for computing averages
     let mut list_alt = Vec2D::new(w, h, (0f64, 0usize));
 
-    let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?)?;
+    for r in returns {
+        if r.class() == LasClass::Ground || r.classification == water_class {
+            let x: f64 = r.x;
+            let y: f64 = r.y;
+            let h: f64 = r.z as f64;
 
-    while let Some(chunk) = reader.next_chunk()? {
-        for r in chunk {
-            if r.class() == LasClass::Ground || r.classification == config.water_class {
-                let x: f64 = r.x;
-                let y: f64 = r.y;
-                let h: f64 = r.z as f64;
+            // +0.5 rounding can push a point on xmax/ymax to idx == w/h.
+            // Note: local h is elevation (f64) and shadows grid height — use list_alt dims.
+            let idx_x = heightmap_grid_index(x, xmin, scale, list_alt.width());
+            let idx_y = heightmap_grid_index(y, ymin, scale, list_alt.height());
 
-                // +0.5 rounding can push a point on xmax/ymax to idx == w/h.
-                // Note: local h is elevation (f64) and shadows grid height — use list_alt dims.
-                let idx_x = heightmap_grid_index(x, xmin, scale, list_alt.width());
-                let idx_y = heightmap_grid_index(y, ymin, scale, list_alt.height());
-
-                let (sum, count) = &mut list_alt[(idx_x, idx_y)];
-                *sum += h;
-                *count += 1;
-            }
+            let (sum, count) = &mut list_alt[(idx_x, idx_y)];
+            *sum += h;
+            *count += 1;
         }
     }
-
-    drop(reader);
 
     let mut avg_alt = Vec2D::new(w, h, f64::NAN);
 
@@ -223,14 +207,12 @@ pub fn xyz2heightmap(
         }
     }
 
-    let hmap = HeightMap {
+    HeightMap {
         xoffset: xmin,
         yoffset: ymin,
         scale,
         grid: avg_alt,
-    };
-
-    Ok(hmap)
+    }
 }
 
 /// Map a world coordinate to a heightmap cell index.
@@ -638,6 +620,41 @@ fn check_obj_in(
 #[cfg(test)]
 mod tests {
     use crate::contours;
+
+    #[test]
+    fn ground_model_is_the_mean_of_ground_and_water_returns_per_cell() {
+        use crate::contours::{GroundParams, xyz2heightmap};
+        use crate::io::xyz::XyzRecord;
+        let ret = |x, y, z, classification| XyzRecord {
+            x,
+            y,
+            z,
+            classification,
+            ..Default::default()
+        };
+        let returns = [
+            ret(0.0, 0.0, 10.0, 2),
+            ret(0.4, 0.2, 12.0, 2),
+            // high vegetation: inside the grid, but its 100 m reach no cell
+            ret(2.0, 0.0, 100.0, 5),
+            ret(4.0, 0.0, 5.0, 9),
+            ret(4.2, 0.1, 7.0, 2),
+        ];
+        let ground = GroundParams { cell_size_m: 2.0 };
+
+        let hmap = xyz2heightmap(&returns, &ground, 9);
+        assert_eq!((hmap.xoffset, hmap.yoffset, hmap.scale), (0.0, 0.0, 2.0));
+        // x 0..4.2 snaps out to 0..6, y 0..0.2 to 0..2: 4 x 2 cells
+        assert_eq!((hmap.grid.width(), hmap.grid.height()), (4, 2));
+        assert_eq!(hmap.grid[(0, 0)], 11.0);
+        assert_eq!(hmap.grid[(2, 0)], 6.0);
+        // the empty cell between them is interpolated, not the vegetation return
+        assert_eq!(hmap.grid[(1, 0)], 8.5);
+
+        // with another water class the class-9 return is ignored too
+        let hmap = xyz2heightmap(&returns, &ground, 0);
+        assert_eq!(hmap.grid[(2, 0)], 7.0);
+    }
 
     #[test]
     fn test_heightmap_grid_index_clamps_edge() {

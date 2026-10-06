@@ -243,7 +243,8 @@ fn main() {
         }
 
         Command::Blocks => {
-            pullauta::blocks::blocks(&fs, &config, &tmpfolder).unwrap();
+            let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
+            pullauta::blocks::blocks(&fs, &config, &tmpfolder, &returns).unwrap();
         }
 
         Command::DotKnolls => {
@@ -270,14 +271,24 @@ fn main() {
         }
 
         Command::MakeCliffs => {
+            let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
             // no tile name here: the `cliffthin` seed is the empty name
-            pullauta::cliffs::makecliffs(&fs, &config.cliff, config.outputs.dxf, &tmpfolder, "")
-                .unwrap();
+            pullauta::cliffs::makecliffs(
+                &fs,
+                &config.cliff,
+                config.outputs.dxf,
+                &tmpfolder,
+                "",
+                &returns,
+            )
+            .unwrap();
         }
 
         Command::MakeVege => {
+            let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
             let classes =
-                pullauta::vegetation::makevege(&fs, &config.vegetation, &tmpfolder).unwrap();
+                pullauta::vegetation::makevege(&fs, &config.vegetation, &tmpfolder, &returns)
+                    .unwrap();
             if config.outputs.vectorizes_vegetation() {
                 pullauta::vege_vector::export_all(&fs, &config, &tmpfolder, &classes).unwrap();
             }
@@ -386,8 +397,9 @@ fn main() {
             let xyzfilein = args[1].clone();
             let xyzfileout = args[2].clone();
             let dxffile = args[3].clone();
+            let returns = or_exit(read_dump(&fs, &tmpfolder.join(&xyzfilein), false));
             let hmap =
-                pullauta::contours::xyz2heightmap(&fs, &config, &tmpfolder, &xyzfilein).unwrap();
+                pullauta::contours::xyz2heightmap(&returns, &config.ground, config.water_class);
 
             if xyzfileout != "null" && !xyzfileout.is_empty() {
                 hmap.to_file(&fs, xyzfileout).unwrap();
@@ -451,7 +463,7 @@ fn main() {
 
                 debug!("Done");
 
-                pullauta::process::process_tile(
+                or_exit(pullauta::process::process_tile(
                     &fs,
                     &config,
                     &thread,
@@ -459,14 +471,14 @@ fn main() {
                     Path::new("input.laz"),
                     &tile,
                     norender,
-                )
-                .unwrap();
+                ));
                 pullauta::process::prune_tile_folder(
                     &fs,
                     &tmpfolder,
                     config.debug_intermediates,
                     config.outputs,
                     config.vege_bitmode,
+                    None,
                 )
                 .unwrap();
 
@@ -486,15 +498,19 @@ fn main() {
                 }
             } else {
                 // start from an empty temp folder, unless the input point file is in it
-                // (such as temp/xyztemp.xyz.bin kept by debug_intermediates=1)
+                // (such as temp/xyztemp.xyz.bin kept by debug_intermediates=1); then the
+                // prune keeps it too: the file, or the folder in temp/ that holds it
                 let input_in_temp = fs::canonicalize(&input)
                     .ok()
                     .zip(fs::canonicalize(&tmpfolder).ok())
-                    .is_some_and(|(input, temp)| input.starts_with(temp));
-                if !input_in_temp {
+                    .and_then(|(input, temp)| {
+                        let first = input.strip_prefix(temp).ok()?.components().next()?;
+                        Some(first.as_os_str().to_owned())
+                    });
+                if input_in_temp.is_none() {
                     pullauta::process::clear_tile_folder(&fs, &tmpfolder).unwrap();
                 }
-                pullauta::process::process_tile(
+                or_exit(pullauta::process::process_tile(
                     &fs,
                     &config,
                     &thread,
@@ -502,14 +518,14 @@ fn main() {
                     Path::new(&input),
                     &tile,
                     norender,
-                )
-                .unwrap();
+                ));
                 pullauta::process::prune_tile_folder(
                     &fs,
                     &tmpfolder,
                     config.debug_intermediates,
                     config.outputs,
                     config.vege_bitmode,
+                    input_in_temp.as_deref(),
                 )
                 .unwrap();
             }
@@ -517,6 +533,30 @@ fn main() {
 
         Command::Unknown => {}
     }
+}
+
+/// The returns in the `.xyz.bin` file `path`, for the stage commands. `debug_dump` is
+/// set for the implicit `temp/xyztemp.xyz.bin`, which a tile run writes only with
+/// debug_intermediates=1: a missing one asks for the flag.
+fn read_dump(
+    fs: &impl FileSystem,
+    path: &Path,
+    debug_dump: bool,
+) -> Result<Vec<pullauta::io::xyz::XyzRecord>, String> {
+    if !fs.exists(path) {
+        return Err(if debug_dump {
+            format!(
+                "cannot read the returns: {} is missing. The stage commands read the tile's \
+                 returns from its debug intermediates: re-run the tile with debug_intermediates=1",
+                path.display()
+            )
+        } else {
+            format!("{} is missing", path.display())
+        });
+    }
+    fs.open(path)
+        .and_then(pullauta::io::xyz::read_all)
+        .map_err(|e| format!("cannot read the returns from {}: {e}", path.display()))
 }
 
 /// The value, or exit with the error: for an error the user can act on, such as
@@ -653,6 +693,28 @@ fn is_las(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stage_commands_read_the_dump_or_ask_for_debug_intermediates() {
+        let fs = MemoryFileSystem::new();
+        let path = Path::new("temp/xyztemp.xyz.bin");
+        let err = read_dump(&fs, path, true).unwrap_err();
+        assert!(err.contains("temp/xyztemp.xyz.bin is missing"), "{err}");
+        assert!(err.contains("debug_intermediates=1"), "{err}");
+
+        let record = pullauta::io::xyz::XyzRecord {
+            x: 1.0,
+            classification: 2,
+            ..Default::default()
+        };
+        fs.create_dir_all("temp").unwrap();
+        pullauta::io::xyz::write_all(fs.create(path).unwrap(), &[record, record]).unwrap();
+        assert_eq!(read_dump(&fs, path, true).unwrap(), [record, record]);
+
+        // a file the user named is just missing
+        let err = read_dump(&fs, Path::new("temp/named.xyz.bin"), false).unwrap_err();
+        assert_eq!(err, "temp/named.xyz.bin is missing");
+    }
 
     fn parse(args: &[&str]) -> Invocation {
         Invocation::parse(args.iter().map(|a| a.to_string()).collect())

@@ -9,7 +9,7 @@ use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
 use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
-use crate::io::xyz::{LasClass, XyzInternalReader};
+use crate::io::xyz::{LasClass, XyzRecord};
 use crate::util::cliff_thinning_rng;
 use crate::vec2d::Vec2D;
 
@@ -56,14 +56,15 @@ pub struct CliffParams {
     pub dash_half_length_m: f64,
 }
 
-/// `tile` (the tile name) seeds the `cliffthin` sampling; `output_dxf` also writes the
-/// `.dxf` next to each `.dxf.bin`.
+/// `tile` (the tile name) seeds the `cliffthin` sampling, which draws once per return in
+/// `returns` order; `output_dxf` also writes the `.dxf` next to each `.dxf.bin`.
 pub fn makecliffs(
     fs: &impl FileSystem,
     params: &CliffParams,
     output_dxf: bool,
     tmpfolder: &Path,
     tile: &str,
+    returns: &[XyzRecord],
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying cliffs...");
 
@@ -137,23 +138,18 @@ pub fn makecliffs(
         Vec::<(f64, f64, f64)>::new(),
     );
 
-    let xyz_file_in = tmpfolder.join("xyztemp.xyz.bin");
-
     let mut rng = cliff_thinning_rng(tile);
     let randdist = rand::distr::Bernoulli::new(cliff_thin).unwrap();
 
-    let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?)?;
-    while let Some(chunk) = reader.next_chunk()? {
-        for r in chunk {
-            if cliff_thin == 1.0 || rng.sample(randdist) {
-                let (x, y, h) = (r.x, r.y, r.z as f64);
-                if r.class() == LasClass::Ground {
-                    list_alt[(
-                        ((x - xmin).floor() / bin_m) as usize,
-                        ((y - ymin).floor() / bin_m) as usize,
-                    )]
-                        .push((x, y, h));
-                }
+    for r in returns {
+        if cliff_thin == 1.0 || rng.sample(randdist) {
+            let (x, y, h) = (r.x, r.y, r.z as f64);
+            if r.class() == LasClass::Ground {
+                list_alt[(
+                    ((x - xmin).floor() / bin_m) as usize,
+                    ((y - ymin).floor() / bin_m) as usize,
+                )]
+                    .push((x, y, h));
             }
         }
     }

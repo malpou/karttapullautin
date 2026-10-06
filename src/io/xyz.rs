@@ -225,26 +225,56 @@ pub struct XyzInternalReader<R: Read> {
     buffer: [XyzRecord; 1024],
 }
 
+/// Read and check the header of an `.xyz.bin` file: the magic number and the number of
+/// records. Version 1 files (`XYZB`) are rejected with a hint to regenerate them.
+fn read_header(inner: &mut impl Read) -> std::io::Result<u64> {
+    let mut buff = [0; XYZ_MAGIC.len()];
+    inner.read_exact(&mut buff)?;
+    if &buff == b"XYZB" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            ".xyz.bin version 1 was written by an older build; regenerate it from the LAS/LAZ file",
+        ));
+    }
+    if &buff != XYZ_MAGIC {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("not an .xyz.bin file: magic {buff:?}, expected {XYZ_MAGIC:?}"),
+        ));
+    }
+
+    // the number of records, defined by the first u64
+    u64::from_bytes(inner)
+}
+
+/// Read every return of an `.xyz.bin` file, in file order.
+pub fn read_all(mut inner: impl Read) -> std::io::Result<Vec<XyzRecord>> {
+    let n_records = read_header(&mut inner)?;
+    // grow with the records actually read, so a corrupt count (an unfinished writer
+    // leaves u64::MAX) ends in UnexpectedEof instead of a huge allocation
+    const CHUNK: u64 = 1 << 16;
+    let mut records = Vec::new();
+    let mut left = n_records;
+    while left > 0 {
+        let start = records.len();
+        records.resize(start + CHUNK.min(left) as usize, XyzRecord::default());
+        inner.read_exact(bytemuck::cast_slice_mut(&mut records[start..]))?;
+        left -= (records.len() - start) as u64;
+    }
+    records.shrink_to_fit();
+    Ok(records)
+}
+
+/// Write `records` as an `.xyz.bin` file that [`read_all`] reads back.
+pub fn write_all<W: Write + Seek>(inner: W, records: &[XyzRecord]) -> std::io::Result<W> {
+    let mut writer = XyzInternalWriter::new(inner);
+    writer.write_records(records)?;
+    writer.finish()
+}
+
 impl<R: Read> XyzInternalReader<R> {
     pub fn new(mut inner: R) -> std::io::Result<Self> {
-        // read and check the magic number
-        let mut buff = [0; XYZ_MAGIC.len()];
-        inner.read_exact(&mut buff)?;
-        if &buff == b"XYZB" {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                ".xyz.bin version 1 was written by an older build; regenerate it from the LAS/LAZ file",
-            ));
-        }
-        if &buff != XYZ_MAGIC {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("not an .xyz.bin file: magic {buff:?}, expected {XYZ_MAGIC:?}"),
-            ));
-        }
-
-        // read the number of records, defined by the first u64
-        let n_records = u64::from_bytes(&mut inner)?;
+        let n_records = read_header(&mut inner)?;
         Ok(Self {
             inner,
             n_records,
@@ -378,6 +408,57 @@ mod test {
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("older build"), "{err}");
         assert!(err.to_string().contains("regenerate"), "{err}");
+    }
+
+    #[test]
+    fn read_all_round_trips_write_all_in_order() {
+        let records: Vec<XyzRecord> = (0..2500)
+            .map(|i| XyzRecord {
+                x: i as f64 + 0.25,
+                y: -(i as f64),
+                z: i as f32 * 0.5,
+                classification: (i % 19) as u8,
+                number_of_returns: (i % 5) as u8,
+                return_number: (i % 3) as u8,
+                flags: (i % 8) as u8,
+            })
+            .collect();
+        let data = write_all(Cursor::new(Vec::new()), &records)
+            .unwrap()
+            .into_inner();
+        assert_eq!(read_all(Cursor::new(&data)).unwrap(), records);
+
+        // the bytes of the chunked writer, which the batch staging writes
+        let mut writer = XyzInternalWriter::new(Cursor::new(Vec::new()));
+        for chunk in records.chunks(1000) {
+            writer.write_records(chunk).unwrap();
+        }
+        assert_eq!(writer.finish().unwrap().into_inner(), data);
+    }
+
+    #[test]
+    fn read_all_rejects_version_1_files_and_unfinished_ones() {
+        let mut data = b"XYZB".to_vec();
+        0u64.to_bytes(&mut data).unwrap();
+        let err = read_all(Cursor::new(data)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("regenerate"), "{err}");
+
+        // a count no file holds: an unfinished writer's u64::MAX, or a corrupt one
+        for count in [u64::MAX, 1_000_000_000] {
+            let mut data = XYZ_MAGIC.to_vec();
+            count.to_bytes(&mut data).unwrap();
+            data.extend_from_slice(bytemuck::bytes_of(&XyzRecord::default()));
+            let err = read_all(Cursor::new(data)).unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+        }
+
+        // fewer records than the header names
+        let mut data = XYZ_MAGIC.to_vec();
+        2u64.to_bytes(&mut data).unwrap();
+        data.extend_from_slice(bytemuck::bytes_of(&XyzRecord::default()));
+        let err = read_all(Cursor::new(data)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 
     #[test]

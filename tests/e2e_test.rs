@@ -594,12 +594,13 @@ fn batch_with_osm_vectorconf() {
     // every table cropped, merged and combined in out/
     assert_eq!(assert_schema_conformance(&dir), 3 * IsomTable::ALL.len());
 
-    // debug_intermediates=0: no tile temp folder, point file, working copy of the map
-    // or .dxf.bin file is left
+    // debug_intermediates=0: no tile temp folder, point file (old or staged), working
+    // copy of the map or .dxf.bin file is left
     for name in [
         "temp1",
         "temp_test_file_dir",
         "temp1.xyz.bin",
+        "temp_staging/test_file.xyz.bin",
         "pullautus1.png",
         "pullautus_depr1.png",
         "merged.dxf.bin",

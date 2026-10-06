@@ -10,14 +10,15 @@ use crate::io::{
     bytes::FromToBytes,
     fs::FileSystem,
     heightmap::HeightMap,
-    xyz::{LasClass, XyzInternalReader, XyzRecord},
+    xyz::{LasClass, XyzRecord},
 };
 
-/// Draws the returns [`is_block`] picks as blocks; `config.water_class` names the water class.
+/// Draws the `returns` [`is_block`] picks as blocks; `config.water_class` names the water class.
 pub fn blocks(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
+    returns: &[XyzRecord],
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying blocks...");
 
@@ -37,36 +38,32 @@ pub fn blocks(
     let black = Rgb([0, 0, 0]);
     let white = Rgba([255, 255, 255, 255]);
 
-    let xyz_file_in = tmpfolder.join("xyztemp.xyz.bin");
-    let mut reader = XyzInternalReader::new(fs.open(&xyz_file_in)?).unwrap();
-    while let Some(chunk) = reader.next_chunk().unwrap() {
-        for r in chunk {
-            let (x, y) = (r.x, r.y);
+    for r in returns {
+        let (x, y) = (r.x, r.y);
 
-            let xx = ((x - xstartxyz) / size).floor() as usize;
-            let yy = ((y - ystartxyz) / size).floor() as usize;
-            let ground = hmap.grid.get((xx, yy)).copied().unwrap_or(0.0);
-            if is_block(r, config.water_class, ground) {
-                draw_filled_rect_mut(
-                    &mut img,
-                    Rect::at(
-                        (x - xstartxyz - 1.0) as i32,
-                        (ystartxyz + 2.0 * ymax as f64 - y - 1.0) as i32,
-                    )
-                    .of_size(3, 3),
-                    black,
-                );
-            } else {
-                draw_filled_rect_mut(
-                    &mut img2,
-                    Rect::at(
-                        (x - xstartxyz - 1.0) as i32,
-                        (ystartxyz + 2.0 * ymax as f64 - y - 1.0) as i32,
-                    )
-                    .of_size(3, 3),
-                    white,
-                );
-            }
+        let xx = ((x - xstartxyz) / size).floor() as usize;
+        let yy = ((y - ystartxyz) / size).floor() as usize;
+        let ground = hmap.grid.get((xx, yy)).copied().unwrap_or(0.0);
+        if is_block(r, config.water_class, ground) {
+            draw_filled_rect_mut(
+                &mut img,
+                Rect::at(
+                    (x - xstartxyz - 1.0) as i32,
+                    (ystartxyz + 2.0 * ymax as f64 - y - 1.0) as i32,
+                )
+                .of_size(3, 3),
+                black,
+            );
+        } else {
+            draw_filled_rect_mut(
+                &mut img2,
+                Rect::at(
+                    (x - xstartxyz - 1.0) as i32,
+                    (ystartxyz + 2.0 * ymax as f64 - y - 1.0) as i32,
+                )
+                .of_size(3, 3),
+                white,
+            );
         }
     }
 
