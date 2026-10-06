@@ -39,6 +39,8 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Knoll pin**: A knoll that knoll detection kept, given as its ring and centre; the knoll lift raises the ground model inside the ring. _Avoid_: pin (alone), candidate
 **Lifted ground model**: The ground model after the knoll lift, smoothed where the local relief is small and raised under each knoll pin; smoothjoin and the dot knolls read it (`xyz_knolls.hmap` under `debug_intermediates`). _Avoid_: xyz_knolls
 **Ring**: A closed contour line, first vertex repeated last, tested for what it encloses. _Avoid_: polygon, closed polyline
+**Geomorphon**: A cell's pattern of eight line-of-sight readings over the ground model, each direction higher, lower or level within a flatness threshold, out to a search radius in metres (Jasiewicz and Stepinski 2013; `geomorphons::Pattern`). _Avoid_: ternary pattern, LBP
+**Landform**: One of the ten classes a geomorphon maps to: flat, peak, ridge, shoulder, spur, slope, hollow, footslope, valley, pit (`geomorphons::Landform`). Spurs and hollows are where a form line may be needed. _Avoid_: terrain class, form
 **Cliff**: An abrupt drop mapped as a line; passable or impassable by height (ISOM 201/202). _Avoid_: c2g, c3g, cliff2, cliff3
 
 ### Vegetation

@@ -12,6 +12,7 @@ pub mod crs;
 pub mod eval;
 pub mod geojson;
 pub mod geometry;
+pub mod geomorphons;
 pub mod io;
 pub mod isom;
 pub mod knolls;
