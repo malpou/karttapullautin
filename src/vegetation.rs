@@ -627,7 +627,7 @@ pub struct VegetationRasters {
     /// `vege_bitmode`).
     pub undergrowth_bit: GrayImage,
     /// The water and buildings (`blueblack.png`, debug; the map draws it from
-    /// [`MapRasters::layers`]).
+    /// [`VegetationRasters::layers`]).
     pub blueblack: PalettedImage,
     /// With `vege_bitmode`: the one-channel green shades (`greens_bit.png`, debug), open
     /// land (`yellow_bit.png`, debug) and both (`vegetation_bit.png`).
@@ -641,29 +641,6 @@ pub struct VegetationRasters {
 }
 
 impl VegetationRasters {
-    /// The rasters the map is drawn on, dropping the rest.
-    pub fn into_map_rasters(self) -> MapRasters {
-        MapRasters {
-            vegetation: self.vegetation,
-            undergrowth: self.undergrowth,
-            blueblack: self.blueblack,
-            frame: self.frame,
-            palette: self.palette,
-        }
-    }
-}
-
-/// The vegetation rasters the map is drawn on, paletted, as [`VegetationRasters`] drew
-/// them.
-pub struct MapRasters {
-    vegetation: PalettedImage,
-    undergrowth: PalettedImage,
-    blueblack: PalettedImage,
-    frame: VegetationFrame,
-    palette: Palette,
-}
-
-impl MapRasters {
     /// The layers the map is drawn on: `vegetation`, `undergrowth` and `blueblack` in the
     /// colours their PNGs decode to.
     pub fn layers(&self) -> crate::render::VegetationLayers {
@@ -1330,7 +1307,7 @@ mod tests {
         let decoded = |name: &str| fs.read_image_png(tmp.join(name)).unwrap().to_rgba8();
 
         let frame = rasters.frame;
-        let layers = rasters.into_map_rasters().layers();
+        let layers = rasters.layers();
         assert!(decoded("vegetation.png") == layers.vegetation);
         assert!(decoded("undergrowth.png") == layers.undergrowth);
         assert!(Some(decoded("blueblack.png")) == layers.water_buildings);

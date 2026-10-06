@@ -117,14 +117,14 @@ impl CliffSet {
     }
 }
 
-/// Write `cliffs` to `tmpfolder`: with `debug` the debug intermediates [`PASSABLE_DUMP`],
-/// [`IMPASSABLE_DUMP`] and `passable_raster` as [`PASSABLE_RASTER_DUMP`], with
-/// `output_dxf` the text DXFs `c2g.dxf` and `c3g.dxf`.
+/// Write `cliffs` to `tmpfolder`: with `debug` the debug intermediates [`PASSABLE_DUMP`]
+/// and [`IMPASSABLE_DUMP`], with `output_dxf` the text DXFs `c2g.dxf` and `c3g.dxf`, and
+/// the `passable_raster` given as [`PASSABLE_RASTER_DUMP`] (also a debug intermediate).
 pub fn write_cliffs(
     fs: &impl FileSystem,
     tmpfolder: &Path,
     cliffs: &CliffSet,
-    passable_raster: &RgbImage,
+    passable_raster: Option<&RgbImage>,
     debug: bool,
     output_dxf: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -134,7 +134,7 @@ pub fn write_cliffs(
     ] {
         crate::contours::write_dxf_files(fs, tmpfolder, name, &dxf, debug, output_dxf)?;
     }
-    if debug {
+    if let Some(passable_raster) = passable_raster {
         let path = tmpfolder.join(PASSABLE_RASTER_DUMP);
         fs.create(&path)
             .map_err(anyhow::Error::from)
@@ -658,17 +658,17 @@ mod tests {
         let tmp = Path::new("tmp");
         let fs = MemoryFileSystem::new();
         fs.create_dir_all(tmp).unwrap();
-        write_cliffs(&fs, tmp, &cliffs, &raster, false, false).unwrap();
+        write_cliffs(&fs, tmp, &cliffs, None, false, false).unwrap();
         assert!(fs.list(tmp).unwrap().is_empty());
 
-        write_cliffs(&fs, tmp, &cliffs, &raster, false, true).unwrap();
+        write_cliffs(&fs, tmp, &cliffs, None, false, true).unwrap();
         let mut names: Vec<_> = fs.list(tmp).unwrap();
         names.sort();
         assert_eq!(names, [tmp.join("c2g.dxf"), tmp.join("c3g.dxf")]);
 
         let fs = MemoryFileSystem::new();
         fs.create_dir_all(tmp).unwrap();
-        write_cliffs(&fs, tmp, &cliffs, &raster, true, false).unwrap();
+        write_cliffs(&fs, tmp, &cliffs, Some(&raster), true, false).unwrap();
         let mut names: Vec<_> = fs.list(tmp).unwrap();
         names.sort();
         assert_eq!(

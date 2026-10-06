@@ -372,7 +372,6 @@ fn main() {
                 &tmpfolder,
                 &loaded.map_inputs(),
                 &zips,
-                false,
                 // a re-render works on the debug intermediates: the shape layers join them
                 true,
             ));

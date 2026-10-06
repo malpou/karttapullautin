@@ -1,10 +1,11 @@
 use anyhow::Context;
+
 use image::{GrayImage, Luma, Rgb, RgbImage, Rgba, RgbaImage};
 use itertools::izip;
 use las::{PointData, PointDataBuilder, Reader};
 use log::debug;
 use log::info;
-use log::warn;
+
 use rand::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::hash_map::Entry;
@@ -20,6 +21,7 @@ use crate::contours;
 use crate::crop;
 use crate::formlines::{self, FormLineSelection};
 use crate::geojson;
+use crate::geometry::BinaryDxf;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::LasClass;
@@ -293,36 +295,6 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
     Ok(())
 }
 
-/// Classify the returns into the vegetation model and write what `config` asks of it:
-/// the vegetation rasters with the raster family or `debug` (which also writes the
-/// helper rasters), and the vegetation vectors with a vector family. The rasters the map
-/// is drawn on, when drawn, are returned.
-pub fn make_vegetation(
-    fs: &impl FileSystem,
-    config: &Config,
-    tmpfolder: &Path,
-    ground: &HeightMap,
-    returns: &[XyzRecord],
-    debug: bool,
-) -> Result<Option<vegetation::MapRasters>, Box<dyn Error>> {
-    let model = vegetation::makevege(ground, returns, &config.vegetation);
-    let mut rasters = None;
-    if config.outputs.raster || debug {
-        let drawn = vegetation::rasterise_vegetation(&model, &config.vegetation);
-        vegetation::write_vegetation(fs, tmpfolder, &drawn, debug)?;
-        rasters = Some(drawn.into_map_rasters());
-    }
-    if config.outputs.vectorizes_vegetation() {
-        let areas = vege_vector::vectorise_vegetation(
-            &model,
-            &config.vector_greenshade_isom,
-            config.vector_simplify,
-        );
-        vege_vector::write_vegetation_areas(fs, config, tmpfolder, &areas)?;
-    }
-    Ok(rasters)
-}
-
 /// Renders the map of `inputs` with the depressions (`nodepressions` false) or without
 /// and writes it as `pullautus_depr{thread}` or `pullautus{thread}`.
 pub fn render_map(
@@ -341,9 +313,8 @@ pub fn render_map(
     )
 }
 
-/// Selects the form lines of `contours` on `ground` and writes them to `tmpfolder`: the
-/// dump with `debug`, the DXF and the GeoJSON with their families. None without form
-/// lines.
+/// Selects the form lines of `contours` on `ground` and writes them to `tmpfolder`
+/// ([`write_form_line_products`]). None without form lines.
 pub fn make_form_lines(
     fs: &impl FileSystem,
     config: &Config,
@@ -352,22 +323,63 @@ pub fn make_form_lines(
     contours: &ContourSet,
     debug: bool,
 ) -> Result<Option<FormLineSelection>, Box<dyn Error>> {
-    let Some(selection) = formlines::select_form_lines(contours, ground, &config.form_lines) else {
-        return Ok(None);
-    };
-    formlines::write_form_lines(fs, tmpfolder, &selection, debug, config.outputs.dxf)?;
+    let selection = formlines::select_form_lines(contours, ground, &config.form_lines);
+    if let Some(selection) = &selection {
+        write_form_line_products(fs, config, tmpfolder, selection, debug)?;
+    }
+    Ok(selection)
+}
+
+/// Writes the form line `selection` to `tmpfolder`: the dump with `debug`, the DXF and
+/// the GeoJSON with their families.
+fn write_form_line_products(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    selection: &FormLineSelection,
+    debug: bool,
+) -> Result<(), Box<dyn Error>> {
+    formlines::write_form_lines(fs, tmpfolder, selection, debug, config.outputs.dxf)?;
     // As for contours: 103.000 in the contours table is this selected set, not the
     // half-interval lines.
     if config.vector_tables() {
-        geojson::write_form_line_tables(fs, tmpfolder, &selection, config.epsg)?;
+        geojson::write_form_line_tables(fs, tmpfolder, selection, config.epsg)?;
     }
-    Ok(Some(selection))
+    Ok(())
 }
 
-/// Renders the shape files in `filenames` (or, in a batch, the ones already unzipped)
-/// and the map of the tile in `tmpfolder` from `inputs` with them. With `debug` the
-/// shape files' layers are also written to `tmpfolder`.
-#[allow(clippy::too_many_arguments)]
+/// The shape files' layers of the map of the tile in `tmpfolder`, drawn in `frame`: the
+/// shape files in `filenames`, unzipped into `tmpfolder` first, or without `filenames`
+/// (a batch) the ones already unzipped. With `debug` the layers are also written to
+/// `tmpfolder`.
+fn shape_layers(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    frame: vegetation::VegetationFrame,
+    filenames: &[String],
+    debug: bool,
+) -> Option<render::ShapeLayers> {
+    #[cfg(feature = "shapefile")]
+    {
+        if !filenames.is_empty() {
+            info!("Rendering shape files");
+            crate::shapefile::unzip_and_render(fs, config, tmpfolder, filenames, Some(frame), debug)
+                .unwrap()
+        } else {
+            crate::shapefile::render(fs, config, tmpfolder, Some(frame), true, debug).unwrap()
+        }
+    }
+    #[cfg(not(feature = "shapefile"))]
+    {
+        let _ = (fs, config, tmpfolder, frame, filenames, debug);
+        None
+    }
+}
+
+/// Renders the shape files in `filenames` and the map of the tile in `tmpfolder` from
+/// `inputs` with them. With `debug` the shape files' layers are also written to
+/// `tmpfolder`.
 pub fn process_zip(
     fs: &impl FileSystem,
     config: &Config,
@@ -375,28 +387,13 @@ pub fn process_zip(
     tmpfolder: &Path,
     inputs: &render::MapInputs,
     filenames: &[String],
-    batch: bool,
     debug: bool,
 ) -> Result<(), Box<dyn Error>> {
     render::check_raster(config)?;
     let mut timing = Timing::start_now("process_zip");
-    #[cfg(feature = "shapefile")]
-    let shapes = {
-        let frame = Some(inputs.vegetation.frame());
-        if !batch && !filenames.is_empty() {
-            info!("Rendering shape files");
-            timing.start_section("unzip and render shape files");
-            crate::shapefile::unzip_and_render(fs, config, tmpfolder, filenames, frame, debug)
-                .unwrap()
-        } else {
-            crate::shapefile::render(fs, config, tmpfolder, frame, true, debug).unwrap()
-        }
-    };
-    #[cfg(not(feature = "shapefile"))]
-    let shapes = {
-        let _ = (filenames, batch, debug);
-        None
-    };
+    timing.start_section("unzip and render shape files");
+    let frame = inputs.vegetation.frame();
+    let shapes = shape_layers(fs, config, tmpfolder, frame, filenames, debug);
     let inputs = &render::MapInputs {
         shapes: shapes.as_ref(),
         ..*inputs
@@ -413,8 +410,8 @@ pub fn process_zip(
     Ok(())
 }
 
-/// The terrain values of a tile that a batch crops and draws the shape files' map on.
-pub struct TileTerrain {
+/// The terrain of a tile: what the contour chain makes of the ground model.
+pub struct Terrain {
     /// smoothjoin's contours.
     pub contours: ContourSet,
     /// The dot knolls.
@@ -423,23 +420,315 @@ pub struct TileTerrain {
     pub form_lines: Option<FormLineSelection>,
 }
 
-/// What [`process_tile`] made of a tile that a batch draws the shape files' map on and
-/// crops.
+/// The vegetation of a tile: what is drawn from the vegetation model, which is dropped
+/// once they are.
+pub struct TileVegetation {
+    /// The rasters, with the raster family or debug_intermediates=1.
+    pub rasters: Option<vegetation::VegetationRasters>,
+    /// The vegetation areas, with a vector family.
+    pub areas: Option<vege_vector::VegetationAreas>,
+}
+
+/// What the stages make of a tile's returns ([`run_stages`]). A stage that does not run
+/// leaves its value None.
 pub struct TileValues {
     /// The ground model.
     pub ground: HeightMap,
+    /// The base map contours (`basemap.dxf.bin`), with basemapinterval unless vegeonly or
+    /// cliffsonly.
+    pub basemap: Option<BinaryDxf>,
     /// The terrain, unless vegeonly or cliffsonly.
-    pub terrain: Option<TileTerrain>,
+    pub terrain: Option<Terrain>,
+    /// The vegetation, unless contoursonly or cliffsonly.
+    pub vegetation: Option<TileVegetation>,
     /// The cliffs, unless vegeonly or contoursonly.
     pub cliffs: Option<cliffs::CliffSet>,
-    /// The vegetation rasters the map is drawn on, when drawn: with the raster family or
-    /// debug_intermediates=1, unless contoursonly or cliffsonly.
-    pub vegetation: Option<vegetation::MapRasters>,
     /// The blocks, with detectbuildings unless vegeonly, contoursonly or cliffsonly.
-    pub blocks: Option<image::RgbImage>,
+    pub blocks: Option<blocks::Blocks>,
+    /// The values only the debug intermediates hold, with debug_intermediates=1.
+    pub dumps: Option<StageDumps>,
 }
 
-/// Runs every stage on the returns of `input_file` and, unless `skip_rendering`, renders
+/// The stages' values a tile keeps only for its debug intermediates.
+#[derive(Default)]
+pub struct StageDumps {
+    /// The knoll candidate contours (`contours03.dxf.bin`).
+    pub knoll_candidates: Option<BinaryDxf>,
+    /// knolldetector's knoll rings and pins (`detected.dxf.bin`, `pins.bin`), unless
+    /// skipknolldetection.
+    pub detected: Option<(knolls::DetectedKnolls, Vec<knolls::Pin>)>,
+    /// The lifted ground model (`xyz_knolls.hmap`).
+    pub lifted: Option<HeightMap>,
+    /// The contours smoothjoin starts from (`out.dxf.bin`).
+    pub traced: Option<BinaryDxf>,
+    /// smoothjoin's dot knoll candidates (`dotknolls.bin`).
+    pub dot_knoll_candidates: Vec<knolls::DotKnollCandidate>,
+    /// The pixels the first cliff pass marked with a passable dash (`c2.png`).
+    pub passable_raster: Option<RgbImage>,
+}
+
+impl TileValues {
+    /// The vegetation rasters, when drawn.
+    pub fn rasters(&self) -> Option<&vegetation::VegetationRasters> {
+        self.vegetation.as_ref()?.rasters.as_ref()
+    }
+
+    /// The values the map is drawn from, on `vegetation` (the rasters' layers); None
+    /// unless the terrain and the cliffs were made.
+    pub fn map_inputs<'a>(
+        &'a self,
+        vegetation: &'a render::VegetationLayers,
+    ) -> Option<render::MapInputs<'a>> {
+        let terrain = self.terrain.as_ref()?;
+        Some(render::MapInputs {
+            ground: &self.ground,
+            contours: &terrain.contours,
+            dot_knolls: &terrain.dot_knolls,
+            cliffs: self.cliffs.as_ref()?,
+            form_lines: terrain.form_lines.as_ref(),
+            vegetation,
+            blocks: self.blocks.as_ref().map(|b| &b.map),
+            shapes: None,
+        })
+    }
+}
+
+/// Runs the stages `config` asks for on a tile's `returns`, without the file system: the
+/// ground model, then the contour chain (knolls, smoothjoin, dot knolls, form lines), the
+/// vegetation, the cliffs and the blocks, each from the ground model and the returns.
+/// `tile` (the tile name) seeds the cliffthin sampling.
+pub fn run_stages(config: &Config, returns: &[XyzRecord], tile: &str) -> TileValues {
+    let mut timing = Timing::start_now("run_stages");
+    let &Config {
+        vegeonly,
+        cliffsonly,
+        contoursonly,
+        ..
+    } = config;
+    let mut dumps = config.debug_intermediates.then(StageDumps::default);
+
+    info!("Knoll detection part 1");
+    timing.start_section("ground model");
+    // every stage takes the ground model from here
+    let ground = contours::xyz2heightmap(returns, &config.ground, config.water_class);
+
+    let mut basemap = None;
+    let mut terrain = None;
+    if !vegeonly && !cliffsonly {
+        if let Some(interval) = config.basemapcontours {
+            info!("Basemap contours");
+            let traced = contours::trace(&ground, interval);
+            basemap = Some(contours::contours_to_bindxf(&traced, &ground));
+        }
+        terrain = Some(contour_chain(config, &ground, &mut dumps, &mut timing));
+    }
+
+    let vegetation = (!cliffsonly && !contoursonly).then(|| {
+        info!("Vegetation generation");
+        timing.start_section("vegetation generation");
+        let model = vegetation::makevege(&ground, returns, &config.vegetation);
+        TileVegetation {
+            rasters: (config.outputs.raster || config.debug_intermediates)
+                .then(|| vegetation::rasterise_vegetation(&model, &config.vegetation)),
+            areas: config.outputs.vectorizes_vegetation().then(|| {
+                vege_vector::vectorise_vegetation(
+                    &model,
+                    &config.vector_greenshade_isom,
+                    config.vector_simplify,
+                )
+            }),
+        }
+    });
+
+    let cliffs = (!vegeonly && !contoursonly).then(|| {
+        info!("Cliff generation");
+        timing.start_section("cliff generation");
+        let (cliffs, passable_raster) = cliffs::makecliffs(&ground, returns, tile, &config.cliff);
+        if let Some(dumps) = &mut dumps {
+            dumps.passable_raster = Some(passable_raster);
+        }
+        cliffs
+    });
+
+    let blocks = (!vegeonly && !contoursonly && !cliffsonly && config.detectbuildings).then(|| {
+        info!("Detecting buildings");
+        timing.start_section("detecting buildings");
+        blocks::blocks(config.water_class, &ground, returns)
+    });
+
+    TileValues {
+        ground,
+        basemap,
+        terrain,
+        vegetation,
+        cliffs,
+        blocks,
+        dumps,
+    }
+}
+
+/// The contour chain on `ground`: the knoll candidates, knoll detection (unless
+/// skipknolldetection), the knoll lift, the contours traced and smoothjoined, the dot
+/// knolls and the form lines. With `dumps` the values only the debug intermediates hold
+/// go there.
+fn contour_chain(
+    config: &Config,
+    ground: &HeightMap,
+    dumps: &mut Option<StageDumps>,
+    timing: &mut Timing,
+) -> Terrain {
+    let skipknolldetection = config.skipknolldetection;
+    timing.start_section("knoll detection part 1");
+    // the fine contours the knoll candidates come from; with skipknolldetection traced
+    // only for their debug dump
+    let candidates = if !skipknolldetection || dumps.is_some() {
+        contours::trace(ground, config.knoll.candidate_interval_m)
+    } else {
+        Vec::new()
+    };
+    if let Some(dumps) = dumps {
+        dumps.knoll_candidates = Some(contours::contours_to_bindxf(&candidates, ground));
+    }
+    let pins = if skipknolldetection {
+        Vec::new()
+    } else {
+        info!("Knoll detection part 2");
+        timing.start_section("knoll detection part 2");
+        let (detected, pins) = knolls::knolldetector(ground, &candidates, &config.knoll);
+        if let Some(dumps) = dumps {
+            dumps.detected = Some((detected, pins.clone()));
+        }
+        pins
+    };
+    drop(candidates);
+
+    info!("Contour generation part 1");
+    timing.start_section("contour generation part 1");
+    // the lifted ground model; with skipknolldetection only flattened
+    let lifted = knolls::xyzknolls(ground, &pins, &config.knoll);
+
+    info!("Contour generation part 2");
+    timing.start_section("contour generation part 2");
+    // the contours smoothjoin starts from are traced at the levels it classes them at;
+    // with skipknolldetection on the unlifted ground model, while smoothjoin and
+    // dotknolls read the flattened one
+    let traced_on = if skipknolldetection { ground } else { &lifted };
+    let traced = contours::trace(traced_on, config.smoothjoin.levels().trace_interval);
+    if let Some(dumps) = dumps {
+        dumps.traced = Some(contours::contours_to_bindxf(&traced, traced_on));
+    }
+
+    info!("Contour generation part 3");
+    timing.start_section("contour generation part 3");
+    let (contours, candidates) = merge::smoothjoin(&traced, &lifted, &config.smoothjoin);
+
+    info!("Contour generation part 4");
+    timing.start_section("contour generation part 4");
+    let dot_knolls = knolls::dotknolls(&contours, &candidates, &lifted, &config.knoll);
+
+    // the form lines, selected once for both renders and the vector output
+    info!("Selecting formlines");
+    timing.start_section("selecting formlines");
+    let form_lines = formlines::select_form_lines(&contours, ground, &config.form_lines);
+
+    if let Some(dumps) = dumps {
+        dumps.lifted = Some(lifted);
+        dumps.dot_knoll_candidates = candidates;
+    }
+    Terrain {
+        contours,
+        dot_knolls,
+        form_lines,
+    }
+}
+
+/// Writes a tile's `values` to `tmpfolder`: the products of the families in `outputs`
+/// and, with debug_intermediates=1, the debug intermediates. The GeoJSON tables are
+/// written in this order: contours, knolls, vegetation, cliffs, form lines.
+pub fn write_tile_products(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    values: &TileValues,
+) -> Result<(), Box<dyn Error>> {
+    let TileValues {
+        ground,
+        basemap,
+        terrain,
+        vegetation,
+        cliffs,
+        blocks,
+        dumps,
+    } = values;
+    let debug = config.debug_intermediates;
+    let dxf = config.outputs.dxf;
+
+    if debug {
+        // the same bytes under the ground model's two dump names
+        ground.to_file(fs, tmpfolder.join(knolls::KNOLL_GROUND_DUMP))?;
+        fs.copy(
+            tmpfolder.join(knolls::KNOLL_GROUND_DUMP),
+            tmpfolder.join(render::GROUND_DUMP),
+        )?;
+    }
+    if let Some(basemap) = basemap {
+        contours::write_bindxf(fs, tmpfolder, "basemap.dxf.bin", basemap, dxf)?;
+    }
+    if let Some(terrain) = terrain {
+        if let Some(dumps) = dumps {
+            if let Some(candidates) = &dumps.knoll_candidates {
+                contours::write_bindxf(fs, tmpfolder, knolls::CANDIDATES_DUMP, candidates, dxf)?;
+            }
+            if let Some((detected, pins)) = &dumps.detected {
+                knolls::write_detected(fs, tmpfolder, detected, pins, dxf)?;
+            }
+            if let Some(lifted) = &dumps.lifted {
+                lifted.to_file(fs, tmpfolder.join(knolls::LIFTED_GROUND_DUMP))?;
+            }
+            if let Some(traced) = &dumps.traced {
+                contours::write_bindxf(fs, tmpfolder, merge::TRACED_DUMP, traced, dxf)?;
+            }
+        }
+        let candidates = dumps.as_ref().map_or(&[][..], |d| &d.dot_knoll_candidates);
+        merge::write_contours(fs, tmpfolder, &terrain.contours, candidates, debug, dxf)?;
+        knolls::write_dot_knolls(fs, tmpfolder, &terrain.dot_knolls, debug, dxf)?;
+        // The terrain reaches vector output as GeoJSON written from the values, contours
+        // first
+        if config.vector_tables() {
+            geojson::write_contour_tables(fs, tmpfolder, &terrain.contours, config.epsg)?;
+            geojson::write_knoll_tables(fs, tmpfolder, &terrain.dot_knolls, config.epsg)?;
+        }
+    }
+    if let Some(vegetation) = vegetation {
+        if let Some(rasters) = &vegetation.rasters {
+            vegetation::write_vegetation(fs, tmpfolder, rasters, debug)?;
+        }
+        if let Some(areas) = &vegetation.areas {
+            vege_vector::write_vegetation_areas(fs, config, tmpfolder, areas)?;
+        }
+    }
+    if let Some(cliffs) = cliffs {
+        let passable_raster = dumps.as_ref().and_then(|d| d.passable_raster.as_ref());
+        cliffs::write_cliffs(fs, tmpfolder, cliffs, passable_raster, debug, dxf)?;
+        if config.vector_tables() {
+            geojson::write_cliff_tables(fs, tmpfolder, cliffs, config.epsg)?;
+        }
+    }
+    if debug && let Some(blocks) = blocks {
+        blocks::write_blocks(fs, tmpfolder, blocks)?;
+    }
+    if let Some(Terrain {
+        form_lines: Some(selection),
+        ..
+    }) = terrain
+    {
+        write_form_line_products(fs, config, tmpfolder, selection, debug)?;
+    }
+    Ok(())
+}
+
+/// Runs every stage on the returns of `input_file` ([`run_stages`]), writes the tile's
+/// products to `tmpfolder` ([`write_tile_products`]) and, unless `skip_rendering`, renders
 /// the map.
 pub fn process_tile(
     fs: &impl FileSystem,
@@ -454,10 +743,6 @@ pub fn process_tile(
     fs.create_dir_all(tmpfolder)
         .expect("Could not create tmp folder");
 
-    let &Config {
-        skipknolldetection, ..
-    } = config;
-
     timing.start_section("preparing input file");
     info!("Preparing input file");
     let returns = read_returns(fs, config, input_file, tile)?;
@@ -468,249 +753,38 @@ pub fn process_tile(
     }
     info!("Done");
 
-    info!("Knoll detection part 1");
-    timing.start_section("knoll detection part 1");
-
-    let &Config {
-        vegeonly,
-        cliffsonly,
-        contoursonly,
-        ..
-    } = config;
-
-    // every stage takes the ground model from here, not from its debug intermediates
-    let ground = contours::xyz2heightmap(&returns, &config.ground, config.water_class);
-    if config.debug_intermediates {
-        // the same bytes under the two names the stages used to read
-        ground
-            .to_file(fs, tmpfolder.join(knolls::KNOLL_GROUND_DUMP))
-            .unwrap();
-        fs.copy(
-            tmpfolder.join(knolls::KNOLL_GROUND_DUMP),
-            tmpfolder.join(render::GROUND_DUMP),
-        )
-        .expect("Could not copy file");
-    }
-
-    // the contours smoothjoin starts from are traced at the levels it classes them at
-    let trace_interval = config.smoothjoin.levels().trace_interval;
-
-    let mut terrain = None;
-    if !vegeonly && !cliffsonly {
-        if let Some(basemapcontours) = config.basemapcontours {
-            info!("Basemap contours");
-            let dxf =
-                contours::contours_to_bindxf(&contours::trace(&ground, basemapcontours), &ground);
-            contours::write_bindxf(fs, tmpfolder, "basemap.dxf.bin", &dxf, config.outputs.dxf)
-                .expect("contour generation failed");
-        }
-        // the fine contours the knoll candidates come from; with skipknolldetection
-        // traced only for their debug dump
-        let candidates = if !skipknolldetection || config.debug_intermediates {
-            let candidates = contours::trace(&ground, config.knoll.candidate_interval_m);
-            if config.debug_intermediates {
-                let dxf = contours::contours_to_bindxf(&candidates, &ground);
-                contours::write_bindxf(
-                    fs,
-                    tmpfolder,
-                    knolls::CANDIDATES_DUMP,
-                    &dxf,
-                    config.outputs.dxf,
-                )
-                .map_err(|e| {
-                    format!(
-                        "knoll detection (knolldetector) in {}: {e}",
-                        tmpfolder.display()
-                    )
-                })?;
-            }
-            candidates
-        } else {
-            Vec::new()
-        };
-        let pins = if skipknolldetection {
-            Vec::new()
-        } else {
-            info!("Knoll detection part 2");
-            timing.start_section("knoll detection part 2");
-            let (detected, pins) = knolls::knolldetector(&ground, &candidates, &config.knoll);
-            if config.debug_intermediates {
-                knolls::write_detected(fs, tmpfolder, &detected, &pins, config.outputs.dxf)
-                    .map_err(|e| {
-                        format!(
-                            "knoll detection (knolldetector) in {}: {e}",
-                            tmpfolder.display()
-                        )
-                    })?;
-            }
-            pins
-        };
-        info!("Contour generation part 1");
-        timing.start_section("contour generation part 1");
-        // the lifted ground model; with skipknolldetection only flattened
-        let lifted = knolls::xyzknolls(&ground, &pins, &config.knoll);
-        if config.debug_intermediates {
-            lifted
-                .to_file(fs, tmpfolder.join(knolls::LIFTED_GROUND_DUMP))
-                .map_err(|e| {
-                    format!("knoll lifting (xyzknolls) in {}: {e}", tmpfolder.display())
-                })?;
-        }
-
-        info!("Contour generation part 2");
-        timing.start_section("contour generation part 2");
-        // with skipknolldetection the contours are traced on the unlifted ground model,
-        // while smoothjoin and dotknolls read the flattened one
-        let traced_on = if skipknolldetection { &ground } else { &lifted };
-        let traced = contours::trace(traced_on, trace_interval);
-        if config.debug_intermediates {
-            let dxf = contours::contours_to_bindxf(&traced, traced_on);
-            contours::write_bindxf(fs, tmpfolder, merge::TRACED_DUMP, &dxf, config.outputs.dxf)
-                .map_err(|e| format!("contour tracing in {}: {e}", tmpfolder.display()))?;
-        }
-        info!("Contour generation part 3");
-        timing.start_section("contour generation part 3");
-        let (contours, candidates) = merge::smoothjoin(&traced, &lifted, &config.smoothjoin);
-        merge::write_contours(
-            fs,
-            tmpfolder,
-            &contours,
-            &candidates,
-            config.debug_intermediates,
-            config.outputs.dxf,
-        )
-        .map_err(|e| {
-            format!(
-                "contour smoothing (smoothjoin) in {}: {e}",
-                tmpfolder.display()
-            )
-        })?;
-
-        info!("Contour generation part 4");
-        timing.start_section("contour generation part 4");
-        let dot_knolls = knolls::dotknolls(&contours, &candidates, &lifted, &config.knoll);
-        knolls::write_dot_knolls(
-            fs,
-            tmpfolder,
-            &dot_knolls,
-            config.debug_intermediates,
-            config.outputs.dxf,
-        )
-        .map_err(|e| format!("dot knolls (dotknolls) in {}: {e}", tmpfolder.display()))?;
-
-        // The terrain reaches vector output as GeoJSON written from the values, contours
-        // first
-        if config.vector_tables() {
-            geojson::write_contour_tables(fs, tmpfolder, &contours, config.epsg)?;
-            geojson::write_knoll_tables(fs, tmpfolder, &dot_knolls, config.epsg)?;
-        }
-        terrain = Some(TileTerrain {
-            contours,
-            dot_knolls,
-            form_lines: None,
-        });
-    }
-
-    let mut vegetation_rasters = None;
-    if !cliffsonly && !contoursonly {
-        info!("Vegetation generation");
-        timing.start_section("vegetation generation");
-        vegetation_rasters = make_vegetation(
-            fs,
-            config,
-            tmpfolder,
-            &ground,
-            &returns,
-            config.debug_intermediates,
-        )?;
-    }
-
-    let mut cliff_set = None;
-    if !vegeonly && !contoursonly {
-        info!("Cliff generation");
-        timing.start_section("cliff generation");
-        let (cliffs, passable_raster) = cliffs::makecliffs(&ground, &returns, tile, &config.cliff);
-        cliffs::write_cliffs(
-            fs,
-            tmpfolder,
-            &cliffs,
-            &passable_raster,
-            config.debug_intermediates,
-            config.outputs.dxf,
-        )
-        .map_err(|e| format!("cliffs (makecliffs) in {}: {e}", tmpfolder.display()))?;
-        if config.vector_tables() {
-            geojson::write_cliff_tables(fs, tmpfolder, &cliffs, config.epsg)?;
-        }
-        cliff_set = Some(cliffs);
-    }
-    let mut block_map = None;
-    if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
-        info!("Detecting buildings");
-        timing.start_section("detecting buildings");
-        let found = blocks::blocks(config.water_class, &ground, &returns);
-        if config.debug_intermediates {
-            blocks::write_blocks(fs, tmpfolder, &found)
-                .map_err(|e| format!("blocks in {}: {e}", tmpfolder.display()))?;
-        }
-        block_map = Some(found.map);
-    }
-    // rendering reads the stages' outputs, not the returns
+    timing.start_section("stages");
+    let values = run_stages(config, &returns, tile);
+    // the products and the map are the stages' values, not the returns
     drop(returns);
-    // the form lines, selected once for both renders and the vector output
-    if let Some(values) = &mut terrain {
-        info!("Selecting formlines");
-        timing.start_section("selecting formlines");
-        values.form_lines = make_form_lines(
-            fs,
-            config,
-            tmpfolder,
-            &ground,
-            &values.contours,
-            config.debug_intermediates,
+
+    timing.start_section("writing the products");
+    write_tile_products(fs, config, tmpfolder, &values).map_err(|e| {
+        format!(
+            "writing the tile's products in {}: {e}",
+            tmpfolder.display()
         )
-        .map_err(|e| format!("form lines in {}: {e}", tmpfolder.display()))?;
-    }
-    let full = !vegeonly && !contoursonly && !cliffsonly;
-    if let Some(values) = &terrain
-        && let Some(cliffs) = &cliff_set
-        && let Some(rasters) = &vegetation_rasters
-        && !skip_rendering
-        && full
-        && config.outputs.raster
+    })?;
+
+    let layers = values
+        .rasters()
+        .filter(|_| !skip_rendering && config.outputs.raster)
+        .map(|rasters| rasters.layers());
+    if let Some(layers) = &layers
+        && let Some(inputs) = values.map_inputs(layers)
     {
-        let vegetation = rasters.layers();
-        let inputs = &render::MapInputs {
-            ground: &ground,
-            contours: &values.contours,
-            dot_knolls: &values.dot_knolls,
-            cliffs,
-            form_lines: values.form_lines.as_ref(),
-            vegetation: &vegetation,
-            blocks: block_map.as_ref(),
-            shapes: None,
-        };
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
-        render_map(fs, config, thread, inputs, false)?;
+        render_map(fs, config, thread, &inputs, false)?;
 
         info!("Rendering png map without depressions");
         timing.start_section("rendering png map without depressions");
-        render_map(fs, config, thread, inputs, true)?;
-    } else if contoursonly && (vegeonly || cliffsonly) {
-        let other = if vegeonly { "vegeonly" } else { "cliffsonly" };
-        warn!("contoursonly=1 with {other}=1: no contours are made, so no form lines are selected");
-    } else if config.outputs.raster {
+        render_map(fs, config, thread, &inputs, true)?;
+    } else if config.outputs.raster && !skip_rendering {
         info!("Skipped rendering");
     }
     info!("All done!");
-    Ok(TileValues {
-        ground,
-        terrain,
-        cliffs: cliff_set,
-        vegetation: vegetation_rasters,
-        blocks: block_map,
-    })
+    Ok(values)
 }
 
 /// The returns of `input_file` (`.xyz`, `.las`, `.laz` or `.xyz.bin`), in file order: the
@@ -729,115 +803,133 @@ fn read_returns(
         .to_string_lossy()
         .to_lowercase();
 
-    let mut returns = Vec::new();
-    if filename.ends_with(".xyz") {
-        // if we are here we don't know if the file has at least 6 columns, but we assume that it is in the format
-        // x y z classification number_of_returns return_number
-
-        info!("Reading points from .xyz");
-        read_lines_no_alloc(fs, input_file, |line| {
-            let mut parts = line.split(' ');
-            let x = parts.next().unwrap().parse::<f64>().unwrap();
-            let y = parts.next().unwrap().parse::<f64>().unwrap();
-            let z = parts.next().unwrap().parse::<f32>().unwrap();
-
-            let classification = parts
-                .next()
-                .map_or(LasClass::Ground.into(), |c| c.parse::<u8>().unwrap());
-            let number_of_returns = parts.next().unwrap_or("0").parse::<u8>().unwrap();
-            let return_number = parts.next().unwrap_or("0").parse::<u8>().unwrap();
-
-            returns.push(XyzRecord {
-                x,
-                y,
-                z,
-                classification,
-                number_of_returns,
-                return_number,
-                ..Default::default()
-            });
-        })
-        .expect("Could not read file");
+    let mut returns = if filename.ends_with(".xyz") {
+        read_xyz_text(fs, input_file)
     } else if filename.ends_with(".laz") || filename.ends_with(".las") {
-        info!("Reading points from .las/.laz");
-        let &Config {
-            thinfactor,
-            xfactor,
-            yfactor,
-            zfactor,
-            zoff,
-            ..
-        } = config;
-
-        if thinfactor != 1.0 {
-            info!("Using thinning factor {thinfactor}");
-        }
-
-        let mut rng = thinning_rng(tile, tile);
-        let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
-
-        let options = las::ReaderOptions::default().with_laz_parallelism(if config.laz_parallel {
-            las::LazParallelism::Yes
-        } else {
-            las::LazParallelism::No
-        });
-        let mut reader =
-            Reader::with_options(fs.open(input_file).expect("Could not open file"), options)
-                .expect("Could not create reader");
-
-        if thinfactor == 1.0 {
-            returns.reserve_exact(reader.header().number_of_points() as usize);
-        }
-        let mut pd = PointDataBuilder::new().for_header(reader.header()).build();
-        loop {
-            let n = reader.fill_points(LAZ_BUFFER_SIZE as u64, &mut pd).unwrap();
-
-            if n == 0 {
-                break;
-            }
-
-            for (
-                pt_x,
-                pt_y,
-                pt_z,
-                pt_classification,
-                pt_number_of_returns,
-                pt_return_number,
-                pt_flags,
-            ) in izip!(
-                pd.x(),
-                pd.y(),
-                pd.z(),
-                pd.classification(),
-                pd.number_of_returns(),
-                pd.return_number(),
-                las_flags(&pd)
-            ) {
-                if thinfactor == 1.0 || rng.sample(randdist) {
-                    returns.push(XyzRecord {
-                        x: pt_x * xfactor,
-                        y: pt_y * yfactor,
-                        z: (pt_z * zfactor + zoff) as f32,
-                        classification: pt_classification,
-                        number_of_returns: pt_number_of_returns,
-                        return_number: pt_return_number,
-                        flags: pt_flags,
-                    });
-                }
-            }
-        }
+        read_las(fs, config, input_file, tile)
     } else if filename.ends_with(".xyz.bin") {
         info!("Reading points from .xyz.bin");
-        returns = crate::io::xyz::read_all(fs.open(input_file)?)?;
+        crate::io::xyz::read_all(fs.open(input_file)?)?
     } else {
         return Err(format!("Unsupported input file: {}", input_file.display()).into());
-    }
+    };
     if returns.is_empty() {
         return Err(format!("no returns in {}", input_file.display()).into());
     }
     // the returns are held through every stage: no growth slack
     returns.shrink_to_fit();
     Ok(returns)
+}
+
+/// The returns of an `.xyz` text file: `x y z` and optionally the classification
+/// (default ground), the number of returns and the return number.
+fn read_xyz_text(fs: &impl FileSystem, input_file: &Path) -> Vec<XyzRecord> {
+    // if we are here we don't know if the file has at least 6 columns, but we assume that it is in the format
+    // x y z classification number_of_returns return_number
+    info!("Reading points from .xyz");
+    let mut returns = Vec::new();
+    read_lines_no_alloc(fs, input_file, |line| {
+        let mut parts = line.split(' ');
+        let x = parts.next().unwrap().parse::<f64>().unwrap();
+        let y = parts.next().unwrap().parse::<f64>().unwrap();
+        let z = parts.next().unwrap().parse::<f32>().unwrap();
+
+        let classification = parts
+            .next()
+            .map_or(LasClass::Ground.into(), |c| c.parse::<u8>().unwrap());
+        let number_of_returns = parts.next().unwrap_or("0").parse::<u8>().unwrap();
+        let return_number = parts.next().unwrap_or("0").parse::<u8>().unwrap();
+
+        returns.push(XyzRecord {
+            x,
+            y,
+            z,
+            classification,
+            number_of_returns,
+            return_number,
+            ..Default::default()
+        });
+    })
+    .expect("Could not read file");
+    returns
+}
+
+/// The returns of a LAS/LAZ file, scaled, lifted and thinned as [`read_returns`] says.
+fn read_las(
+    fs: &impl FileSystem,
+    config: &Config,
+    input_file: &Path,
+    tile: &str,
+) -> Vec<XyzRecord> {
+    info!("Reading points from .las/.laz");
+    let &Config {
+        thinfactor,
+        xfactor,
+        yfactor,
+        zfactor,
+        zoff,
+        ..
+    } = config;
+
+    if thinfactor != 1.0 {
+        info!("Using thinning factor {thinfactor}");
+    }
+
+    let mut rng = thinning_rng(tile, tile);
+    let randdist = rand::distr::Bernoulli::new(thinfactor).unwrap();
+
+    let options = las::ReaderOptions::default().with_laz_parallelism(if config.laz_parallel {
+        las::LazParallelism::Yes
+    } else {
+        las::LazParallelism::No
+    });
+    let mut reader =
+        Reader::with_options(fs.open(input_file).expect("Could not open file"), options)
+            .expect("Could not create reader");
+
+    let mut returns = Vec::new();
+    if thinfactor == 1.0 {
+        returns.reserve_exact(reader.header().number_of_points() as usize);
+    }
+    let mut pd = PointDataBuilder::new().for_header(reader.header()).build();
+    loop {
+        let n = reader.fill_points(LAZ_BUFFER_SIZE as u64, &mut pd).unwrap();
+
+        if n == 0 {
+            break;
+        }
+
+        for (
+            pt_x,
+            pt_y,
+            pt_z,
+            pt_classification,
+            pt_number_of_returns,
+            pt_return_number,
+            pt_flags,
+        ) in izip!(
+            pd.x(),
+            pd.y(),
+            pd.z(),
+            pd.classification(),
+            pd.number_of_returns(),
+            pd.return_number(),
+            las_flags(&pd)
+        ) {
+            if thinfactor == 1.0 || rng.sample(randdist) {
+                returns.push(XyzRecord {
+                    x: pt_x * xfactor,
+                    y: pt_y * yfactor,
+                    z: (pt_z * zfactor + zoff) as f32,
+                    classification: pt_classification,
+                    number_of_returns: pt_number_of_returns,
+                    return_number: pt_return_number,
+                    flags: pt_flags,
+                });
+            }
+        }
+    }
+    returns
 }
 
 pub fn batch_process(
@@ -886,67 +978,49 @@ pub fn batch_process(
         // Process the tile
         // the tile's returns, buffered from its neighbours, are staged by launch_threads
         let staged = &file_to_process.staging_path;
-        let TileValues {
-            ground,
-            terrain,
-            cliffs,
-            vegetation,
-            blocks,
-        } = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
+        let values = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
             .unwrap_or_else(|e| panic!("processing tile {laz} failed: {e}"));
         // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
         fs.remove_file(staged)
             .expect("Could not remove the staged point file");
 
-        if has_zip
-            && !vegeonly
-            && !cliffsonly
-            && !contoursonly
-            && let Some(terrain) = &terrain
-            && let Some(cliffs) = &cliffs
-        {
-            if outputs.raster
-                && let Some(rasters) = &vegetation
+        if has_zip && !vegeonly && !cliffsonly && !contoursonly {
+            let layers = values
+                .rasters()
+                .filter(|_| outputs.raster)
+                .map(|rasters| rasters.layers());
+            if let Some(layers) = &layers
+                && let Some(inputs) = values.map_inputs(layers)
             {
-                let vegetation = rasters.layers();
+                let frame = layers.frame();
+                let shapes = shape_layers(fs, conf, &tmpfolder, frame, &[], debug_intermediates);
                 let inputs = &render::MapInputs {
-                    ground: &ground,
-                    contours: &terrain.contours,
-                    dot_knolls: &terrain.dot_knolls,
-                    cliffs,
-                    form_lines: terrain.form_lines.as_ref(),
-                    vegetation: &vegetation,
-                    blocks: blocks.as_ref(),
-                    shapes: None,
+                    shapes: shapes.as_ref(),
+                    ..inputs
                 };
-                process_zip(
-                    fs,
-                    conf,
-                    thread,
-                    &tmpfolder,
-                    inputs,
-                    &[],
-                    true,
-                    debug_intermediates,
-                )
-                .unwrap();
-            } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
+                render_map(fs, conf, thread, inputs, false).unwrap();
+                render_map(fs, conf, thread, inputs, true).unwrap();
+            } else if values.terrain.is_some()
+                && values.cliffs.is_some()
+                && conf.vector_tables()
+                && !conf.vectorconf.is_empty()
+            {
                 // the vector mapping's tables, without drawing the shapes
                 #[cfg(feature = "shapefile")]
                 crate::shapefile::vector_tables(
                     fs,
                     conf,
                     &tmpfolder,
-                    vegetation::VegetationFrame::of_ground(&ground, &conf.vegetation),
+                    vegetation::VegetationFrame::of_ground(&values.ground, &conf.vegetation),
                 )
                 .unwrap();
             }
         }
         // the crop below re-encodes the PNGs: free the ground model and the map's rasters
         // first, and the terrain and the cliffs unless the .dxf.bin crops take them
-        drop(ground);
-        drop(vegetation);
-        drop(blocks);
+        let TileValues {
+            terrain, cliffs, ..
+        } = values;
         let terrain = terrain.filter(|_| outputs.dxf || debug_intermediates);
         let cliffs = cliffs.filter(|_| outputs.dxf || debug_intermediates);
 
@@ -1191,7 +1265,7 @@ pub fn batch_process(
         // only.
         if outputs.dxf || debug_intermediates {
             // the terrain and the cliffs are consumed here, without a copy
-            if let Some(TileTerrain {
+            if let Some(Terrain {
                 contours,
                 dot_knolls,
                 form_lines,
@@ -1479,6 +1553,133 @@ mod test {
         ] {
             touch(fs, path);
         }
+    }
+
+    /// A 60 m square tile at (1000, 2000): a ground return every metre on a 12 m high
+    /// cone with a 6 m step (a cliff) across its east side, and a block of echoes 6 m
+    /// above the ground for the vegetation.
+    fn cone_tile() -> Vec<XyzRecord> {
+        let mut returns = Vec::new();
+        for i in 0..60 {
+            for j in 0..60 {
+                let (x, y) = (1000.0 + i as f64, 2000.0 + j as f64);
+                let r = ((i as f64 - 30.0).powi(2) + (j as f64 - 30.0).powi(2)).sqrt();
+                let step = if i >= 50 { 0.0 } else { 6.0 };
+                let z = ((12.0 - r * 0.5).max(0.0) + step) as f32 + 100.0;
+                let ground = XyzRecord {
+                    x,
+                    y,
+                    z,
+                    classification: 2,
+                    number_of_returns: 1,
+                    return_number: 1,
+                    flags: 0,
+                };
+                returns.push(ground);
+                if i < 20 && j < 20 {
+                    returns.push(XyzRecord {
+                        z: z + 6.0,
+                        classification: 5,
+                        number_of_returns: 2,
+                        ..ground
+                    });
+                }
+            }
+        }
+        returns
+    }
+
+    /// The bytes of every file `fs` holds under `dir`, by name.
+    fn contents(fs: &MemoryFileSystem, dir: &str) -> Vec<(String, Vec<u8>)> {
+        names(fs, dir)
+            .into_iter()
+            .map(|name| {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(
+                    &mut fs.open(Path::new(dir).join(&name)).unwrap(),
+                    &mut bytes,
+                )
+                .unwrap();
+                (name, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_tile_is_the_stages_values_written_and_rendered() {
+        let config = Config::from_file(Path::new("pullauta.default.ini")).unwrap();
+        let returns = cone_tile();
+        let temp = Path::new("temp");
+
+        let fs = MemoryFileSystem::new();
+        fs.create_dir_all("in").unwrap();
+        crate::io::xyz::write_all(fs.create("in/cone.xyz.bin").unwrap(), &returns).unwrap();
+        let input = Path::new("in/cone.xyz.bin");
+        let values = process_tile(&fs, &config, "", temp, input, "cone", false).unwrap();
+        prune_tile_folder(&fs, temp, false, config.outputs, false, None).unwrap();
+        assert_eq!(
+            names(&fs, "temp"),
+            [
+                "c2g.dxf",
+                "c3g.dxf",
+                "cliffs.geojson",
+                "contours.geojson",
+                "dotknolls.dxf",
+                "formlines.dxf",
+                "knolls_points.geojson",
+                "out2.dxf",
+                "undergrowth.pgw",
+                "undergrowth.png",
+                "vegetation.dxf",
+                "vegetation.pgw",
+                "vegetation.png",
+                "vegetation_areas.geojson",
+            ]
+        );
+        for map in ["pullautus", "pullautus_depr"] {
+            assert!(fs.exists(format!("{map}.png")), "{map}.png");
+            assert!(fs.exists(format!("{map}.pgw")), "{map}.pgw");
+        }
+        assert!(values.terrain.is_some() && values.cliffs.is_some());
+        assert!(values.dumps.is_none());
+        // the tables append: the form lines (103.000) follow the contours they were
+        // selected from
+        let mut table = Vec::new();
+        std::io::Read::read_to_end(&mut fs.open("temp/contours.geojson").unwrap(), &mut table)
+            .unwrap();
+        let table: serde_json::Value = serde_json::from_slice(&table).unwrap();
+        let form_line: Vec<bool> = table["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["properties"]["isom_code"] == "103.000")
+            .collect();
+        let first = form_line.iter().position(|&f| f).expect("form lines");
+        assert!(
+            first > 0 && form_line[first..].iter().all(|&f| f),
+            "{form_line:?}"
+        );
+
+        // the stages need no file system: their values, written, are the same products
+        let again = MemoryFileSystem::new();
+        again.create_dir_all(temp).unwrap();
+        let values = run_stages(&config, &returns, "cone");
+        write_tile_products(&again, &config, temp, &values).unwrap();
+        prune_tile_folder(&again, temp, false, config.outputs, false, None).unwrap();
+        assert_eq!(contents(&again, "temp"), contents(&fs, "temp"));
+    }
+
+    #[test]
+    fn a_stage_that_does_not_run_leaves_its_value_none() {
+        let mut config = Config::from_file(Path::new("pullauta.default.ini")).unwrap();
+        config.vegeonly = true;
+        config.debug_intermediates = true;
+        let values = run_stages(&config, &cone_tile(), "cone");
+        assert!(values.terrain.is_none() && values.cliffs.is_none());
+        assert!(values.basemap.is_none() && values.blocks.is_none());
+        assert!(values.vegetation.is_some_and(|v| v.rasters.is_some()));
+        let dumps = values.dumps.unwrap();
+        assert!(dumps.lifted.is_none() && dumps.passable_raster.is_none());
     }
 
     #[test]
