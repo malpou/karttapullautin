@@ -224,3 +224,32 @@ pr/metre-lengths and pr/command-enum are byte-identical to it.
 - Off this tile: a crop that cuts a line to a corner touch or a sub-cm
   sliver no longer writes a zero-length LineString to
   `<tile>_<table>.geojson` or `merged_<table>.geojson`.
+
+### 2026-10-05: pr/debug-intermediates
+
+ADR 0004: `debug_intermediates=1` gates every intermediate write;
+`savetempfiles` and `savetempfolders` are removed. A single tile's
+`temp/` keeps only products; a batch removes `temp{thread}/` and its
+working copies after each tile. Products are always written: per-tile
+vegetation/undergrowth rasters and, with `output_dxf=1`, per-tile and
+merged DXF. `run.sh` no longer sets `savetempfolders=1`, so the
+regression compares products and the intermediates leave the gate.
+pr/key-spelling (508af4b) was byte-identical to 666b5e4. Baseline moves
+to 59bda5d (b849b6f plus the CI-made expected.json).
+
+- Pixels: 0 changed in the single job and the batch job; every per-code
+  metric identical; every file both runs have is byte-identical.
+- Removed (75): the whole `batch/temp1/` (44 files, its products already
+  cropped into `out/`); 24 intermediates in `single/temp/` (`.dxf.bin`,
+  `.hmap`, `pins.bin`, `dotknolls.bin`, `xyztemp.xyz.bin`, `contours03`,
+  `detected` and `out` DXF, the stage PNGs, `depressions.txt`,
+  `knollheads.txt`); `pullautus1.*`, `pullautus_depr1.*` and
+  `temp1.xyz.bin` in the batch working directory.
+- Added (22): `out/test_file_{vege,undergrowth}.{png,pgw}`,
+  `out/merged_vege.{png,pgw,jpg,jgw}` and their `.aux.xml`;
+  `out/test_file_{contours,c2g,c3g,dotknolls,formlines,vegetation}.dxf`;
+  `merged.dxf` and `merged_{contours,c2g,c3g,dotknolls,formlines}.dxf` in
+  the batch working directory.
+- Not exercised by the jobs: `export_combined` now reads only the merged
+  tables (it used `merged.dxf.bin` when one existed, which needed
+  `savetempfiles=1`).
