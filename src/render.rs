@@ -5,7 +5,6 @@ use crate::geometry::ContourKind;
 use crate::geometry::Geometry;
 use crate::geometry::Point2;
 use crate::geometry::Polylines;
-use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::mapframe::{MapFrame, WorldFile};
@@ -19,13 +18,17 @@ use std::error::Error;
 use std::f64::consts::PI;
 use std::path::Path;
 
-/// The temp folder files [`render`] reads; a tile run leaves them only with
-/// debug_intermediates=1.
+/// The ground model's debug intermediate, which a re-render reads for [`MapInputs::ground`]; a
+/// tile run writes it only with debug_intermediates=1.
+pub const GROUND_DUMP: &str = "xyz2.hmap";
+
+/// The temp folder files a re-render reads: [`GROUND_DUMP`] and the files [`render`]
+/// opens itself. A tile run leaves them only with debug_intermediates=1.
 const RENDER_INPUTS: [&str; 8] = [
     "vegetation.png",
     "vegetation.pgw",
     "undergrowth.png",
-    "xyz2.hmap",
+    GROUND_DUMP,
     "out2.dxf.bin",
     "dotknolls.dxf.bin",
     "c2g.dxf.bin",
@@ -62,18 +65,28 @@ pub fn check_inputs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dy
     .into())
 }
 
+/// The values [`render`] draws the map from, next to the files it reads from the temp
+/// folder. Later stages move their results here as they stop going through files.
+pub struct MapInputs<'a> {
+    /// The ground model (`xyz2.hmap` in the debug intermediates).
+    pub ground: &'a HeightMap,
+}
+
+/// Draws the map from `inputs` and the stages' files in `tmpfolder`; a re-render first
+/// checks them with [`check_inputs`].
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     fs: &impl FileSystem,
     config: &Config,
     thread: &String,
     tmpfolder: &Path,
+    inputs: &MapInputs,
     angle_deg: f64,
     nwidth: usize,
     nodepressions: bool,
 ) -> Result<(), Box<dyn Error>> {
     info!("Rendering...");
     check_raster(config)?;
-    check_inputs(fs, tmpfolder)?;
 
     let frame = config.map_frame;
 
@@ -163,9 +176,15 @@ pub fn render(
         }
     }
 
-    if let Some(formlines) =
-        draw_curves(fs, &config.curves, &mut img, tmpfolder, nodepressions, true)?
-    {
+    if let Some(formlines) = draw_curves(
+        fs,
+        &config.curves,
+        &mut img,
+        tmpfolder,
+        inputs.ground,
+        nodepressions,
+        true,
+    )? {
         write_formlines(fs, config, tmpfolder, &formlines)?;
     }
 
@@ -426,12 +445,14 @@ pub struct CurveRenderParams {
 }
 
 /// Draw the contours onto `canvas` (when `draw_image`), and return the selected form
-/// lines, None without form lines or with `nodepressions`.
+/// lines, None without form lines or with `nodepressions`. The `ground` model places the
+/// map and, with selective form lines, gives the local relief they are selected by.
 pub fn draw_curves(
     fs: &impl FileSystem,
     params: &CurveRenderParams,
     canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     tmpfolder: &Path,
+    ground: &HeightMap,
     nodepressions: bool,
     draw_image: bool,
 ) -> Result<Option<BinaryDxf>, Box<dyn Error>> {
@@ -454,23 +475,19 @@ pub fn draw_curves(
     let mut xstart: f64 = 0.0;
     let mut ystart: f64 = 0.0;
 
-    let heightmap_in = tmpfolder.join("xyz2.hmap");
-    let mut reader = fs.open(heightmap_in)?;
-    let hmap = HeightMap::from_bytes(&mut reader)?;
-
-    let xyz = &hmap.grid;
-    let x0 = hmap.minx();
-    let y0 = hmap.maxy();
+    let xyz = &ground.grid;
+    let x0 = ground.minx();
+    let y0 = ground.maxy();
 
     let mut steepness = Vec2D::new(xyz.width(), xyz.height(), 0f64);
 
     if selective {
-        xstart = hmap.xoffset;
-        ystart = hmap.yoffset;
-        size = hmap.scale;
+        xstart = ground.xoffset;
+        ystart = ground.yoffset;
+        size = ground.scale;
 
-        let sxmax = hmap.grid.width() - 1;
-        let symax = hmap.grid.height() - 1;
+        let sxmax = ground.grid.width() - 1;
+        let symax = ground.grid.height() - 1;
 
         for i in 6..(sxmax - 7) {
             for j in 6..(symax - 7) {
@@ -653,9 +670,9 @@ pub fn draw_curves(
                     help[i] = false;
                     help2[i] = true;
                     help3[i] = false;
-                    let ground = pixel_to_ground(x[i], y[i], x0, y0, &frame);
-                    let xx = ((ground.x - xstart) / size).floor() as usize;
-                    let yy = ((ground.y - ystart) / size).floor() as usize;
+                    let world = pixel_to_ground(x[i], y[i], x0, y0, &frame);
+                    let xx = ((world.x - xstart) / size).floor() as usize;
+                    let yy = ((world.y - ystart) / size).floor() as usize;
 
                     // make sure indices are within bounds for the grid lookups
                     if xx >= xyz.width() - 1 || yy >= xyz.height() - 1 || xx < 1 || yy < 1 {

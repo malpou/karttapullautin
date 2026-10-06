@@ -8,7 +8,6 @@ use std::f32::consts::SQRT_2;
 use std::path::Path;
 
 use crate::geometry::Bounds;
-use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::{LasClass, XyzRecord};
@@ -128,22 +127,20 @@ pub struct VegetationClasses {
     pub block: f64,
 }
 
-/// `returns` are the tile's returns in file order: `vegethin` keeps every n-th.
+/// `returns` are the tile's returns in file order: `vegethin` keeps every n-th; their
+/// heights above ground are taken from the `ground` model.
 pub fn makevege(
     fs: &impl FileSystem,
     params: &VegetationParams,
     tmpfolder: &Path,
+    ground: &HeightMap,
     returns: &[XyzRecord],
 ) -> Result<VegetationClasses, Box<dyn Error>> {
     info!("Generating vegetation...");
 
-    let heightmap_in = tmpfolder.join("xyz2.hmap");
-    let mut reader = fs.open(heightmap_in)?;
-    let hmap = HeightMap::from_bytes(&mut reader)?;
-
     // in world coordinates
-    let size = hmap.scale;
-    let xyz = &hmap.grid;
+    let size = ground.scale;
+    let xyz = &ground.grid;
 
     let palette = Palette::new(params);
 
@@ -172,11 +169,11 @@ pub fn makevege(
     } = params;
     let greenshades = &params.greenshades;
 
-    let xmin = hmap.minx();
-    let ymin = hmap.miny();
-    let xmax = hmap.maxx();
-    let ymax = hmap.maxy();
-    // xmax/ymax are always slightly superior to the max x/y values within the hmap
+    let xmin = ground.minx();
+    let ymin = ground.miny();
+    let xmax = ground.maxx();
+    let ymax = ground.maxy();
+    // xmax/ymax are always slightly superior to the max x/y values within the ground model
     // this mean (xmax - xmin).ceil() > (x - xmin).floor() is always true
     // for more detail why, check the xyz2heightmap function and the heightmap.rs file
 
@@ -611,7 +608,7 @@ pub fn makevege(
         }
     }
 
-    for (x, y, hh) in hmap.iter() {
+    for (x, y, hh) in ground.iter() {
         if hh < params.waterele {
             draw_filled_rect_mut(
                 &mut imgwater,

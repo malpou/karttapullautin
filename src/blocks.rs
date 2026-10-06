@@ -5,32 +5,29 @@ use imageproc::rect::Rect;
 use log::info;
 use std::{error::Error, path::Path};
 
-use crate::config::Config;
 use crate::io::{
-    bytes::FromToBytes,
     fs::FileSystem,
     heightmap::HeightMap,
     xyz::{LasClass, XyzRecord},
 };
 
-/// Draws the `returns` [`is_block`] picks as blocks; `config.water_class` names the water class.
+/// Draws the `returns` [`is_block`] picks as blocks, measuring their height above the
+/// `ground` model; `water_class` names the water class (ini `waterclass`).
 pub fn blocks(
     fs: &impl FileSystem,
-    config: &Config,
+    water_class: u8,
     tmpfolder: &Path,
+    ground: &HeightMap,
     returns: &[XyzRecord],
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying blocks...");
 
-    let heightmap_in = tmpfolder.join("xyz2.hmap");
-    let hmap = HeightMap::from_bytes(&mut fs.open(heightmap_in)?)?;
+    let xstartxyz = ground.xoffset;
+    let ystartxyz = ground.yoffset;
+    let size = ground.scale;
 
-    let xstartxyz = hmap.xoffset;
-    let ystartxyz = hmap.yoffset;
-    let size = hmap.scale;
-
-    let xmax = hmap.grid.width() - 1;
-    let ymax = hmap.grid.height() - 1;
+    let xmax = ground.grid.width() - 1;
+    let ymax = ground.grid.height() - 1;
 
     let mut img = RgbImage::from_pixel(xmax as u32 * 2, ymax as u32 * 2, Rgb([255, 255, 255]));
     let mut img2 = RgbaImage::from_pixel(xmax as u32 * 2, ymax as u32 * 2, Rgba([0, 0, 0, 0]));
@@ -43,8 +40,8 @@ pub fn blocks(
 
         let xx = ((x - xstartxyz) / size).floor() as usize;
         let yy = ((y - ystartxyz) / size).floor() as usize;
-        let ground = hmap.grid.get((xx, yy)).copied().unwrap_or(0.0);
-        if is_block(r, config.water_class, ground) {
+        let ground_z = ground.grid.get((xx, yy)).copied().unwrap_or(0.0);
+        if is_block(r, water_class, ground_z) {
             draw_filled_rect_mut(
                 &mut img,
                 Rect::at(

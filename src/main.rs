@@ -4,6 +4,9 @@ use log::info;
 use pullauta::config::Config;
 use pullauta::io::fs::FileSystem;
 use pullauta::io::fs::memory::MemoryFileSystem;
+use pullauta::io::heightmap::HeightMap;
+use pullauta::knolls::KNOLL_GROUND_DUMP;
+use pullauta::render::GROUND_DUMP;
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -98,12 +101,15 @@ fn main() {
         // re-render a tile run with debug_intermediates=1; a normal run keeps only
         // products in temp/, so `pullauta` alone prints the usage there
         Command::Default if !batch && pullauta::render::check_inputs(&fs, &tmpfolder).is_ok() => {
+            let ground = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
+            let inputs = &pullauta::render::MapInputs { ground: &ground };
             info!("Rendering png map with depressions");
             or_exit(pullauta::render::render(
                 &fs,
                 &config,
                 &thread,
                 &tmpfolder,
+                inputs,
                 pnorthlinesangle,
                 pnorthlineswidth,
                 false,
@@ -114,6 +120,7 @@ fn main() {
                 &config,
                 &thread,
                 &tmpfolder,
+                inputs,
                 pnorthlinesangle,
                 pnorthlineswidth,
                 true,
@@ -243,8 +250,10 @@ fn main() {
         }
 
         Command::Blocks => {
+            let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
             let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            pullauta::blocks::blocks(&fs, &config, &tmpfolder, &returns).unwrap();
+            pullauta::blocks::blocks(&fs, config.water_class, &tmpfolder, &ground, &returns)
+                .unwrap();
         }
 
         Command::DotKnolls => {
@@ -266,11 +275,19 @@ fn main() {
         }
 
         Command::KnollDetector => {
-            pullauta::knolls::knolldetector(&fs, &config.knoll, config.outputs.dxf, &tmpfolder)
-                .unwrap();
+            let ground = or_exit(read_ground(&fs, &tmpfolder.join(KNOLL_GROUND_DUMP)));
+            pullauta::knolls::knolldetector(
+                &fs,
+                &config.knoll,
+                config.outputs.dxf,
+                &tmpfolder,
+                &ground,
+            )
+            .unwrap();
         }
 
         Command::MakeCliffs => {
+            let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
             let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
             // no tile name here: the `cliffthin` seed is the empty name
             pullauta::cliffs::makecliffs(
@@ -279,16 +296,23 @@ fn main() {
                 config.outputs.dxf,
                 &tmpfolder,
                 "",
+                &ground,
                 &returns,
             )
             .unwrap();
         }
 
         Command::MakeVege => {
+            let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
             let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            let classes =
-                pullauta::vegetation::makevege(&fs, &config.vegetation, &tmpfolder, &returns)
-                    .unwrap();
+            let classes = pullauta::vegetation::makevege(
+                &fs,
+                &config.vegetation,
+                &tmpfolder,
+                &ground,
+                &returns,
+            )
+            .unwrap();
             if config.outputs.vectorizes_vegetation() {
                 pullauta::vege_vector::export_all(&fs, &config, &tmpfolder, &classes).unwrap();
             }
@@ -375,7 +399,8 @@ fn main() {
         }
 
         Command::XyzKnolls => {
-            pullauta::knolls::xyzknolls(&fs, &config.knoll, &tmpfolder).unwrap();
+            let ground = or_exit(read_ground(&fs, &tmpfolder.join(KNOLL_GROUND_DUMP)));
+            pullauta::knolls::xyzknolls(&fs, &config.knoll, &tmpfolder, &ground).unwrap();
         }
 
         #[cfg(feature = "shapefile")]
@@ -426,11 +451,13 @@ fn main() {
                 .and_then(|s| s.parse::<usize>().ok())
                 .expect("expected second argument to be nwidth");
             let nodepressions: bool = args.len() > 2 && args[2] == "nodepressions";
+            let ground = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
             or_exit(pullauta::render::render(
                 &fs,
                 &config,
                 &thread,
                 &tmpfolder,
+                &pullauta::render::MapInputs { ground: &ground },
                 angle,
                 nwidth,
                 nodepressions,
@@ -440,8 +467,9 @@ fn main() {
         Command::Zip(first) => {
             let mut zips: Vec<String> = vec![first];
             zips.extend(args);
+            let ground = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
             or_exit(pullauta::process::process_zip(
-                &fs, &config, &thread, &tmpfolder, &zips, false,
+                &fs, &config, &thread, &tmpfolder, &ground, &zips, false,
             ));
         }
 
@@ -557,6 +585,34 @@ fn read_dump(
     fs.open(path)
         .and_then(pullauta::io::xyz::read_all)
         .map_err(|e| format!("cannot read the returns from {}: {e}", path.display()))
+}
+
+/// The ground model's debug intermediate at `path` (`xyz_03.hmap` or its copy
+/// `xyz2.hmap`), for the stage commands. A tile run writes both only with debug_intermediates=1: a missing one asks
+/// for the flag.
+fn read_ground(fs: &impl FileSystem, path: &Path) -> Result<HeightMap, String> {
+    if !fs.exists(path) {
+        return Err(format!(
+            "cannot read the ground model: {} is missing. The stage commands read the tile's \
+             ground model from its debug intermediates: re-run the tile with \
+             debug_intermediates=1",
+            path.display()
+        ));
+    }
+    HeightMap::from_file(fs, path)
+        .map_err(|e| format!("cannot read the ground model from {}: {e}", path.display()))
+}
+
+/// The ground model of a re-render (`render`, a shape-file zip, `pullauta` in a debug
+/// run's folder), once the raster family and every file it reads are there.
+fn read_render_inputs(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+) -> Result<HeightMap, String> {
+    pullauta::render::check_raster(config).map_err(|e| e.to_string())?;
+    pullauta::render::check_inputs(fs, tmpfolder).map_err(|e| e.to_string())?;
+    read_ground(fs, &tmpfolder.join(GROUND_DUMP))
 }
 
 /// The value, or exit with the error: for an error the user can act on, such as
@@ -714,6 +770,25 @@ mod tests {
         // a file the user named is just missing
         let err = read_dump(&fs, Path::new("temp/named.xyz.bin"), false).unwrap_err();
         assert_eq!(err, "temp/named.xyz.bin is missing");
+    }
+
+    #[test]
+    fn stage_commands_read_the_ground_model_dump_or_ask_for_debug_intermediates() {
+        let fs = MemoryFileSystem::new();
+        let path = Path::new("temp/xyz2.hmap");
+        let err = read_ground(&fs, path).unwrap_err();
+        assert!(err.contains("temp/xyz2.hmap is missing"), "{err}");
+        assert!(err.contains("debug_intermediates=1"), "{err}");
+
+        let ground = HeightMap {
+            xoffset: 300.0,
+            yoffset: 600.0,
+            scale: 2.0,
+            grid: pullauta::vec2d::Vec2D::new(3, 2, 100.5),
+        };
+        fs.create_dir_all("temp").unwrap();
+        ground.to_file(&fs, path).unwrap();
+        assert_eq!(read_ground(&fs, path).unwrap(), ground);
     }
 
     fn parse(args: &[&str]) -> Invocation {

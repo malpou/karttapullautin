@@ -289,11 +289,20 @@ pub fn dotknolls(
     info!("Done");
     Ok(())
 }
+
+/// The ground model's debug intermediate that the knoll stage commands read
+/// (`knolldetector`, `xyzknolls`); `xyz2.hmap` ([`crate::render::GROUND_DUMP`]) holds
+/// the same bytes.
+pub const KNOLL_GROUND_DUMP: &str = "xyz_03.hmap";
+
+/// Detects knolls on `ground` from the fine contours in `contours03.dxf.bin`; writes
+/// `detected.dxf.bin` and `pins.bin`.
 pub fn knolldetector(
     fs: &impl FileSystem,
     params: &KnollParams,
     output_dxf: bool,
     tmpfolder: &Path,
+    ground: &HeightMap,
 ) -> anyhow::Result<()> {
     info!("Detecting knolls...");
     let halfinterval = params.trace_interval;
@@ -301,17 +310,15 @@ pub fn knolldetector(
     // the thresholds were tuned at a 2.5 m trace interval; this scales them to the map's
     let contours_ratio = params.trace_interval / 2.5;
 
-    let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
-
     // in world coordinates
-    let xstart = hmap.xoffset;
-    let ystart = hmap.yoffset;
-    let size = hmap.scale;
+    let xstart = ground.xoffset;
+    let ystart = ground.yoffset;
+    let size = ground.scale;
 
     // in grid coordinates
     let (xmin, ymin) = (0, 0);
-    let xmax = (hmap.grid.width() - 1) as u64;
-    let ymax = (hmap.grid.height() - 1) as u64;
+    let xmax = (ground.grid.width() - 1) as u64;
+    let ymax = (ground.grid.height() - 1) as u64;
 
     let contours_in = tmpfolder.join("contours03.dxf.bin");
     let data = fs
@@ -403,7 +410,7 @@ pub fn knolldetector(
                     }
                     m += 1;
                 }
-                let h_center = hmap
+                let h_center = ground
                     .grid
                     .get((
                         ((xa - xstart) / size).floor() as usize,
@@ -764,24 +771,24 @@ struct Pin {
     ylist: Vec<f64>,
 }
 
+/// Flattens a copy of `ground` and lifts it under the pins in `pins.bin`; writes the
+/// lifted ground model to `xyz_knolls.hmap`.
 pub fn xyzknolls(
     fs: &impl FileSystem,
     params: &KnollParams,
     tmpfolder: &Path,
+    ground: &HeightMap,
 ) -> anyhow::Result<()> {
     info!("Identifying knolls...");
     let interval = params.trace_interval;
 
-    // load the binary file
-    let hmap = read_heightmap(fs, &tmpfolder.join("xyz_03.hmap"))?;
+    let xmax = ground.grid.width() - 1;
+    let ymax = ground.grid.height() - 1;
+    let size = ground.scale;
+    let xstart = ground.xoffset;
+    let ystart = ground.yoffset;
 
-    let xmax = hmap.grid.width() - 1;
-    let ymax = hmap.grid.height() - 1;
-    let size = hmap.scale;
-    let xstart = hmap.xoffset;
-    let ystart = hmap.yoffset;
-
-    let mut xyz2 = hmap.clone();
+    let mut xyz2 = ground.clone();
 
     let r = params.flatten_radius_cells;
     let flat = params.flatten_max_relief_m;
@@ -793,7 +800,7 @@ pub fn xyzknolls(
             let mut count = 0;
             for ii in (i - r)..=(i + r) {
                 for jj in (j - r)..=(j + r) {
-                    let tmp = hmap.grid[(ii, jj)];
+                    let tmp = ground.grid[(ii, jj)];
                     if tmp < low {
                         low = tmp;
                     }
@@ -954,13 +961,6 @@ pub fn xyzknolls(
     Ok(())
 }
 
-/// Read a heightmap temp file, naming the file in the error.
-fn read_heightmap(fs: &impl FileSystem, path: &Path) -> anyhow::Result<HeightMap> {
-    fs.open(path)
-        .and_then(|mut f| HeightMap::from_bytes(&mut f))
-        .with_context(|| format!("reading {}", path.display()))
-}
-
 /// Knoll-lift smoothing around one pin: adds `move2` to the (2 * range + 1)² cells centred on
 /// `centre` (cell coordinates), tapering linearly to zero at `range`. Cells the lift already
 /// raised (`touched`) and the grid border are left alone. `range` may be fractional, so the
@@ -1057,10 +1057,9 @@ mod tests {
             scale: 2.0,
             grid,
         };
-        hmap.to_file(&fs, tmp.join("xyz_03.hmap")).unwrap();
         crate::contours::heightmap2contours(&fs, tmp, 0.3, &hmap, "contours03.dxf.bin", false)
             .unwrap();
-        knolldetector(&fs, &KnollParams::default(), false, tmp).unwrap();
+        knolldetector(&fs, &KnollParams::default(), false, tmp, &hmap).unwrap();
         crate::util::read_object(fs.open(tmp.join("pins.bin")).unwrap()).unwrap()
     }
 

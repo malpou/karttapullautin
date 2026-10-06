@@ -289,16 +289,18 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
     Ok(())
 }
 
+/// Renders the shape files in `filenames` (or, in a batch, the ones already unzipped)
+/// and the map of the tile in `tmpfolder`, whose ground model is `ground`.
 pub fn process_zip(
     fs: &impl FileSystem,
     config: &Config,
     thread: &String,
     tmpfolder: &Path,
+    ground: &HeightMap,
     filenames: &[String],
     batch: bool,
 ) -> Result<(), Box<dyn Error>> {
     render::check_raster(config)?;
-    render::check_inputs(fs, tmpfolder)?;
     let mut timing = Timing::start_now("process_zip");
     let &Config {
         pnorthlineswidth,
@@ -316,6 +318,7 @@ pub fn process_zip(
         }
     }
 
+    let inputs = &render::MapInputs { ground };
     info!("Rendering png map with depressions");
     timing.start_section("Rendering png map with depressions");
     render::render(
@@ -323,6 +326,7 @@ pub fn process_zip(
         config,
         thread,
         tmpfolder,
+        inputs,
         pnorthlinesangle,
         pnorthlineswidth,
         false,
@@ -336,6 +340,7 @@ pub fn process_zip(
         config,
         thread,
         tmpfolder,
+        inputs,
         pnorthlinesangle,
         pnorthlineswidth,
         true,
@@ -345,6 +350,8 @@ pub fn process_zip(
     Ok(())
 }
 
+/// Runs every stage on the returns of `input_file` and, unless `skip_rendering`, renders
+/// the map. Returns the tile's ground model, which a batch draws the shape files' map on.
 pub fn process_tile(
     fs: &impl FileSystem,
     config: &Config,
@@ -353,7 +360,7 @@ pub fn process_tile(
     input_file: &Path,
     tile: &str,
     skip_rendering: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<HeightMap, Box<dyn Error>> {
     let mut timing = Timing::start_now("process_tile");
     fs.create_dir_all(tmpfolder)
         .expect("Could not create tmp folder");
@@ -385,25 +392,31 @@ pub fn process_tile(
         ..
     } = config;
 
-    let xyz_03 = contours::xyz2heightmap(&returns, &config.ground, config.water_class);
-    xyz_03.to_file(fs, tmpfolder.join("xyz_03.hmap")).unwrap();
+    // every stage takes the ground model from here, not from its debug intermediates
+    let ground = contours::xyz2heightmap(&returns, &config.ground, config.water_class);
+    if config.debug_intermediates {
+        // the same bytes under the two names the stages used to read
+        ground
+            .to_file(fs, tmpfolder.join(knolls::KNOLL_GROUND_DUMP))
+            .unwrap();
+        fs.copy(
+            tmpfolder.join(knolls::KNOLL_GROUND_DUMP),
+            tmpfolder.join(render::GROUND_DUMP),
+        )
+        .expect("Could not copy file");
+    }
 
     if !(vegeonly || cliffsonly) {
         contours::heightmap2contours(
             fs,
             tmpfolder,
             config.knoll.candidate_interval_m,
-            &xyz_03,
+            &ground,
             "contours03.dxf.bin", // dxf curves generated from the heightmap
             config.outputs.dxf,
         )
         .expect("contour generation failed");
     }
-    drop(xyz_03);
-
-    // copy the generated heightmap
-    fs.copy(tmpfolder.join("xyz_03.hmap"), tmpfolder.join("xyz2.hmap"))
-        .expect("Could not copy file");
 
     // out.dxf.bin is traced at the levels smoothjoin reads it at
     let trace_interval = config.smoothjoin.levels().trace_interval;
@@ -411,13 +424,11 @@ pub fn process_tile(
     if !vegeonly && !cliffsonly {
         if let Some(basemapcontours) = config.basemapcontours {
             info!("Basemap contours");
-            let xyz2 = HeightMap::from_file(fs, tmpfolder.join("xyz2.hmap"))
-                .expect("could not read xyz2 heightmap");
             contours::heightmap2contours(
                 fs,
                 tmpfolder,
                 basemapcontours,
-                &xyz2,
+                &ground,
                 "basemap.dxf.bin", // generate dxf contours
                 config.outputs.dxf,
             )
@@ -426,19 +437,18 @@ pub fn process_tile(
         if !skipknolldetection {
             info!("Knoll detection part 2");
             timing.start_section("knoll detection part 2");
-            knolls::knolldetector(fs, &config.knoll, config.outputs.dxf, tmpfolder).map_err(
-                |e| {
+            knolls::knolldetector(fs, &config.knoll, config.outputs.dxf, tmpfolder, &ground)
+                .map_err(|e| {
                     format!(
                         "knoll detection (knolldetector) in {}: {e:#}",
                         tmpfolder.display()
                     )
-                },
-            )?;
+                })?;
         }
         info!("Contour generation part 1");
         timing.start_section("contour generation part 1");
-        // modifies the heightmap (but does not change dimensions)
-        knolls::xyzknolls(fs, &config.knoll, tmpfolder).map_err(|e| {
+        // writes a lifted copy of the ground model to xyz_knolls.hmap
+        knolls::xyzknolls(fs, &config.knoll, tmpfolder, &ground).map_err(|e| {
             format!(
                 "knoll lifting (xyzknolls) in {}: {e:#}",
                 tmpfolder.display()
@@ -461,12 +471,12 @@ pub fn process_tile(
             )
             .unwrap();
         } else {
-            let hmap = contours::xyz2heightmap(&returns, &config.ground, config.water_class);
+            // the unlifted ground model: xyz2heightmap again would build the same one
             contours::heightmap2contours(
                 fs,
                 tmpfolder,
                 trace_interval,
-                &hmap,
+                &ground,
                 "out.dxf.bin", // generate dxf curves
                 config.outputs.dxf,
             )
@@ -502,7 +512,8 @@ pub fn process_tile(
     if !cliffsonly && !contoursonly {
         info!("Vegetation generation");
         timing.start_section("vegetation generation");
-        let classes = vegetation::makevege(fs, &config.vegetation, tmpfolder, &returns).unwrap();
+        let classes =
+            vegetation::makevege(fs, &config.vegetation, tmpfolder, &ground, &returns).unwrap();
         if config.outputs.vectorizes_vegetation() {
             vege_vector::export_all(fs, config, tmpfolder, &classes).unwrap();
         }
@@ -517,6 +528,7 @@ pub fn process_tile(
             config.outputs.dxf,
             tmpfolder,
             tile,
+            &ground,
             &returns,
         )
         .unwrap();
@@ -535,7 +547,7 @@ pub fn process_tile(
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");
         timing.start_section("detecting buildings");
-        blocks::blocks(fs, config, tmpfolder, &returns).unwrap();
+        blocks::blocks(fs, config.water_class, tmpfolder, &ground, &returns).unwrap();
     }
     // rendering reads the stages' outputs, not the returns
     drop(returns);
@@ -543,6 +555,7 @@ pub fn process_tile(
     // them) when a vector family takes them
     let terrain = !vegeonly && !contoursonly && !cliffsonly;
     if !skip_rendering && terrain && config.outputs.raster {
+        let inputs = &render::MapInputs { ground: &ground };
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
         render::render(
@@ -550,6 +563,7 @@ pub fn process_tile(
             config,
             thread,
             tmpfolder,
+            inputs,
             pnorthlinesangle,
             pnorthlineswidth,
             false,
@@ -563,6 +577,7 @@ pub fn process_tile(
             config,
             thread,
             tmpfolder,
+            inputs,
             pnorthlinesangle,
             pnorthlineswidth,
             true,
@@ -573,8 +588,16 @@ pub fn process_tile(
         info!("Selecting formlines");
         timing.start_section("selecting formlines");
         let mut img = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
-        if let Some(formlines) =
-            render::draw_curves(fs, &config.curves, &mut img, tmpfolder, false, false).unwrap()
+        if let Some(formlines) = render::draw_curves(
+            fs,
+            &config.curves,
+            &mut img,
+            tmpfolder,
+            &ground,
+            false,
+            false,
+        )
+        .unwrap()
         {
             render::write_formlines(fs, config, tmpfolder, &formlines).unwrap();
         }
@@ -582,7 +605,7 @@ pub fn process_tile(
         info!("Skipped rendering");
     }
     info!("All done!");
-    Ok(())
+    Ok(ground)
 }
 
 /// The returns of `input_file` (`.xyz`, `.las`, `.laz` or `.xyz.bin`), in file order: the
@@ -758,22 +781,23 @@ pub fn batch_process(
         // Process the tile
         // the tile's returns, buffered from its neighbours, are staged by launch_threads
         let staged = &file_to_process.staging_path;
-        if let Err(e) = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip) {
-            panic!("processing tile {laz} failed: {e}");
-        }
+        let ground = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
+            .unwrap_or_else(|e| panic!("processing tile {laz} failed: {e}"));
         // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
         fs.remove_file(staged)
             .expect("Could not remove the staged point file");
 
         if has_zip && !vegeonly && !cliffsonly && !contoursonly {
             if outputs.raster {
-                process_zip(fs, conf, thread, &tmpfolder, &[], true).unwrap();
+                process_zip(fs, conf, thread, &tmpfolder, &ground, &[], true).unwrap();
             } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
                 // the vector mapping's tables, without drawing the shapes
                 #[cfg(feature = "shapefile")]
                 crate::shapefile::vector_tables(fs, conf, &tmpfolder).unwrap();
             }
         }
+        // the crop below re-encodes the PNGs: free the ground model first
+        drop(ground);
 
         // crop
         let tfw_in = PathBuf::from(format!("pullautus{thread}.pgw"));

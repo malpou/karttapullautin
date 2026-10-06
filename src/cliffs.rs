@@ -6,7 +6,6 @@ use std::error::Error;
 use std::path::Path;
 
 use crate::geometry::{BinaryDxf, Bounds, Classification, Point2, Polylines};
-use crate::io::bytes::FromToBytes;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::{LasClass, XyzRecord};
@@ -57,13 +56,15 @@ pub struct CliffParams {
 }
 
 /// `tile` (the tile name) seeds the `cliffthin` sampling, which draws once per return in
-/// `returns` order; `output_dxf` also writes the `.dxf` next to each `.dxf.bin`.
+/// `returns` order; `output_dxf` also writes the `.dxf` next to each `.dxf.bin`. The
+/// second pass compares the cells of the `ground` model.
 pub fn makecliffs(
     fs: &impl FileSystem,
     params: &CliffParams,
     output_dxf: bool,
     tmpfolder: &Path,
     tile: &str,
+    ground: &HeightMap,
     returns: &[XyzRecord],
 ) -> Result<(), Box<dyn Error>> {
     info!("Identifying cliffs...");
@@ -85,21 +86,18 @@ pub fn makecliffs(
 
     let no_small_cliffs = no_small_cliffs.map_or(6.0, |steep| steep - flat_place);
 
-    let heightmap_in = tmpfolder.join("xyz2.hmap");
-    let hmap = HeightMap::from_bytes(&mut fs.open(&heightmap_in)?)?;
-
     // in world coordinates
-    let xmax = hmap.maxx();
-    let ymax = hmap.maxy();
-    let xmin = hmap.minx();
-    let ymin = hmap.miny();
+    let xmax = ground.maxx();
+    let ymax = ground.maxy();
+    let xmin = ground.minx();
+    let ymin = ground.miny();
 
-    let xstart = hmap.xoffset;
-    let ystart = hmap.yoffset;
-    let size = hmap.scale;
+    let xstart = ground.xoffset;
+    let ystart = ground.yoffset;
+    let size = ground.scale;
 
-    let sxmax = hmap.grid.width() - 1;
-    let symax = hmap.grid.height() - 1;
+    let sxmax = ground.grid.width() - 1;
+    let symax = ground.grid.height() - 1;
 
     let mut steepness = Vec2D::new(sxmax + 1, symax + 1, f64::NAN);
 
@@ -109,7 +107,7 @@ pub fn makecliffs(
             let mut high: f64 = f64::MIN;
             for ii in i - 3..i + 4 {
                 for jj in j - 3..j + 4 {
-                    let value = hmap.grid[(ii, jj)];
+                    let value = ground.grid[(ii, jj)];
 
                     if value < low {
                         low = value;
@@ -329,7 +327,7 @@ pub fn makecliffs(
         Vec::<(f64, f64, f64)>::new(),
     );
 
-    for (x, y, h) in hmap.iter() {
+    for (x, y, h) in ground.iter() {
         if cliff_thin == 1.0 || rng.sample(randdist) {
             list_alt[(
                 ((x - xmin).floor() / bin_m) as usize,
@@ -423,4 +421,135 @@ pub fn makecliffs(
 
     info!("Done");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CliffParams, makecliffs};
+    use crate::geometry::{BinaryDxf, Classification, Geometry, Point2};
+    use crate::io::fs::FileSystem;
+    use crate::io::fs::memory::MemoryFileSystem;
+    use crate::io::heightmap::HeightMap;
+    use crate::io::xyz::XyzRecord;
+    use crate::vec2d::Vec2D;
+    use std::path::Path;
+
+    /// The template's cliff parameters (`pullauta.default.ini`).
+    fn template() -> CliffParams {
+        CliffParams {
+            c1_limit: 1.15,
+            c2_limit: 2.0,
+            cliff4_limit: 7.15,
+            cliff_thin: 1.0,
+            steep_factor: 0.38,
+            flat_place: 3.5,
+            no_small_cliffs: Some(5.5),
+            bin_m: 3.0,
+            bin_max_points: 31,
+            neighbourhood_max_points: 301,
+            drop_slope: 0.85,
+            dash_half_length_m: 1.47,
+        }
+    }
+
+    /// The cliff lines `makecliffs` writes for two ground returns a metre apart across
+    /// x = 310 m, 103 m and 100 m high, on a 20 x 20 m ground model of 1 m cells that is
+    /// `step` metres higher west of x = 310 m: (c2g, c3g).
+    fn cliffs_across_a_step(step: f64) -> [Vec<(Vec<Point2>, Classification)>; 2] {
+        let fs = MemoryFileSystem::new();
+        let tmp = Path::new("tmp");
+        fs.create_dir_all(tmp).unwrap();
+        let mut grid = Vec2D::new(20, 20, 100.0);
+        for i in 0..10 {
+            for j in 0..20 {
+                grid[(i, j)] = 100.0 + step;
+            }
+        }
+        let ground = HeightMap {
+            xoffset: 300.0,
+            yoffset: 600.0,
+            scale: 1.0,
+            grid,
+        };
+        let ret = |x, z| XyzRecord {
+            x,
+            y: 610.0,
+            z,
+            classification: 2,
+            ..Default::default()
+        };
+        let returns = [ret(309.5, 103.0), ret(310.5, 100.0)];
+
+        makecliffs(&fs, &template(), false, tmp, "", &ground, &returns).unwrap();
+
+        ["c2g.dxf.bin", "c3g.dxf.bin"].map(|name| {
+            let dxf = BinaryDxf::from_reader(&mut fs.open(tmp.join(name)).unwrap()).unwrap();
+            let Geometry::Polylines2(lines) = dxf.take_geometry().swap_remove(0) else {
+                panic!("{name} should hold polylines");
+            };
+            lines.into_iter().collect()
+        })
+    }
+
+    /// The dash across a 3 m drop over 1 m: centred between the returns, along the step,
+    /// 2 x 1.47 m long.
+    fn dash(class: Classification) -> (Vec<Point2>, Classification) {
+        (
+            vec![Point2::new(310.0, 611.47), Point2::new(310.0, 608.53)],
+            class,
+        )
+    }
+
+    /// A 3 m step is flat ground for the local relief (3 m < `cliffflatplace` 3.5 m), so the
+    /// 3 m drop between the returns is one cliff dash: a cliff (above `cliff1` 1.15 m) and,
+    /// in the first pass, an impassable one (above `cliff2` 2.0 m). The second pass finds
+    /// none: no two ground model cells are `cliff4_limit` 7.15 m apart.
+    #[test]
+    fn a_3_m_step_is_one_cliff_line() {
+        let [c2g, c3g] = cliffs_across_a_step(3.0);
+        assert_eq!(c2g, [dash(Classification::Cliff2)]);
+        assert_eq!(c3g, [dash(Classification::Cliff3)]);
+        let (line, _) = &c2g[0];
+        let length = ((line[0].x - line[1].x).powi(2) + (line[0].y - line[1].y).powi(2)).sqrt();
+        assert!((length - 2.94).abs() < 1e-9, "{length}");
+    }
+
+    /// The local relief comes from the ground model: on a 6 m step (relief 6 m, 2.5 m above
+    /// `cliffflatplace`, past the 2 m `cliffnosmallcliffs` range) the same returns draw no
+    /// passable cliff, only the impassable one, its limit raised to 2.38 m.
+    #[test]
+    fn steep_ground_drops_the_passable_cliff() {
+        let [c2g, c3g] = cliffs_across_a_step(6.0);
+        assert!(c2g.is_empty(), "{c2g:?}");
+        assert_eq!(c3g, [dash(Classification::Cliff3)]);
+    }
+
+    /// The second pass compares the ground model's own cells against `cliff4_limit`
+    /// (7.15 m). An 8 m step is past it: impassable cliff dashes (Cliff4) between cells
+    /// across the step, among them the one between the neighbouring cells at x = 309 m
+    /// and 310 m. The returns' 3 m drop draws nothing on ground that steep.
+    #[test]
+    fn the_second_pass_finds_the_ground_model_step_above_cliff4_limit() {
+        let [c2g, c3g] = cliffs_across_a_step(8.0);
+        assert!(c2g.is_empty(), "{c2g:?}");
+        assert!(!c3g.is_empty());
+        for (line, class) in &c3g {
+            assert_eq!(*class, Classification::Cliff4);
+            let length = ((line[0].x - line[1].x).powi(2) + (line[0].y - line[1].y).powi(2)).sqrt();
+            assert!((length - 2.94).abs() < 1e-9, "{length}");
+        }
+        let neighbours = (
+            vec![Point2::new(309.5, 611.47), Point2::new(309.5, 608.53)],
+            Classification::Cliff4,
+        );
+        assert!(c3g.contains(&neighbours), "{c3g:?}");
+
+        // just under the limit, the second pass finds nothing
+        let [_, c3g] = cliffs_across_a_step(7.0);
+        assert!(
+            c3g.iter()
+                .all(|(_, class)| *class != Classification::Cliff4),
+            "{c3g:?}"
+        );
+    }
 }
