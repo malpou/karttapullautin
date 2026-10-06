@@ -61,6 +61,8 @@ fi
 # job settings: key=value, or alternatives separated by | to set the first name the
 # build's default ini has: new|old=value (a renamed key, same value) or
 # new=value|old=value (a replaced key with its own value). The rebase commit drops old.
+# A key the default ini only has commented out (`#key=...`, unset for a computed
+# default) is set on that line.
 single_settings=()
 batch_settings=(
     batch=1
@@ -112,14 +114,22 @@ write_ini() {
             *=*) value=${alternative#*=} ;;
             *) value=${last#*=} ;; # new|old=value: the last one's value
             esac
+            # the key's line, or, when the template only has it commented out
+            # (`#name=value`: unset means a computed default), its first commented line
             if grep -q "^$name *=" pullauta.ini; then
                 awk -v k="$name" -v v="$value" \
                     '$0 ~ "^" k " *=" { print k "=" v; next } { print }' \
                     pullauta.ini >pullauta.ini.new
-                mv pullauta.ini.new pullauta.ini
-                found=1
-                break
+            elif grep -q "^# *$name *=" pullauta.ini; then
+                awk -v k="$name" -v v="$value" \
+                    '!done && $0 ~ "^# *" k " *=" { print k "=" v; done = 1; next } { print }' \
+                    pullauta.ini >pullauta.ini.new
+            else
+                continue
             fi
+            mv pullauta.ini.new pullauta.ini
+            found=1
+            break
         done
         if [ -z "$found" ]; then
             echo "run.sh: none of $setting is in $src/pullauta.default.ini" >&2

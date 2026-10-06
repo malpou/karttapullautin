@@ -32,7 +32,8 @@ pub struct FormLineParams {
     /// The sheet the lines are tested on: the selection works in its pixels (ini
     /// `mapscale`).
     pub frame: MapFrame,
-    /// Local relief threshold; greater gives more form lines (ini `formlinesteepness`).
+    /// Local relief threshold; greater gives more form lines (ini `formlinesteepness`;
+    /// unset, [`default_relief_threshold`] of the contour interval).
     pub relief_threshold: f64,
     /// Vertices added to each end of a selected stretch (ini `formlineaddition`).
     pub addition_vertices: f64,
@@ -45,10 +46,30 @@ pub struct FormLineParams {
     /// Drop form lines where the ground is too steep to draw them apart from the contours
     /// (ini `remove_touching_contours`).
     pub remove_touching_contours: bool,
+    /// The trace interval in metres (ini `contour_interval` and `form_lines`): the height
+    /// differences the touching test allows are 1 and 1.4 trace intervals.
+    pub trace_interval_m: f64,
     /// A closed form line shorter than this on its longer side is not drawn: the ISOM
     /// minimum ring length at the map scale
     /// ([`crate::mapframe::GroundMinima::ring_length_m`]).
     pub ring_length_m: f64,
+}
+
+/// The default local relief threshold (ini `formlinesteepness`) per contour interval,
+/// measured on the regression tile (`docs/research/formline-defaults.md` in the planning
+/// workspace): at 2.5 m the contours already show twice the detail, and 0.15 keeps the
+/// form lines to about the ground density 0.37 gives at 5 m.
+pub const RELIEF_THRESHOLD_DEFAULTS: [(f64, f64); 2] = [(2.5, 0.15), (5.0, 0.37)];
+
+/// The default relief threshold at `contour_interval`: the [`RELIEF_THRESHOLD_DEFAULTS`]
+/// entry of the nearest interval (the larger one halfway between).
+pub fn default_relief_threshold(contour_interval: f64) -> f64 {
+    let [(fine, fine_threshold), (standard, standard_threshold)] = RELIEF_THRESHOLD_DEFAULTS;
+    if contour_interval < (fine + standard) / 2.0 {
+        fine_threshold
+    } else {
+        standard_threshold
+    }
 }
 
 /// What [`select_form_lines`] keeps of one half-interval line.
@@ -279,6 +300,7 @@ fn select_line(
         addition_vertices,
         minimum_gap_vertices,
         remove_touching_contours,
+        trace_interval_m,
         ring_length_m,
         ..
     } = params;
@@ -286,9 +308,9 @@ fn select_line(
     let (x0, y0) = (ground.minx(), ground.maxy());
     let (xstart, ystart, size) = (ground.xoffset, ground.yoffset, ground.scale);
     // the height differences across a cell, straight and diagonal, below which a form
-    // line stands apart from the contours
-    let touching_straight = 2.5;
-    let touching_diagonal = 3.5;
+    // line stands apart from the contours: 2.5 and 3.5 m at a 5 m contour interval
+    let touching_straight = trace_interval_m;
+    let touching_diagonal = trace_interval_m * 7.0 / 5.0;
 
     let closed = x.first() == x.last() && y.first() == y.last();
     let mut smallringtest = false;
@@ -529,6 +551,7 @@ mod tests {
             minimum_gap_vertices: 30,
             label_depressions: false,
             remove_touching_contours: false,
+            trace_interval_m: 2.5,
             ring_length_m: frame.ground_minima().ring_length_m,
         }
     }
@@ -850,31 +873,33 @@ mod tests {
         }
     }
 
-    /// The touching test allows height differences of 2.5 m between the cells either side
-    /// of a vertex (3.5 m diagonally): on a 50 % slope they differ by 2 m (at most 2 m
-    /// diagonally) and the form line stands apart from the contours; on a 70 % slope they
-    /// differ by 2.8 m and it is dropped.
+    /// The touching test allows height differences of 1 trace interval between the cells
+    /// either side of a vertex (1.4 diagonally): on a 50 % slope they differ by 2 m (at
+    /// most 2 m diagonally), under the 2.5 m of a 5 m contour interval and over the
+    /// 1.25 m of a 2.5 m one, so a form line stands apart from the contours at 5 m, not at
+    /// 2.5 m.
     #[test]
-    fn form_lines_touching_the_contours_are_dropped() {
-        let at = |slope: f64| {
-            let (ground, contours) = scene(
-                |x, _| 100.0 + slope * x,
-                &north_south(),
-                ContourKind::HALF_INTERVAL,
-            );
+    fn the_touching_test_scales_with_the_trace_interval() {
+        let (ground, contours) = scene(
+            |x, _| 100.0 + 0.5 * x,
+            &north_south(),
+            ContourKind::HALF_INTERVAL,
+        );
+        let at = |trace_interval_m: f64| {
             let params = FormLineParams {
                 // every vertex wanted, whatever the relief
                 relief_threshold: 1e9,
                 remove_touching_contours: true,
+                trace_interval_m,
                 ..params()
             };
             select_form_lines(&contours, &ground, &params).unwrap()
         };
         assert_eq!(
-            at(0.5).lines.iter().map(|(p, _)| p.len()).sum::<usize>(),
+            at(2.5).lines.iter().map(|(p, _)| p.len()).sum::<usize>(),
             89
         );
-        assert!(at(0.7).lines.iter().next().is_none());
+        assert!(at(1.25).lines.iter().next().is_none());
     }
 
     /// A closed half-interval line kept anywhere is kept whole when it is small, and

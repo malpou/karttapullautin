@@ -514,7 +514,11 @@ impl Config {
 
         let cliffdebug: bool = gs.get("cliffdebug").unwrap_or("0") == "1";
 
-        let formlinesteepness: f64 = parse_typed(gs, "formlinesteepness", 0.37);
+        // unset: the default of the contour interval
+        let formlinesteepness: f64 = gs
+            .get("formlinesteepness")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or_else(|| crate::formlines::default_relief_threshold(contour_interval));
         let formlineaddition: f64 = parse_typed(gs, "formlineaddition", 13.0);
         let dashlength: f64 = parse_typed(gs, "dashlength", 60.0);
         let gaplength: f64 = parse_typed(gs, "gaplength", 12.0);
@@ -592,6 +596,7 @@ impl Config {
                 minimum_gap_vertices: minimumgap,
                 label_depressions,
                 remove_touching_contours,
+                trace_interval_m: form_lines.trace_interval(contour_interval),
                 ring_length_m: map_frame.ground_minima().ring_length_m,
             },
             curves: CurveRenderParams {
@@ -1169,7 +1174,8 @@ mod test {
         assert_eq!(sprint.form_lines.ring_length_m, 5.5);
     }
 
-    /// The template's form-line selection.
+    /// The template's form-line selection; its trace interval follows `contour_interval`
+    /// and `form_lines`.
     #[test]
     fn form_line_params_take_the_template_values() {
         let config = load_with(&[]).unwrap();
@@ -1183,9 +1189,38 @@ mod test {
                 minimum_gap_vertices: 30,
                 label_depressions: false,
                 remove_touching_contours: false,
+                trace_interval_m: 2.5,
                 ring_length_m: 16.5,
             }
         );
+        let fine = load_with(&[("contour_interval", "2.5")]).unwrap();
+        assert_eq!(fine.form_lines.trace_interval_m, 1.25);
+        let none = load_with(&[("form_lines", "none")]).unwrap();
+        assert_eq!(none.form_lines.trace_interval_m, 5.0);
+    }
+
+    /// Unset, `formlinesteepness` is the default of the nearest measured contour interval:
+    /// 0.15 at 2.5 m, 0.37 at 5 m; a set value is taken as given.
+    #[test]
+    fn formlinesteepness_defaults_per_contour_interval() {
+        let threshold = |interval: &str| {
+            load_with(&[("contour_interval", interval)])
+                .unwrap()
+                .form_lines
+                .relief_threshold
+        };
+        assert_eq!(threshold("5"), 0.37);
+        assert_eq!(threshold("2.5"), 0.15);
+        assert_eq!(threshold("2"), 0.15);
+        assert_eq!(threshold("3.5"), 0.15);
+        assert_eq!(threshold("3.75"), 0.37);
+        assert_eq!(threshold("10"), 0.37);
+        let template = std::fs::read_to_string("pullauta.default.ini").unwrap();
+        assert!(template.contains("\n#formlinesteepness=0.37\n"));
+        let set = template
+            .replace("contour_interval=5", "contour_interval=2.5")
+            .replace("#formlinesteepness=0.37", "formlinesteepness=0.37");
+        assert_eq!(load_text(&set).unwrap().form_lines.relief_threshold, 0.37);
     }
 
     #[test]
