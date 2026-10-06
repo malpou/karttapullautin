@@ -18,6 +18,8 @@ use pullauta::geojson;
 use pullauta::isom::{IsomCode, IsomTable};
 use serde_json::Value;
 
+mod validity;
+
 const INPUTS: &[(&str, &str)] = &[
     ("test_file.laz", "https://cdn.routechoic.es/test.laz"),
     (
@@ -115,10 +117,46 @@ fn feature_collection(path: &Path) -> Vec<Value> {
     features
 }
 
+/// A job's extent, `[minx, miny, maxx, maxy]` in metres: no position of its GeoJSON may
+/// lie further out than [`EXTENT_EPSILON`].
+type Extent = [f64; 4];
+
+/// The cm the writer rounds to.
+const EXTENT_EPSILON: f64 = 0.01;
+
+/// The bounds in a LAS header (the batch job crops each tile's tables to them).
+fn las_bounds(path: &Path) -> Extent {
+    use std::io::Read;
+    let mut header = [0u8; 227];
+    std::fs::File::open(path)
+        .unwrap()
+        .read_exact(&mut header)
+        .unwrap();
+    // max x, min x, max y, min y at offset 179 (LAS 1.0-1.4)
+    let f = |i: usize| f64::from_le_bytes(header[179 + 8 * i..187 + 8 * i].try_into().unwrap());
+    [f(1), f(3), f(0), f(2)]
+}
+
+/// The extent of a rendered map, from its world file (origin at the centre of the
+/// upper-left pixel) and its PNG's size, one pixel wider on every side: the single job's
+/// tables are not cropped, and a cliff dash of an edge cell reaches a few cm past the last
+/// pixel.
+fn map_extent(png: &Path) -> Extent {
+    let world = std::fs::read_to_string(png.with_extension("pgw")).unwrap();
+    let w: Vec<f64> = world.lines().map(|l| l.trim().parse().unwrap()).collect();
+    let bytes = std::fs::read(png).unwrap();
+    let size = |i: usize| u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) as f64;
+    let (width, height) = (size(16), size(20));
+    let (x0, y0) = (w[4] - 1.5 * w[0], w[5] - 1.5 * w[3]);
+    let (x1, y1) = (x0 + (width + 2.0) * w[0], y0 + (height + 2.0) * w[3]);
+    [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)]
+}
+
 /// Validate every `.geojson` file under `dir` against `schema/geojson.schema.json`, the
-/// public contract of the vector output, and against the isom-maplibre symbol table (see
-/// [`assert_table_conformance`]). Returns how many files were checked.
-fn assert_schema_conformance(dir: &Path) -> usize {
+/// public contract of the vector output, against the isom-maplibre symbol table (see
+/// [`assert_table_conformance`]), and for the geometry the schema cannot check (see
+/// [`assert_geometry_shape`]), within `extent`. Returns how many files were checked.
+fn assert_schema_conformance(dir: &Path, extent: Extent) -> usize {
     let validator = schema_validator();
     let mut checked = 0;
     for path in files(dir) {
@@ -133,35 +171,63 @@ fn assert_schema_conformance(dir: &Path) -> usize {
             .collect();
         assert!(errors.is_empty(), "{}: {errors:#?}", path.display());
         assert_table_conformance(&path, &val);
-        assert_geometry_shape(&path, &val);
+        assert_geometry_shape(&path, &val, extent);
         checked += 1;
     }
     checked
 }
 
-/// What the schema cannot say: every LineString has two distinct positions and every
-/// Polygon ring ends where it starts.
-fn assert_geometry_shape(path: &Path, collection: &Value) {
-    for f in collection["features"].as_array().unwrap() {
-        let coords = f["geometry"]["coordinates"].as_array().unwrap();
-        match f["geometry"]["type"].as_str() {
-            Some("LineString") => assert!(
-                coords.iter().any(|p| p != &coords[0]),
-                "{}: a LineString has one distinct position: {f}",
-                path.display()
-            ),
-            Some("Polygon") => {
-                for ring in coords {
-                    let ring = ring.as_array().unwrap();
-                    assert_eq!(
-                        ring.first(),
-                        ring.last(),
-                        "{}: open ring: {f}",
-                        path.display()
-                    );
-                }
+/// What the schema cannot say, and what RFC 7946 and a simple-feature sink (PostGIS,
+/// GEOS) want: no position repeated next to itself; every LineString has two distinct
+/// positions; every Polygon ring is closed with four or more positions, the exterior
+/// counter-clockwise and the holes clockwise, and the Polygon is OGC-valid
+/// ([`validity::invalid_reason`]); and every position lies within `extent`.
+fn assert_geometry_shape(path: &Path, collection: &Value, extent: Extent) {
+    let positions = |line: &Value| -> Vec<validity::P> {
+        line.as_array()
+            .unwrap()
+            .iter()
+            .map(|p| validity::cm([p[0].as_f64().unwrap(), p[1].as_f64().unwrap()]))
+            .collect()
+    };
+    let [minx, miny, maxx, maxy] = extent.map(|v| validity::cm([v, 0.0]).0);
+    let eps = validity::cm([EXTENT_EPSILON, 0.0]).0;
+    for (i, f) in collection["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let coords = &f["geometry"]["coordinates"];
+        let at = || format!("{} feature {i}: {f}", path.display());
+        let all: Vec<validity::P> = match f["geometry"]["type"].as_str() {
+            Some("LineString") => {
+                let line = positions(coords);
+                assert!(line.iter().any(|p| *p != line[0]), "one position: {}", at());
+                assert!(line.windows(2).all(|w| w[0] != w[1]), "repeat: {}", at());
+                line
             }
-            _ => {}
+            Some("Polygon") => {
+                let rings: Vec<Vec<validity::P>> =
+                    coords.as_array().unwrap().iter().map(positions).collect();
+                for (k, ring) in rings.iter().enumerate() {
+                    if let Some(why) = validity::ring_shape(ring, k == 0) {
+                        panic!("ring {k}: {why}: {}", at());
+                    }
+                }
+                if let Some(why) = validity::invalid_reason(&rings) {
+                    panic!("invalid: {why}: {}", at());
+                }
+                rings.concat()
+            }
+            _ => positions(&Value::Array(vec![coords.clone()])),
+        };
+        for (x, y) in all {
+            assert!(
+                (minx - eps..=maxx + eps).contains(&x) && (miny - eps..=maxy + eps).contains(&y),
+                "({x}, {y}) cm outside {extent:?}: {}",
+                at()
+            );
         }
     }
 }
@@ -440,7 +506,8 @@ fn single_job_writes_terrain_geojson() {
 
     // contours, knolls_points, cliffs and vegetation_areas; no OSM tables without a
     // vectorconf
-    assert_eq!(assert_schema_conformance(&dir), 4);
+    let extent = map_extent(&dir.join("pullautus.png"));
+    assert_eq!(assert_schema_conformance(&dir, extent), 4);
 
     // debug_intermediates=0: temp/ keeps only the products, the tables, the DXF files
     // and the vegetation rasters
@@ -592,7 +659,39 @@ fn batch_with_osm_vectorconf() {
     assert_batch_merge(&out);
 
     // every table cropped, merged and combined in out/
-    assert_eq!(assert_schema_conformance(&dir), 3 * IsomTable::ALL.len());
+    let extent = las_bounds(&input("test_file.laz"));
+    assert_eq!(
+        assert_schema_conformance(&dir, extent),
+        3 * IsomTable::ALL.len()
+    );
+
+    // a crop of a tile with neighbours: the merged vegetation areas cropped to boxes
+    // inside the tile, on the grids' cell lines (green from the tile's corner, open
+    // land 1.5 m off it) and off them, stay valid
+    let [minx, miny, _, _] = extent;
+    let crops = dir.join("crops");
+    std::fs::create_dir(&crops).unwrap();
+    for (k, [x0, y0, x1, y1]) in [
+        [1500.0, 600.0, 2700.0, 2400.0],
+        [1501.5, 601.5, 2701.5, 2401.5],
+        [777.77, 1234.56, 2222.22, 2777.77],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bbox = pullauta::Rect::new(minx + x0, miny + y0, minx + x1, miny + y1);
+        let path = crops.join(format!("crop{k}_vegetation_areas.geojson"));
+        geojson::crop_geojson(
+            &pullauta::io::fs::local::LocalFileSystem,
+            &out.join(geojson::merged_file_name(IsomTable::VegetationAreas)),
+            &path,
+            &bbox,
+        )
+        .unwrap();
+        let val: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(!feature_collection(&path).is_empty());
+        assert_geometry_shape(&path, &val, [bbox.minx, bbox.miny, bbox.maxx, bbox.maxy]);
+    }
 
     // debug_intermediates=0: no tile temp folder, point file (old or staged), working
     // copy of the map or .dxf.bin file is left

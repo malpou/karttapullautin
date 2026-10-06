@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde_json::{Value, json};
 
 use crate::config::Outputs;
@@ -17,6 +17,7 @@ use crate::knolls::DotKnollSet;
 use crate::mapframe::{IsomMinima, MapFrame};
 use crate::merge::ContourSet;
 use crate::plan::Rect;
+use crate::validity;
 use geojson_types::{FeatureGeometryType, FeatureProperties};
 
 /// Rust types generated from `schema/geojson.schema.json` by `typify` in `build.rs`.
@@ -286,8 +287,55 @@ fn degenerate_line(f: &geojson_types::Feature) -> bool {
         && coords.iter().all(|p| Some(p) == coords.first())
 }
 
-/// Write one FeatureCollection (with the legacy `crs` member when an EPSG code is given).
-/// Degenerate lines ([`degenerate_line`]) are left out.
+/// Twice the signed area of a ring as written, on the cm grid (positive
+/// counter-clockwise; exactly 0 for a ring with no area).
+fn ring_area2(ring: &[Value]) -> i128 {
+    let ring: Vec<validity::Cm> = line_points(ring).into_iter().map(validity::cm).collect();
+    validity::area2(&ring)
+}
+
+/// Put a geometry in the shape RFC 7946 and the simple-feature sinks want: no position
+/// repeated next to itself (as written, in cm; the rounding can merge two), and for a
+/// Polygon, rings of four or more positions with an area, the exterior
+/// counter-clockwise and the holes clockwise (RFC 7946 3.1.6). Returns how many rings
+/// were dropped, or None when the exterior was, and the feature with it.
+fn normalise_geometry(geometry: &mut geojson_types::FeatureGeometry) -> Option<usize> {
+    let coords = &mut geometry.coordinates;
+    match geometry.type_ {
+        FeatureGeometryType::Point => Some(0),
+        FeatureGeometryType::LineString => {
+            coords.dedup();
+            Some(0)
+        }
+        FeatureGeometryType::Polygon => {
+            for ring in coords.iter_mut() {
+                if let Value::Array(ring) = ring {
+                    ring.dedup();
+                }
+            }
+            let area = |ring: &Value| match ring.as_array() {
+                Some(r) if r.len() >= 4 => ring_area2(r),
+                _ => 0,
+            };
+            if coords.first().is_none_or(|exterior| area(exterior) == 0) {
+                return None;
+            }
+            let before = coords.len();
+            coords.retain(|ring| area(ring) != 0);
+            for (i, ring) in coords.iter_mut().enumerate() {
+                if let Value::Array(ring) = ring
+                    && (ring_area2(ring) > 0) != (i == 0)
+                {
+                    ring.reverse();
+                }
+            }
+            Some(before - coords.len())
+        }
+    }
+}
+
+/// Write one FeatureCollection (with the legacy `crs` member when an EPSG code is given),
+/// each geometry normalised and degenerate lines left out (see [`write_collection`]).
 pub fn write_feature_collection(
     fs: &impl FileSystem,
     output: &std::path::Path,
@@ -354,14 +402,32 @@ pub fn write_tables(
     Ok(())
 }
 
-/// Every GeoJSON file goes through here, so this is where degenerate lines
-/// ([`degenerate_line`]) are left out: a crop can cut a line down to one position.
+/// Every GeoJSON file goes through here, so this is where each geometry is put in the
+/// shape RFC 7946 and the simple-feature sinks want ([`normalise_geometry`]) and
+/// degenerate lines ([`degenerate_line`]) are left out: a crop can cut a line down to
+/// one position.
 fn write_collection(
     fs: &impl FileSystem,
     output: &Path,
     mut collection: geojson_types::GeoJsonOutput,
 ) -> anyhow::Result<()> {
-    collection.features.retain(|f| !degenerate_line(f));
+    let (mut rings, before) = (0, collection.features.len());
+    collection
+        .features
+        .retain_mut(|f| match normalise_geometry(&mut f.geometry) {
+            Some(dropped) => {
+                rings += dropped;
+                !degenerate_line(f)
+            }
+            None => false,
+        });
+    let features = before - collection.features.len();
+    if rings + features > 0 {
+        debug!(
+            "{}: left out {rings} degenerate rings and {features} degenerate features",
+            output.display()
+        );
+    }
     let mut w = BufWriter::new(fs.create(output)?);
     serde_json::to_writer(&mut w, &collection)?;
     w.flush()?;
@@ -725,80 +791,35 @@ fn clip_line(pts: &[[f64; 2]], bbox: &Rect) -> Vec<Vec<[f64; 2]>> {
     out
 }
 
-/// Sutherland-Hodgman clip of a closed ring against the bbox. Returns an empty vec when
-/// the ring is entirely outside; otherwise a closed ring (first point repeated last).
-fn clip_ring(ring: &[[f64; 2]], bbox: &Rect) -> Vec<[f64; 2]> {
-    let mut pts: Vec<[f64; 2]> = ring.to_vec();
-    if pts.len() > 1 && pts.first() == pts.last() {
-        pts.pop();
-    }
-    for edge in 0..4 {
-        let inside = |p: &[f64; 2]| match edge {
-            0 => p[0] >= bbox.minx,
-            1 => p[0] <= bbox.maxx,
-            2 => p[1] >= bbox.miny,
-            _ => p[1] <= bbox.maxy,
-        };
-        let intersect = |a: &[f64; 2], b: &[f64; 2]| -> [f64; 2] {
-            match edge {
-                0 | 1 => {
-                    let x = if edge == 0 { bbox.minx } else { bbox.maxx };
-                    let t = (x - a[0]) / (b[0] - a[0]);
-                    [x, a[1] + t * (b[1] - a[1])]
-                }
-                _ => {
-                    let y = if edge == 2 { bbox.miny } else { bbox.maxy };
-                    let t = (y - a[1]) / (b[1] - a[1]);
-                    [a[0] + t * (b[0] - a[0]), y]
-                }
-            }
-        };
-        let input = std::mem::take(&mut pts);
-        if input.is_empty() {
-            return vec![];
-        }
-        for i in 0..input.len() {
-            let cur = input[i];
-            let prev = input[(i + input.len() - 1) % input.len()];
-            match (inside(&prev), inside(&cur)) {
-                (true, true) => pts.push(cur),
-                (false, true) => {
-                    pts.push(intersect(&prev, &cur));
-                    pts.push(cur);
-                }
-                (true, false) => pts.push(intersect(&prev, &cur)),
-                (false, false) => {}
-            }
-        }
-    }
-    if pts.len() < 3 {
-        return vec![];
-    }
-    pts.push(pts[0]);
-    pts
+/// A box on the cm grid the writer rounds to.
+fn cm_box(bbox: &Rect) -> validity::CmBox {
+    let (x0, y0) = validity::cm([bbox.minx, bbox.miny]);
+    let (x1, y1) = validity::cm([bbox.maxx, bbox.maxy]);
+    [x0, y0, x1, y1]
 }
 
-/// Clip a Polygon's rings (exterior first). Drops the whole polygon when the exterior
-/// vanishes; drops holes that vanish.
-fn clip_polygon(coords: &[Value], bbox: &Rect) -> Option<Vec<Value>> {
-    let mut out = Vec::new();
-    for (i, ring) in polygon_rings(coords).iter().enumerate() {
-        let clipped = clip_ring(ring, bbox);
-        if clipped.is_empty() {
-            if i == 0 {
-                return None;
-            }
-            continue;
-        }
-        out.push(Value::Array(coords_line(clipped)));
-    }
-    Some(out)
+/// The Polygons of a Polygon's part within the bbox ([`validity::clip_polygon`]): none
+/// when it is apart, several when it leaves the box and comes back, each valid.
+fn clip_polygon(rings: &[Vec<[f64; 2]>], bbox: &Rect) -> Vec<Vec<Value>> {
+    let rings: Vec<Vec<validity::Cm>> = rings
+        .iter()
+        .map(|r| r.iter().map(|&p| validity::cm(p)).collect())
+        .collect();
+    validity::clip_polygon(&rings, &cm_box(bbox))
+        .into_iter()
+        .map(|polygon| {
+            polygon
+                .into_iter()
+                .map(|ring| Value::Array(coords_line(ring.into_iter().map(validity::metres))))
+                .collect()
+        })
+        .collect()
 }
 
 /// Crop every feature of a GeoJSON file to the bbox (a batch tile without its padding)
 /// and write the result, carrying the input's `crs` over. A line that leaves the box
-/// and comes back becomes one LineString feature per part, each with the line's
-/// properties.
+/// and comes back becomes one LineString feature per part, and a polygon one Polygon
+/// feature per part, each with the feature's properties.
 pub fn crop_geojson(
     fs: &impl FileSystem,
     input: &Path,
@@ -820,8 +841,12 @@ pub fn crop_geojson(
                 }
             }
             FeatureGeometryType::Polygon => {
-                if let Some(rings) = clip_polygon(coords, bbox) {
-                    features.push(feature(FeatureGeometryType::Polygon, rings, f.properties));
+                for rings in clip_polygon(&polygon_rings(coords), bbox) {
+                    features.push(feature(
+                        FeatureGeometryType::Polygon,
+                        rings,
+                        f.properties.clone(),
+                    ));
                 }
             }
             FeatureGeometryType::Point => {
@@ -1170,9 +1195,11 @@ fn dxf_polyline(out: &mut String, layer: &str, pts: &[[f64; 2]], closed: bool, e
 
 /// The combined export being assembled: DXF entities (layer = symbol code), GeoJSON
 /// features per table, the layers used and the extent; the contours are conformed to
-/// `minima`.
+/// `minima`, and the GeoJSON features are clipped to `bounds`, the extent of the merged
+/// tables, which the curves can overshoot.
 struct Combined {
     minima: IsomMinima,
+    bounds: Rect,
     dxf: String,
     tables: HashMap<IsomTable, Vec<geojson_types::Feature>>,
     layers: BTreeSet<IsomCode>,
@@ -1181,9 +1208,10 @@ struct Combined {
 }
 
 impl Combined {
-    fn new(minima: IsomMinima) -> Self {
+    fn new(minima: IsomMinima, bounds: Rect) -> Self {
         Self {
             minima,
+            bounds,
             dxf: String::new(),
             tables: HashMap::new(),
             layers: BTreeSet::new(),
@@ -1215,6 +1243,32 @@ impl Combined {
             .push(feature(geometry, coordinates, props));
     }
 
+    fn within(&self, p: &[f64; 2]) -> bool {
+        let b = &self.bounds;
+        (b.minx..=b.maxx).contains(&p[0]) && (b.miny..=b.maxy).contains(&p[1])
+    }
+
+    /// The parts of a published line within the bounds: the line itself when it stays
+    /// inside.
+    fn clipped(&self, line: Vec<[f64; 2]>) -> Vec<Vec<[f64; 2]>> {
+        if line.iter().all(|p| self.within(p)) {
+            vec![line]
+        } else {
+            clip_line(&line, &self.bounds)
+        }
+    }
+
+    /// LineString features of a published line, clipped to the bounds.
+    fn line_features(&mut self, line: Vec<[f64; 2]>, props: &FeatureProperties) {
+        for part in self.clipped(line) {
+            self.feature(
+                FeatureGeometryType::LineString,
+                coords_line(part),
+                props.clone(),
+            );
+        }
+    }
+
     /// One DXF entity: SPLINE for curve symbols, POLYLINE otherwise.
     fn dxf_entity(&mut self, code: IsomCode, pts: &[[f64; 2]], closed: bool, elev: Option<f64>) {
         self.grow(pts);
@@ -1240,27 +1294,55 @@ impl Combined {
         for piece in published_pieces(code, &pts, closed, knolls, &self.minima) {
             let closed = closed && piece.first() == piece.last();
             self.dxf_entity(code, &piece, closed, level_m);
-            self.feature(
-                FeatureGeometryType::LineString,
-                coords_line(piece),
-                props.clone(),
-            );
+            self.line_features(piece, props);
         }
     }
 
-    /// An area: each ring (curve-sampled for curve symbols) a closed DXF entity, all of
-    /// them one Polygon feature.
-    fn polygon(&mut self, rings: &[Vec<[f64; 2]>], props: FeatureProperties, knolls: &[[f64; 2]]) {
-        let code = isom_code(&props);
-        let mut coords = Vec::new();
-        for ring in rings {
-            for piece in published_pieces(code, ring, true, knolls, &self.minima) {
-                self.dxf_entity(code, &piece, true, None);
-                coords.push(Value::Array(coords_line(piece)));
-            }
+    /// An area: each ring (curve-sampled for curve symbols) a closed DXF entity, and
+    /// Polygon features of them. A ring's curve is taken only where the polygon stays
+    /// OGC-valid with it ([`validity::keep_valid`]), the ring as read where not: a curve
+    /// fitted to each ring alone can cross itself or another ring. The polygon is then
+    /// clipped to the bounds, one feature per part ([`clip_polygon`]). The DXF keeps
+    /// every curve.
+    fn polygon(&mut self, rings: &[Vec<[f64; 2]>], props: FeatureProperties) {
+        if rings.is_empty() {
+            return;
         }
-        if !coords.is_empty() {
-            self.feature(FeatureGeometryType::Polygon, coords, props);
+        let code = isom_code(&props);
+        // as written: on the cm grid, no position repeated next to itself
+        let on_grid = |ring: &[[f64; 2]]| {
+            let mut ring: Vec<validity::Cm> = ring.iter().map(|&p| validity::cm(p)).collect();
+            ring.dedup();
+            ring
+        };
+        let (mut original, mut candidate) = (Vec::new(), Vec::new());
+        for ring in rings {
+            let curve = curve_points(code, ring, ring.first() == ring.last());
+            self.dxf_entity(code, &curve, true, None);
+            original.push(on_grid(ring));
+            candidate.push(on_grid(&curve));
+        }
+        let rings = validity::keep_valid(&original, &candidate);
+        let parts = if rings
+            .iter()
+            .flatten()
+            .all(|&p| self.within(&validity::metres(p)))
+        {
+            vec![
+                rings
+                    .into_iter()
+                    .map(|ring| Value::Array(coords_line(ring.into_iter().map(validity::metres))))
+                    .collect(),
+            ]
+        } else {
+            let rings: Vec<Vec<[f64; 2]>> = rings
+                .into_iter()
+                .map(|r| r.into_iter().map(validity::metres).collect())
+                .collect();
+            clip_polygon(&rings, &self.bounds)
+        };
+        for coords in parts {
+            self.feature(FeatureGeometryType::Polygon, coords, props.clone());
         }
     }
 
@@ -1281,16 +1363,12 @@ impl Combined {
         self.layers.insert(code);
     }
 
-    /// A cliff line chained from dashes: a DXF entity and the sampled curve as a
-    /// LineString feature.
+    /// A cliff line chained from dashes: a DXF entity and the sampled curve, clipped to
+    /// the bounds, as LineString features.
     fn cliff(&mut self, chain: &[[f64; 2]], props: FeatureProperties) {
         let code = isom_code(&props);
         self.dxf_entity(code, chain, false, None);
-        self.feature(
-            FeatureGeometryType::LineString,
-            coords_line(curve_points(code, chain, false)),
-            props,
-        );
+        self.line_features(curve_points(code, chain, false), &props);
     }
 }
 
@@ -1328,7 +1406,33 @@ pub fn export_combined(
     };
     let knoll_pts: Vec<[f64; 2]> = knolls.iter().map(|(p, _)| *p).collect();
 
-    let mut out = Combined::new(frame.isom_minima());
+    let mut merged = Vec::new();
+    for &table in IsomTable::ALL {
+        let path = batchoutfolder.join(merged_file_name(table));
+        if fs.exists(&path) {
+            merged.extend(read_collection(fs, &path)?.features);
+        }
+    }
+    // the merged tables' extent: the tiles, which every table is cropped to
+    let mut bounds = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for f in &merged {
+        let coords = &f.geometry.coordinates;
+        let positions = match f.geometry.type_ {
+            FeatureGeometryType::Point => line_points(&[Value::Array(coords.clone())]),
+            FeatureGeometryType::LineString => line_points(coords),
+            FeatureGeometryType::Polygon => polygon_rings(coords).concat(),
+        };
+        for [x, y] in positions {
+            bounds = Rect::new(
+                bounds.minx.min(x),
+                bounds.miny.min(y),
+                bounds.maxx.max(x),
+                bounds.maxy.max(y),
+            );
+        }
+    }
+
+    let mut out = Combined::new(frame.isom_minima(), bounds);
     // cliff dash midpoints per cliff symbol, chained into cliff lines below
     let mut cliffs: BTreeMap<_, (geojson_types::CliffProperties, Vec<[f64; 2]>)> = BTreeMap::new();
     let mut add_dash = |props: geojson_types::CliffProperties, pts: &[[f64; 2]]| {
@@ -1342,26 +1446,18 @@ pub fn export_combined(
         }
     };
 
-    for &table in IsomTable::ALL {
-        let path = batchoutfolder.join(merged_file_name(table));
-        if !fs.exists(&path) {
-            continue;
-        }
-        for f in read_collection(fs, &path)?.features {
-            let coords = &f.geometry.coordinates;
-            match (f.geometry.type_, f.properties) {
-                // the knoll points, spacing-filtered, are published below
-                (FeatureGeometryType::Point, _) => {}
-                (FeatureGeometryType::LineString, P::CliffProperties(p)) => {
-                    add_dash(p, &line_points(coords))
-                }
-                (FeatureGeometryType::LineString, props) => {
-                    out.line(&line_points(coords), &props, &knoll_pts)
-                }
-                (FeatureGeometryType::Polygon, props) => {
-                    out.polygon(&polygon_rings(coords), props, &knoll_pts)
-                }
+    for f in merged {
+        let coords = &f.geometry.coordinates;
+        match (f.geometry.type_, f.properties) {
+            // the knoll points, spacing-filtered, are published below
+            (FeatureGeometryType::Point, _) => {}
+            (FeatureGeometryType::LineString, P::CliffProperties(p)) => {
+                add_dash(p, &line_points(coords))
             }
+            (FeatureGeometryType::LineString, props) => {
+                out.line(&line_points(coords), &props, &knoll_pts)
+            }
+            (FeatureGeometryType::Polygon, props) => out.polygon(&polygon_rings(coords), props),
         }
     }
 
@@ -2117,27 +2213,6 @@ mod tests {
     }
 
     #[test]
-    fn clip_ring_square_crossing_bbox() {
-        let ring = [
-            [5.0, 5.0],
-            [15.0, 5.0],
-            [15.0, 15.0],
-            [5.0, 15.0],
-            [5.0, 5.0],
-        ];
-        // the quarter square [5,10]x[5,10], closed
-        let clipped = clip_ring(&ring, &bbox(0.0, 0.0, 10.0, 10.0));
-        assert_eq!(clipped.first(), clipped.last());
-        let open = &clipped[..clipped.len() - 1];
-        assert_eq!(open.len(), 4);
-        for p in open {
-            assert!(p[0] >= 5.0 && p[0] <= 10.0 && p[1] >= 5.0 && p[1] <= 10.0);
-        }
-        assert!(clip_ring(&ring, &bbox(20.0, 20.0, 30.0, 30.0)).is_empty());
-        assert_eq!(clip_ring(&ring, &bbox(0.0, 0.0, 20.0, 20.0)).len(), 5);
-    }
-
-    #[test]
     fn crop_geojson_drops_lines_cut_to_one_position() {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let features = vec![
@@ -2511,6 +2586,22 @@ mod tests {
             IsomTable::KnollsPoints,
             vec![terrain_point(Classification::Dotknoll, [50.0, 0.0])],
         );
+        // a lake reaching past them all, so the extent holds the loop's curve
+        let lake = [
+            [-50.0, -50.0],
+            [300.0, -50.0],
+            [300.0, 100.0],
+            [-50.0, -50.0],
+        ];
+        write(
+            IsomTable::Water,
+            vec![osm_area(
+                IsomCode::C301_000,
+                "water",
+                false,
+                &[lake.to_vec()],
+            )],
+        );
 
         export_combined(&fs, out, &MapFrame::default(), None, Outputs::ALL).unwrap();
 
@@ -2529,6 +2620,201 @@ mod tests {
         assert_eq!(lines.len(), 3);
         let closed = lines.iter().filter(|l| l.first() == l.last()).count();
         assert_eq!(closed, 1);
+    }
+
+    /// The rings of a Polygon feature, exterior first.
+    fn rings_of(f: &geojson_types::Feature) -> Vec<Vec<[f64; 2]>> {
+        polygon_rings(&f.geometry.coordinates)
+    }
+
+    #[test]
+    fn written_rings_run_counter_clockwise_around_clockwise_holes() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        // a shapefile's exterior is clockwise and its holes counter-clockwise
+        let cw = vec![
+            [0.0, 0.0],
+            [0.0, 10.0],
+            [10.0, 10.0],
+            [10.0, 0.0],
+            [0.0, 0.0],
+        ];
+        let ccw_hole = vec![[2.0, 2.0], [8.0, 2.0], [8.0, 8.0], [2.0, 8.0], [2.0, 2.0]];
+        let lake = osm_area(IsomCode::C301_000, "water", false, &[cw, ccw_hole]);
+        write_feature_collection(&fs, Path::new("water.geojson"), vec![lake], None).unwrap();
+
+        let lake = &read(&fs, Path::new("water.geojson")).features[0];
+        let area = |k: usize| ring_area2(lake.geometry.coordinates[k].as_array().unwrap());
+        assert!(area(0) > 0 && area(1) < 0, "{lake:?}");
+        let rings = rings_of(lake);
+        assert_eq!(rings[0][0], [0.0, 0.0]);
+        assert_eq!(rings[0].first(), rings[0].last());
+    }
+
+    #[test]
+    fn written_geometry_repeats_no_position_next_to_itself() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        // two positions a mm apart are one at cm
+        let line = [[0.0, 0.0], [1.0, 0.0], [1.001, 0.0], [2.0, 0.0]];
+        let ring = vec![
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 0.001],
+            [10.0, 10.0],
+            [0.0, 0.0],
+        ];
+        // a hole that collapses to three positions is dropped, and so is one that
+        // runs back and forth with no area
+        let sliver = vec![[2.0, 2.0], [2.001, 2.0], [5.0, 5.0], [2.0, 2.0]];
+        let flat = vec![[2.0, 2.0], [5.0, 5.0], [2.0, 2.0], [5.0, 5.0], [2.0, 2.0]];
+        let features = vec![
+            terrain_line(Classification::Cliff2, &line),
+            osm_area(IsomCode::C301_000, "water", false, &[ring, sliver, flat]),
+        ];
+        write_feature_collection(&fs, Path::new("t.geojson"), features, None).unwrap();
+
+        let features = read(&fs, Path::new("t.geojson")).features;
+        assert_eq!(
+            line_points(&features[0].geometry.coordinates),
+            [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]
+        );
+        assert_eq!(
+            rings_of(&features[1]),
+            [vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 0.0]]]
+        );
+    }
+
+    #[test]
+    fn a_polygon_whose_exterior_collapses_is_not_written() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let ring = vec![[0.0, 0.0], [0.001, 0.0], [5.0, 5.0], [0.0, 0.0]];
+        let flat = vec![[0.0, 0.0], [5.0, 0.0], [10.0, 0.0], [5.0, 0.0], [0.0, 0.0]];
+        let lakes = [ring, flat]
+            .map(|r| osm_area(IsomCode::C301_000, "water", false, &[r]))
+            .to_vec();
+        write_feature_collection(&fs, Path::new("w.geojson"), lakes, None).unwrap();
+        assert!(read(&fs, Path::new("w.geojson")).features.is_empty());
+    }
+
+    /// Every position of every combined feature, by code.
+    fn combined_positions(fs: &impl FileSystem, out: &Path) -> Vec<(IsomCode, [f64; 2])> {
+        read_combined(fs, out)
+            .into_iter()
+            .flat_map(|(_, f)| {
+                let code = isom_code(&f.properties);
+                let coords = &f.geometry.coordinates;
+                let positions = match f.geometry.type_ {
+                    FeatureGeometryType::Polygon => polygon_rings(coords).concat(),
+                    FeatureGeometryType::LineString => line_points(coords),
+                    FeatureGeometryType::Point => line_points(&[Value::Array(coords.clone())]),
+                };
+                positions.into_iter().map(move |p| (code, p))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn export_combined_clips_the_curves_to_the_merged_extent() {
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let out = Path::new("out");
+        fs.create_dir_all(out).unwrap();
+        // an open land area filling the extent: its curve bulges past the corners'
+        // sides; a contour along the top edge, bent down, bows past it
+        let area = vegetation_area(
+            geojson_types::VegetationPropertiesIsomCode::X403000,
+            None,
+            &[square(0.0, 0.0, 100.0)],
+        );
+        let contour: Vec<[f64; 2]> = (0..=20)
+            .map(|i| [i as f64 * 5.0, 100.0 - (i as f64 - 10.0).abs()])
+            .collect();
+        for (table, features) in [
+            (IsomTable::VegetationAreas, vec![area]),
+            (IsomTable::Contours, vec![terrain_line(CONTOUR, &contour)]),
+        ] {
+            write_feature_collection(&fs, &out.join(merged_file_name(table)), features, None)
+                .unwrap();
+        }
+
+        export_combined(&fs, out, &MapFrame::default(), None, Outputs::ALL).unwrap();
+
+        let positions = combined_positions(&fs, out);
+        for code in [IsomCode::C403_000, IsomCode::C101_000] {
+            assert!(positions.iter().any(|(c, _)| *c == code), "no {code}");
+        }
+        for (code, [x, y]) in positions {
+            assert!(
+                (0.0..=100.0).contains(&x) && (0.0..=100.0).contains(&y),
+                "{code} at {x} {y}"
+            );
+        }
+        // the DXF keeps the whole curve
+        let dxf = String::from_utf8(read_bytes(&fs, &out.join(COMBINED_DXF))).unwrap();
+        assert!(dxf.contains("SPLINE\r\n  8\r\n403.000\r\n"));
+    }
+
+    #[test]
+    fn export_combined_keeps_a_ring_as_read_where_its_curve_would_cross_a_hole() {
+        use crate::validity::{cm, inside, ring_is_simple, rings_meet};
+        let fs = crate::io::fs::memory::MemoryFileSystem::new();
+        let out = Path::new("out");
+        fs.create_dir_all(out).unwrap();
+        // an L: at its inner corner the curve cuts into the area, through a hole
+        // that hugs the inner edge there
+        let pts = |v: &[[f64; 2]]| v.iter().map(|&[x, y]| Point2::new(x, y)).collect();
+        let exterior: Vec<Point2> = pts(&[
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [100.0, 100.0],
+            [50.0, 100.0],
+            [50.0, 50.0],
+            [0.0, 50.0],
+        ]);
+        let hole: Vec<Point2> = pts(&[[30.0, 47.5], [30.0, 49.5], [45.0, 49.5], [45.0, 47.5]]);
+        let rings = vec![exterior.clone(), hole.clone()];
+        // the curve fitted to the exterior alone cuts the hole
+        let closed: Vec<[f64; 2]> = exterior
+            .iter()
+            .chain(exterior.first())
+            .map(|p| [p.x, p.y])
+            .collect();
+        let curve: Vec<_> = curve_points(IsomCode::C406_000, &closed, true)
+            .into_iter()
+            .map(cm)
+            .collect();
+        let hole_cm: Vec<_> = hole
+            .iter()
+            .chain(hole.first())
+            .map(|p| cm([p.x, p.y]))
+            .collect();
+        assert!(
+            rings_meet(&curve, &hole_cm) || !inside(hole_cm[0], &curve),
+            "the case needs a curve that cuts the hole"
+        );
+        let area = vegetation_area(
+            geojson_types::VegetationPropertiesIsomCode::X406000,
+            None,
+            &rings,
+        );
+        write_feature_collection(
+            &fs,
+            &out.join(merged_file_name(IsomTable::VegetationAreas)),
+            vec![area],
+            None,
+        )
+        .unwrap();
+
+        export_combined(&fs, out, &MapFrame::default(), None, Outputs::ALL).unwrap();
+
+        let combined = read_combined(&fs, out);
+        assert_eq!(combined.len(), 1);
+        let rings: Vec<Vec<_>> = rings_of(&combined[0].1)
+            .into_iter()
+            .map(|r| r.into_iter().map(cm).collect())
+            .collect();
+        assert_eq!(rings.len(), 2);
+        assert!(rings.iter().all(|r| ring_is_simple(r)), "{rings:?}");
+        assert!(!rings_meet(&rings[0], &rings[1]), "{rings:?}");
+        assert!(inside(rings[1][0], &rings[0]), "{rings:?}");
     }
 
     #[test]

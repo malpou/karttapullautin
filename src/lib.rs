@@ -19,9 +19,12 @@ pub mod mapframe;
 pub mod merge;
 pub mod palette;
 mod plan;
+/// The box a batch tile's tables are cropped to ([`geojson::crop_geojson`]).
+pub use plan::Rect;
 pub mod process;
 pub mod render;
 pub mod util;
+mod validity;
 pub mod vec2d;
 pub mod vege_vector;
 pub mod vegetation;

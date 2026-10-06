@@ -3,7 +3,7 @@
 //! Douglas-Peucker simplification and Chaikin corner rounding. Output is GeoJSON plus a
 //! combined binary/text DXF with the symbol code as DXF layer, for map program import.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::num::NonZeroU64;
 use std::path::Path;
@@ -16,6 +16,7 @@ use crate::geojson;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode as Code;
 use crate::geometry::{BinaryDxf, Classification, Point2, Polylines, signed_area};
 use crate::io::fs::FileSystem;
+use crate::validity::{Cm, cm, ring_contacts, ring_is_simple};
 use crate::vec2d::Vec2D;
 use crate::vegetation::VegetationClasses;
 
@@ -80,9 +81,22 @@ fn grid_to_polygons(
     median_radii: [u32; 2],
     epsilon: f64,
 ) -> Vec<VegPolygon> {
+    trace_polygons(grid, origin, cell, code_of, median_radii, epsilon).0
+}
+
+/// [`grid_to_polygons`], and how many chains were left unsimplified to keep the
+/// polygons valid.
+fn trace_polygons(
+    grid: &Vec2D<u8>,
+    origin: (f64, f64),
+    cell: f64,
+    code_of: &dyn Fn(u8) -> Code,
+    median_radii: [u32; 2],
+    epsilon: f64,
+) -> (Vec<VegPolygon>, usize) {
     let (w, h) = (grid.width() as u32, grid.height() as u32);
     if w == 0 || h == 0 {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
 
     // work in image space with pixel (x,y) == grid (x,y); no flips anywhere
@@ -225,34 +239,89 @@ fn grid_to_polygons(
         }
     }
 
-    // simplified shared chains, cached so both sides get the identical polyline; the
-    // second requester always traverses the chain in the opposite direction
-    let mut chain_cache: HashMap<(u32, u32, V, V, V), Vec<Point2>> = HashMap::new();
-    let to_world = |v: V| Point2::new(origin.0 + v.0 as f64 * cell, origin.1 + v.1 as f64 * cell);
-
-    let mut polygons = Vec::new();
     // deterministic component order: which side of a shared chain simplifies first
     // decides the vertex selection, so HashMap order would make output nondeterministic
     let mut comp_edges: Vec<_> = comp_edges.into_iter().collect();
     comp_edges.sort_unstable_by_key(|(label, _)| *label);
-    for (label, (class, edges)) in comp_edges {
+    let traced: Vec<Component> = comp_edges
+        .into_iter()
+        .map(|(label, (class, edges))| (label, class, chain_rings(edges)))
+        .collect();
+
+    // Simplification works chain by chain, so a chord of one ring can cross another
+    // ring of the same polygon (a hole and its exterior in a strip one cell wide). The
+    // chains of a ring that does are traced again unsimplified, on both sides, until
+    // every polygon is valid; the unsimplified rings are, by construction.
+    let mut raw: HashSet<ChainKey> = HashSet::new();
+    loop {
+        let (polygons, offending) =
+            assemble(&traced, &junctions, &raw, origin, cell, code_of, epsilon);
+        let before = raw.len();
+        raw.extend(offending);
+        if raw.len() == before {
+            return (polygons, raw.len());
+        }
+        log::debug!("{} chains left unsimplified for valid polygons", raw.len());
+    }
+}
+
+/// A traced component: its label, its grid value and its rings (lattice vertices, and
+/// the label across each edge).
+type Component = (u32, u8, Vec<(Vec<V>, Vec<u32>)>);
+
+/// A chain between two components: the components' labels, its end vertices and its
+/// least interior vertex (both sides of the chain build the same key).
+type ChainKey = (u32, u32, V, V, V);
+
+/// One traced ring: its points, the chains it is made of and its lattice vertices.
+struct Traced {
+    pts: Vec<Point2>,
+    keys: Vec<ChainKey>,
+    lattice: Vec<V>,
+}
+
+/// Assemble the polygons from the traced rings, every chain simplified (Douglas-Peucker
+/// and Chaikin at `epsilon`) but those in `raw`. Also returns the chains of the rings
+/// that make a polygon invalid (see [`invalid_rings`]).
+#[allow(clippy::too_many_arguments)]
+fn assemble(
+    traced: &[Component],
+    junctions: &HashSet<V>,
+    raw: &HashSet<ChainKey>,
+    origin: (f64, f64),
+    cell: f64,
+    code_of: &dyn Fn(u8) -> Code,
+    epsilon: f64,
+) -> (Vec<VegPolygon>, Vec<ChainKey>) {
+    // simplified shared chains, cached so both sides get the identical polyline; the
+    // second requester always traverses the chain in the opposite direction
+    let mut chain_cache: HashMap<ChainKey, Vec<Point2>> = HashMap::new();
+    let to_world = |v: V| Point2::new(origin.0 + v.0 as f64 * cell, origin.1 + v.1 as f64 * cell);
+    let simplify = |key: &ChainKey| epsilon > 0.0 && !raw.contains(key);
+
+    let mut polygons = Vec::new();
+    let mut offending = Vec::new();
+    for (label, class, rings) in traced {
+        let (label, class) = (*label, *class);
         let code = code_of(class);
-        let mut exteriors: Vec<Vec<Point2>> = Vec::new();
-        let mut holes: Vec<Vec<Point2>> = Vec::new();
-        for (vs, others) in chain_rings(edges) {
+        let mut exteriors: Vec<Traced> = Vec::new();
+        let mut holes: Vec<Traced> = Vec::new();
+        for (vs, others) in rings {
             let n = vs.len();
             let junct_pos: Vec<usize> = (0..n).filter(|&i| junctions.contains(&vs[i])).collect();
             let mut ring_pts: Vec<Point2> = Vec::new();
+            let mut keys = Vec::new();
             if junct_pos.is_empty() {
                 // island: one closed chain between exactly two components
                 let other = others[0];
                 let vmin = *vs.iter().min().unwrap();
                 let key = (label.min(other), label.max(other), vmin, vmin, vmin);
+                keys.push(key);
                 if let Some(cached) = chain_cache.get(&key) {
                     ring_pts = cached.iter().rev().cloned().collect();
                 } else {
                     let mut pts: Vec<Point2> = vs.iter().map(|&v| to_world(v)).collect();
-                    if epsilon > 0.0 {
+                    if simplify(&key) {
                         pts = simplify_closed(pts, epsilon);
                         pts = chaikin_closed(&pts);
                     }
@@ -284,11 +353,12 @@ fn grid_to_polygons(
                         .copied()
                         .unwrap_or(chain[0]);
                     let key = (label.min(other), label.max(other), e0, e1, vmin);
+                    keys.push(key);
                     let pts: Vec<Point2> = if let Some(cached) = chain_cache.get(&key) {
                         cached.iter().rev().cloned().collect()
                     } else {
                         let mut pts: Vec<Point2> = chain.iter().map(|&v| to_world(v)).collect();
-                        if epsilon > 0.0 {
+                        if simplify(&key) {
                             pts = dp(&pts, epsilon);
                             pts = chaikin_open(&pts);
                         }
@@ -305,54 +375,136 @@ fn grid_to_polygons(
             if ring_pts.len() < 3 {
                 continue;
             }
-            if signed_area(&ring_pts) > 0.0 {
-                exteriors.push(ring_pts);
+            let ring = Traced {
+                pts: ring_pts,
+                keys,
+                lattice: vs.clone(),
+            };
+            if signed_area(&ring.pts) > 0.0 {
+                exteriors.push(ring);
             } else {
-                holes.push(ring_pts);
+                holes.push(ring);
             }
         }
         if exteriors.is_empty() {
             continue;
         }
-        // one 4-connected component has exactly one exterior; if point-touching pinches
-        // produced several, attach the holes to the largest and emit the rest hole-less
+        // the walk turns right where the component's cells touch diagonally
+        // ([`chain_rings`]), so a 4-connected component has exactly one exterior
+        debug_assert_eq!(exteriors.len(), 1, "component {label}");
+        // should that ever fail, the holes go with the largest exterior, and the rest are
+        // emitted hole-less when at least the ISOM minimum
         exteriors.sort_by(|a, b| {
-            signed_area(b)
+            signed_area(&b.pts)
                 .abs()
-                .partial_cmp(&signed_area(a).abs())
+                .partial_cmp(&signed_area(&a.pts).abs())
                 .unwrap()
         });
         let mut it = exteriors.into_iter();
         let mut rings = vec![it.next().unwrap()];
         rings.extend(holes);
+        if epsilon > 0.0 {
+            for i in invalid_rings(&rings, to_world) {
+                offending.extend(rings[i].keys.iter().copied());
+            }
+        }
         polygons.push(VegPolygon {
             value: class,
             code,
-            rings,
+            rings: rings.into_iter().map(|r| r.pts).collect(),
         });
         for extra in it {
-            // pinch fragments below the ISOM minimum are dropped, not emitted
-            if signed_area(&extra) >= min_area_m2(code) {
+            if signed_area(&extra.pts) >= min_area_m2(code) {
                 polygons.push(VegPolygon {
                     value: class,
                     code,
-                    rings: vec![extra],
+                    rings: vec![extra.pts],
                 });
             }
         }
     }
-    polygons
+    (polygons, offending)
+}
+
+/// The rings of a polygon (exterior first) that make it invalid as written (on the cm
+/// grid): rings that are not simple, and pairs of rings that cross, share a stretch or
+/// touch anywhere but at a lattice vertex both pass through unsimplified (the corners
+/// where the component's cells touch diagonally).
+fn invalid_rings(rings: &[Traced], to_world: impl Fn(V) -> Point2) -> Vec<usize> {
+    let on_grid: Vec<Vec<Cm>> = rings
+        .iter()
+        .map(|r| {
+            let mut ring: Vec<Cm> = r
+                .pts
+                .iter()
+                .chain(r.pts.first())
+                .map(|p| cm([p.x, p.y]))
+                .collect();
+            ring.dedup();
+            ring
+        })
+        .collect();
+    let bbox = |ring: &[Cm]| {
+        ring.iter()
+            .fold([i64::MAX, i64::MAX, i64::MIN, i64::MIN], |b, p| {
+                [b[0].min(p.0), b[1].min(p.1), b[2].max(p.0), b[3].max(p.1)]
+            })
+    };
+    let boxes: Vec<[i64; 4]> = on_grid.iter().map(|r| bbox(r)).collect();
+    let mut bad = vec![false; rings.len()];
+    for i in 0..rings.len() {
+        if !ring_is_simple(&on_grid[i]) {
+            bad[i] = true;
+        }
+        for j in i + 1..rings.len() {
+            let (a, b) = (boxes[i], boxes[j]);
+            if a[0] > b[2] || b[0] > a[2] || a[1] > b[3] || b[1] > a[3] {
+                continue;
+            }
+            let allowed = || -> HashSet<Cm> {
+                let theirs: HashSet<V> = rings[j].lattice.iter().copied().collect();
+                rings[i]
+                    .lattice
+                    .iter()
+                    .filter(|v| theirs.contains(v))
+                    .map(|&v| {
+                        let p = to_world(v);
+                        cm([p.x, p.y])
+                    })
+                    .collect()
+            };
+            let valid = ring_contacts(&on_grid[i], &on_grid[j]).is_some_and(|touches| {
+                touches.is_empty() || {
+                    let allowed = allowed();
+                    touches.iter().all(|t| allowed.contains(t))
+                }
+            });
+            if !valid {
+                bad[i] = true;
+                bad[j] = true;
+            }
+        }
+    }
+    (0..rings.len()).filter(|&i| bad[i]).collect()
 }
 
 /// Chain directed edges into closed rings, tracking the other-side label per segment.
 /// Every vertex has equal in/out degree, so a walk always finds an outgoing edge until
 /// it closes on its start.
+///
+/// A vertex with two outgoing edges is a corner where the component's cells touch
+/// diagonally. The walk turns right there, onto the other cell's edge, so the two
+/// passes through the corner land in different rings (the exterior and a hole touching
+/// it, or two holes) instead of one ring touching itself, which is not a valid polygon
+/// ring. The walk starts at the minimum vertex, which has a cell edge to its left and
+/// so is never such a corner.
 fn chain_rings(mut edges: EdgeMap) -> Vec<(Vec<V>, Vec<u32>)> {
     let mut rings = Vec::new();
     // start each walk at the minimum remaining vertex so ring rotation is deterministic
     while let Some(start) = edges.keys().min().copied() {
         let mut ring = vec![start];
         let mut others = Vec::new();
+        let mut prev: Option<V> = None;
         let mut cur = start;
         loop {
             let Some(nexts) = edges.get_mut(&cur) else {
@@ -360,7 +512,18 @@ fn chain_rings(mut edges: EdgeMap) -> Vec<(Vec<V>, Vec<u32>)> {
                 ring.clear();
                 break;
             };
-            let (next, other) = nexts.pop().unwrap();
+            // the right turn: the incoming direction rotated clockwise (edges run
+            // counter-clockwise around their cells, x right and y up)
+            let pick = prev
+                .filter(|_| nexts.len() > 1)
+                .and_then(|p| {
+                    let right = (cur.1 - p.1, p.0 - cur.0);
+                    nexts
+                        .iter()
+                        .position(|&(n, _)| (n.0 - cur.0, n.1 - cur.1) == right)
+                })
+                .unwrap_or(nexts.len() - 1);
+            let (next, other) = nexts.remove(pick);
             if nexts.is_empty() {
                 edges.remove(&cur);
             }
@@ -369,6 +532,7 @@ fn chain_rings(mut edges: EdgeMap) -> Vec<(Vec<V>, Vec<u32>)> {
                 break;
             }
             ring.push(next);
+            prev = Some(cur);
             cur = next;
         }
         if ring.len() >= 3 {
@@ -644,6 +808,150 @@ mod tests {
         // the exterior ring encloses all 25 cells; the hole is a separate ring of 1 cell
         assert_eq!(signed_area(&big.rings[0]), 25.0 * 100.0);
         assert_eq!(signed_area(&big.rings[1]), -100.0);
+    }
+
+    /// A C of cells whose tips touch diagonally, in all four rotations: its boundary is an
+    /// exterior and a hole touching at the tips' shared corner, each ring through that
+    /// corner once (a ring touching itself there is OGC-invalid).
+    #[test]
+    fn diagonal_touch_traces_an_exterior_and_a_hole() {
+        // the C in a 3x3 block: every cell but the centre (the hole) and one corner
+        let c = [(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2)];
+        for rotation in 0..4 {
+            let mut grid = Vec2D::new(5, 5, 0u8);
+            for &(x, y) in &c {
+                let (mut x, mut y) = (x as i64 - 1, y as i64 - 1);
+                for _ in 0..rotation {
+                    (x, y) = (-y, x);
+                }
+                grid[((x + 2) as usize, (y + 2) as usize)] = 1;
+            }
+            let polys = grid_to_polygons(&grid, (0.0, 0.0), 10.0, &|_| Code::X410000, [0, 0], 0.0);
+            assert_eq!(polys.len(), 1, "rotation {rotation}");
+            let rings = &polys[0].rings;
+            assert_eq!(rings.len(), 2, "rotation {rotation}: {rings:?}");
+            assert_eq!(signed_area(&rings[0]), 800.0, "rotation {rotation}");
+            assert_eq!(signed_area(&rings[1]), -100.0, "rotation {rotation}");
+            for ring in rings {
+                let mut seen = std::collections::HashSet::new();
+                for p in ring {
+                    assert!(
+                        seen.insert((p.x as i64, p.y as i64)),
+                        "rotation {rotation}: {p:?} twice in {ring:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Two classes around a pinch: the C of class 1 from
+    /// [`diagonal_touch_traces_an_exterior_and_a_hole`] with its gap cell class 2. With
+    /// simplification on, the C's hole is point for point the gap's exterior.
+    #[test]
+    fn two_classes_share_the_edge_around_a_pinch() {
+        let mut grid = Vec2D::new(5, 5, 0u8);
+        for (x, y) in [(1, 1), (2, 1), (3, 1), (1, 2), (3, 2), (1, 3), (2, 3)] {
+            grid[(x, y)] = 1;
+        }
+        grid[(2, 2)] = 2;
+        let code_of = |c: u8| if c == 1 { Code::X410000 } else { Code::X406000 };
+        let polys = grid_to_polygons(&grid, (0.0, 0.0), 20.0, &code_of, [0, 0], 2.0);
+        let c = polys.iter().find(|p| p.value == 1).unwrap();
+        let gap = polys.iter().find(|p| p.value == 2).unwrap();
+        assert_eq!(c.rings.len(), 2, "{c:?}");
+        let points = |ring: &[Point2]| -> std::collections::BTreeSet<(i64, i64)> {
+            ring.iter().map(|p| cm([p.x, p.y])).collect()
+        };
+        assert_eq!(points(&c.rings[1]), points(&gap.rings[0]));
+    }
+
+    fn traced(pts: &[(f64, f64)], lattice: &[V]) -> Traced {
+        Traced {
+            pts: pts.iter().map(|&(x, y)| Point2::new(x, y)).collect(),
+            keys: Vec::new(),
+            lattice: lattice.to_vec(),
+        }
+    }
+
+    #[test]
+    fn invalid_rings_allows_touching_only_at_a_shared_lattice_vertex() {
+        let to_world = |v: V| Point2::new(v.0 as f64, v.1 as f64);
+        let exterior = traced(
+            &[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            &[(0, 0), (10, 0), (10, 10), (0, 10)],
+        );
+        // a hole touching the exterior at the lattice vertex (0, 5) both pass through
+        let touching = traced(&[(0.0, 5.0), (5.0, 2.0), (5.0, 8.0)], &[(0, 5), (5, 2)]);
+        let mut exterior_through = traced(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 5.0),
+            ],
+            &[(0, 0), (10, 0), (10, 10), (0, 10), (0, 5)],
+        );
+        assert!(invalid_rings(&[exterior_through, touching], to_world).is_empty());
+        // the same touch where the unsimplified rings do not meet
+        exterior_through = traced(
+            &[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 5.0),
+            ],
+            &[(0, 0), (10, 0), (10, 10), (0, 10)],
+        );
+        let touching = traced(&[(0.0, 5.0), (5.0, 2.0), (5.0, 8.0)], &[(1, 5), (5, 2)]);
+        assert_eq!(
+            invalid_rings(&[exterior_through, touching], to_world),
+            [0, 1]
+        );
+        // a hole crossing the exterior, and a ring crossing itself
+        let crossing = traced(&[(5.0, 5.0), (15.0, 5.0), (15.0, 8.0)], &[]);
+        assert_eq!(invalid_rings(&[exterior, crossing], to_world), [0, 1]);
+        let bow_tie = traced(&[(0.0, 0.0), (10.0, 10.0), (10.0, 0.0), (0.0, 20.0)], &[]);
+        assert_eq!(invalid_rings(&[bow_tie], to_world), [0]);
+    }
+
+    /// Simplified coarsely, noisy grids give polygons whose chords cross or touch; the
+    /// fallback to unsimplified chains leaves every polygon valid, its rings meeting
+    /// only at lattice vertices.
+    #[test]
+    fn simplification_leaves_every_polygon_valid() {
+        let mut fell_back = 0;
+        for seed in 0..20usize {
+            let mut grid = Vec2D::new(30, 30, 0u8);
+            for x in 0..30usize {
+                for y in 0..30usize {
+                    grid[(x, y)] = ((x * 7 + y * 13 + x * y * (seed + 3)) % 5 % 3) as u8;
+                }
+            }
+            let code_of = |c: u8| if c == 1 { Code::X410000 } else { Code::X408000 };
+            let (polys, raw) = trace_polygons(&grid, (0.0, 0.0), 3.0, &code_of, [0, 0], 6.0);
+            fell_back += raw;
+            for p in &polys {
+                let rings: Vec<Vec<Cm>> = p
+                    .rings
+                    .iter()
+                    .map(|r| r.iter().chain(r.first()).map(|q| cm([q.x, q.y])).collect())
+                    .collect();
+                for (i, r) in rings.iter().enumerate() {
+                    assert!(ring_is_simple(r), "seed {seed}: {r:?}");
+                    for s in &rings[i + 1..] {
+                        let touches = ring_contacts(r, s).expect("rings cross");
+                        // the lattice is every 3 m
+                        assert!(
+                            touches.iter().all(|t| t.0 % 300 == 0 && t.1 % 300 == 0),
+                            "seed {seed}: {touches:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(fell_back > 0, "no grid needed the fallback");
     }
 
     #[test]
