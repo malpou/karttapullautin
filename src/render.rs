@@ -10,8 +10,9 @@ use crate::io::heightmap::HeightMap;
 use crate::knolls::DotKnollSet;
 use crate::mapframe::{MapFrame, WorldFile};
 use crate::merge::ContourSet;
-use image::ImageBuffer;
-use image::Rgba;
+use crate::vegetation::VegetationFrame;
+use image::buffer::ConvertBuffer;
+use image::{ImageBuffer, RgbImage, Rgba, RgbaImage};
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
 use log::info;
 use std::error::Error;
@@ -22,17 +23,44 @@ use std::path::Path;
 /// tile run writes it only with debug_intermediates=1.
 pub const GROUND_DUMP: &str = "xyz2.hmap";
 
-/// The temp folder files a re-render reads: the dumps of the [`MapInputs`] and the files
-/// [`render`] opens itself. A tile run leaves them only with debug_intermediates=1.
+/// The temp folder files a re-render needs: the dumps of the [`MapInputs`] and the
+/// vegetation rasters. A tile run leaves the dumps only with debug_intermediates=1. The
+/// re-render also draws [`OPTIONAL_RENDER_INPUTS`] when they are there.
 const RENDER_INPUTS: [&str; 8] = [
-    "vegetation.png",
-    "vegetation.pgw",
-    "undergrowth.png",
+    VEGETATION_PNG,
+    VEGETATION_PGW,
+    UNDERGROWTH_PNG,
     GROUND_DUMP,
     crate::merge::CONTOURS_DUMP,
     crate::knolls::DOT_KNOLLS_DUMP,
     crate::cliffs::PASSABLE_DUMP,
     crate::cliffs::IMPASSABLE_DUMP,
+];
+
+/// The vegetation raster (a product of the raster family), [`VegetationLayers::vegetation`].
+pub const VEGETATION_PNG: &str = "vegetation.png";
+/// The vegetation raster's world file, [`VegetationLayers::world`].
+pub const VEGETATION_PGW: &str = "vegetation.pgw";
+/// The undergrowth raster (a product of the raster family),
+/// [`VegetationLayers::undergrowth`].
+pub const UNDERGROWTH_PNG: &str = "undergrowth.png";
+/// The water and buildings debug intermediate, [`VegetationLayers::water_buildings`].
+pub const WATER_BUILDINGS_DUMP: &str = "blueblack.png";
+/// The blocks debug intermediate, [`MapInputs::blocks`].
+pub const BLOCKS_DUMP: &str = "blocks.png";
+/// The shape files' layer under the contours, a debug intermediate, [`ShapeLayers::low`].
+pub const SHAPES_LOW_DUMP: &str = "low.png";
+/// The shape files' layer over the cliffs, a debug intermediate, [`ShapeLayers::high`].
+pub const SHAPES_HIGH_DUMP: &str = "high.png";
+
+/// The temp folder files a re-render draws when they are there: a tile run writes them
+/// only with debug_intermediates=1, blocks with detectbuildings and the shape layers with
+/// shape files.
+pub const OPTIONAL_RENDER_INPUTS: [&str; 4] = [
+    WATER_BUILDINGS_DUMP,
+    BLOCKS_DUMP,
+    SHAPES_LOW_DUMP,
+    SHAPES_HIGH_DUMP,
 ];
 
 /// An error when `outputs` leaves out the raster family: the map is a raster product, so
@@ -65,8 +93,41 @@ pub fn check_inputs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dy
     .into())
 }
 
-/// The values [`render`] draws the map from, next to the files it reads from the temp
-/// folder. Later stages move their results here as they stop going through files.
+/// The vegetation the map is drawn on, at one pixel per metre (`undergrowth` at its own
+/// pitch), in the colours the PNGs decode to.
+pub struct VegetationLayers {
+    /// The open land over the green shades (`vegetation.png`).
+    pub vegetation: RgbaImage,
+    /// The undergrowth (`undergrowth.png`).
+    pub undergrowth: RgbaImage,
+    /// The water and buildings (`blueblack.png`), None when a re-render has no dump.
+    pub water_buildings: Option<RgbaImage>,
+    /// The frame of `vegetation` and `water_buildings` (`vegetation.pgw`).
+    pub world: WorldFile,
+}
+
+impl VegetationLayers {
+    /// The frame of the vegetation raster, which the shape files are drawn in.
+    pub fn frame(&self) -> VegetationFrame {
+        VegetationFrame {
+            x_origin: self.world.x_origin,
+            y_origin: self.world.y_origin,
+            width: self.vegetation.width(),
+            height: self.vegetation.height(),
+        }
+    }
+}
+
+/// The shape files drawn at the map's pixels.
+pub struct ShapeLayers {
+    /// Drawn under the north lines and contours (`low.png` in the debug intermediates).
+    pub low: RgbaImage,
+    /// Drawn over the cliffs (`high.png` in the debug intermediates).
+    pub high: RgbaImage,
+}
+
+/// The values [`render`] draws the map from.
+#[derive(Clone, Copy)]
 pub struct MapInputs<'a> {
     /// The ground model (`xyz2.hmap` in the debug intermediates).
     pub ground: &'a HeightMap,
@@ -78,49 +139,69 @@ pub struct MapInputs<'a> {
     pub cliffs: &'a CliffSet,
     /// The form lines, None without them.
     pub form_lines: Option<&'a FormLineSelection>,
+    /// The vegetation rasters.
+    pub vegetation: &'a VegetationLayers,
+    /// The blocks (`blocks.png` in the debug intermediates), None without
+    /// detectbuildings.
+    pub blocks: Option<&'a RgbImage>,
+    /// The shape files' layers, None without shape files.
+    pub shapes: Option<&'a ShapeLayers>,
 }
 
-/// Draws the map from `inputs` and the stages' files in `tmpfolder`; a re-render first
-/// checks them with [`check_inputs`].
-#[allow(clippy::too_many_arguments)]
-pub fn render(
+/// A rendered map and its world file.
+pub struct MapOutput {
+    pub image: RgbaImage,
+    pub world: WorldFile,
+}
+
+/// The file name stem of the map rendered on `thread`: `pullautus{thread}`, or
+/// `pullautus_depr{thread}` with the depressions.
+pub fn map_stem(thread: &str, nodepressions: bool) -> String {
+    if nodepressions {
+        format!("pullautus{thread}")
+    } else {
+        format!("pullautus_depr{thread}")
+    }
+}
+
+/// Writes `map` as `{stem}.png`, its world file `{stem}.pgw` and the CRS sidecar.
+pub fn write_map(
     fs: &impl FileSystem,
+    stem: &str,
+    map: &MapOutput,
+    epsg: Option<u32>,
+) -> Result<(), Box<dyn Error>> {
+    map.image.write_to(
+        &mut fs.create(format!("{stem}.png"))?,
+        image::ImageFormat::Png,
+    )?;
+    map.world.write(&mut fs.create(format!("{stem}.pgw"))?)?;
+    crate::crs::write_raster_crs(fs, format!("{stem}.png"), epsg)?;
+    Ok(())
+}
+
+/// Draws the map from `inputs`: north lines at `angle_deg`, `nwidth` pixels wide (none at
+/// 999), and the depression contours unless `nodepressions`.
+pub fn render(
     config: &Config,
-    thread: &String,
-    tmpfolder: &Path,
     inputs: &MapInputs,
     angle_deg: f64,
     nwidth: usize,
     nodepressions: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> MapOutput {
     info!("Rendering...");
-    check_raster(config)?;
 
     let frame = config.map_frame;
 
     let angle = -angle_deg / 180.0 * PI;
 
     // Draw vegetation ----------
-    let tfw_in = tmpfolder.join("vegetation.pgw");
-    let vege_frame = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
+    let vege_frame = &inputs.vegetation.world;
     let x0 = vege_frame.x_origin;
     let y0 = vege_frame.y_origin;
 
-    let mut img_reader = image::ImageReader::new(
-        fs.open(tmpfolder.join("vegetation.png"))
-            .expect("Opening vegetation image failed"),
-    );
-    img_reader.set_format(image::ImageFormat::Png);
-    img_reader.no_limits();
-    let img = img_reader.decode().unwrap();
-
-    let mut imgug_reader = image::ImageReader::new(
-        fs.open(tmpfolder.join("undergrowth.png"))
-            .expect("Opening undergrowth image failed"),
-    );
-    imgug_reader.set_format(image::ImageFormat::Png);
-    imgug_reader.no_limits();
-    let imgug = imgug_reader.decode().unwrap();
+    let img = &inputs.vegetation.vegetation;
+    let imgug = &inputs.vegetation.undergrowth;
 
     let w = img.width();
     let h = img.height();
@@ -134,14 +215,14 @@ pub fn render(
     let new_width = frame.to_px(w as f64) as u32;
     let new_height = frame.to_px(h as f64) as u32;
     let mut img = image::imageops::resize(
-        &img,
+        img,
         new_width,
         new_height,
         image::imageops::FilterType::Nearest,
     );
 
     let imgug = image::imageops::resize(
-        &imgug,
+        imgug,
         new_width,
         new_height,
         image::imageops::FilterType::Nearest,
@@ -149,15 +230,9 @@ pub fn render(
 
     image::imageops::overlay(&mut img, &imgug, 0, 0);
 
-    let low_file = tmpfolder.join("low.png");
-    if fs.exists(&low_file) {
-        let mut low_reader =
-            image::ImageReader::new(fs.open(low_file).expect("Opening low image failed"));
-        low_reader.set_format(image::ImageFormat::Png);
-        low_reader.no_limits();
-        let low = low_reader.decode().unwrap();
+    if let Some(shapes) = inputs.shapes {
         let low = image::imageops::resize(
-            &low,
+            &shapes.low,
             new_width,
             new_height,
             image::imageops::FilterType::Nearest,
@@ -207,14 +282,8 @@ pub fn render(
         draw_filled_circle_mut(&mut img, (x as i32, y as i32), 7, color)
     }
     // blocks -------------
-    let blocks_file = tmpfolder.join("blocks.png");
-    if fs.exists(&blocks_file) {
-        let mut blockpurple_reader =
-            image::ImageReader::new(fs.open(blocks_file).expect("Opening blocks image failed"));
-        blockpurple_reader.set_format(image::ImageFormat::Png);
-        blockpurple_reader.no_limits();
-        let blockpurple = blockpurple_reader.decode().unwrap();
-        let mut blockpurple = blockpurple.to_rgba8();
+    if let Some(blocks) = inputs.blocks {
+        let mut blockpurple: RgbaImage = blocks.convert();
         for p in blockpurple.pixels_mut() {
             if p[0] == 255 && p[1] == 255 && p[2] == 255 {
                 p[3] = 0;
@@ -241,16 +310,8 @@ pub fn render(
         image::imageops::overlay(&mut img, &blockpurple_thumb, 0, 0);
     }
     // blueblack -------------
-    let blueblack_file = tmpfolder.join("blueblack.png");
-    if fs.exists(&blueblack_file) {
-        let mut imgbb_reader = image::ImageReader::new(
-            fs.open(blueblack_file)
-                .expect("Opening blueblack image failed"),
-        );
-        imgbb_reader.set_format(image::ImageFormat::Png);
-        imgbb_reader.no_limits();
-        let imgbb = imgbb_reader.decode().unwrap();
-        let mut imgbb = imgbb.to_rgba8();
+    if let Some(imgbb) = &inputs.vegetation.water_buildings {
+        let mut imgbb = imgbb.clone();
         for p in imgbb.pixels_mut() {
             if p[0] == 255 && p[1] == 255 && p[2] == 255 {
                 p[3] = 0;
@@ -271,15 +332,9 @@ pub fn render(
     draw_cliffs(config, &inputs.cliffs.impassable, &mut img, x0, y0);
 
     // high -------------
-    let high_file = tmpfolder.join("high.png");
-    if fs.exists(&high_file) {
-        let mut high_reader =
-            image::ImageReader::new(fs.open(high_file).expect("Opening high image failed"));
-        high_reader.set_format(image::ImageFormat::Png);
-        high_reader.no_limits();
-        let high = high_reader.decode().unwrap();
+    if let Some(shapes) = inputs.shapes {
         let high_thumb = image::imageops::resize(
-            &high,
+            &shapes.high,
             new_width,
             new_height,
             image::imageops::FilterType::Nearest,
@@ -287,29 +342,11 @@ pub fn render(
         image::imageops::overlay(&mut img, &high_thumb, 0, 0);
     }
 
-    let filename = if nodepressions {
-        format!("pullautus{thread}")
-    } else {
-        format!("pullautus_depr{thread}")
-    };
-
-    img.write_to(
-        &mut fs
-            .create(format!("{filename}.png"))
-            .expect("could not save output png"),
-        image::ImageFormat::Png,
-    )
-    .expect("could not write image");
-
-    let mut pgw_file_out = fs
-        .create(format!("{filename}.pgw"))
-        .expect("Unable to create file");
-    map_world_file(&vege_frame, &frame)
-        .write(&mut pgw_file_out)
-        .expect("Unable to write to file");
-    crate::crs::write_raster_crs(fs, format!("{filename}.png"), config.epsg)?;
     info!("Done");
-    Ok(())
+    MapOutput {
+        image: img,
+        world: map_world_file(vege_frame, &frame),
+    }
 }
 
 /// Draws the cliff dashes `lines` on `img`, the sheet whose top left corner is at
@@ -661,6 +698,73 @@ mod tests {
             fs.create(temp.join(name)).unwrap();
         }
         assert!(super::check_inputs(&fs, temp).is_ok());
+    }
+
+    /// A map drawn from values only: the vegetation's frame at the sheet's pixels, a dot
+    /// knoll and a building where the inputs put them.
+    #[test]
+    fn render_draws_the_inputs_in_the_vegetation_frame() {
+        use super::*;
+        use crate::geometry::{Bounds, Points};
+        use crate::vec2d::Vec2D;
+        let config = Config::from_file(Path::new("pullauta.default.ini")).unwrap();
+        let frame = config.map_frame;
+        let (x0, y0) = (1000.0, 2010.0);
+        let bounds = Bounds::new(x0, x0 + 12.0, y0 - 10.0, y0);
+        let ground = HeightMap {
+            xoffset: x0,
+            yoffset: y0 - 10.0,
+            scale: 2.0,
+            grid: Vec2D::new(6, 5, 100.0),
+        };
+        let contours = ContourSet {
+            lines: Polylines::new(),
+            bounds: bounds.clone(),
+        };
+        let mut points = Points::new();
+        points.push(Point2::new(x0 + 3.0, y0 - 3.0), Classification::Dotknoll);
+        let dot_knolls = DotKnollSet {
+            points,
+            bounds: bounds.clone(),
+        };
+        let cliffs = CliffSet {
+            passable: Polylines::new(),
+            impassable: Polylines::new(),
+            bounds,
+        };
+        let white = Rgba([255, 255, 255, 255]);
+        let mut water_buildings = RgbaImage::from_pixel(12, 10, white);
+        water_buildings.put_pixel(9, 8, Rgba([0, 0, 0, 255]));
+        let vegetation = VegetationLayers {
+            vegetation: RgbaImage::from_pixel(12, 10, white),
+            undergrowth: RgbaImage::from_pixel(28, 24, Rgba([255, 255, 255, 0])),
+            water_buildings: Some(water_buildings),
+            world: WorldFile::north_up(1.0, x0, y0),
+        };
+        let inputs = MapInputs {
+            ground: &ground,
+            contours: &contours,
+            dot_knolls: &dot_knolls,
+            cliffs: &cliffs,
+            form_lines: None,
+            vegetation: &vegetation,
+            blocks: None,
+            shapes: None,
+        };
+
+        let map = render(&config, &inputs, 0.0, 0, true);
+        assert_eq!(
+            map.image.dimensions(),
+            (frame.to_px(12.0) as u32, frame.to_px(10.0) as u32)
+        );
+        assert_eq!(map.world, map_world_file(&vegetation.world, &frame));
+        let px = |x: f64, y: f64| {
+            *map.image
+                .get_pixel(frame.to_px(x) as u32, frame.to_px(y) as u32)
+        };
+        assert_eq!(px(3.0, 3.0), Rgba([166, 85, 43, 255]));
+        assert_eq!(px(9.5, 8.5), Rgba([0, 0, 0, 255]));
+        assert_eq!(px(6.0, 1.0), white);
     }
 
     #[test]

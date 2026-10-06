@@ -1,6 +1,7 @@
 use log::debug;
 use log::error;
 use log::info;
+use log::warn;
 use pullauta::cliffs::CliffSet;
 use pullauta::config::Config;
 use pullauta::formlines::FormLineSelection;
@@ -9,7 +10,10 @@ use pullauta::io::fs::memory::MemoryFileSystem;
 use pullauta::io::heightmap::HeightMap;
 use pullauta::knolls::{DotKnollSet, KNOLL_GROUND_DUMP};
 use pullauta::merge::ContourSet;
-use pullauta::render::{GROUND_DUMP, MapInputs};
+use pullauta::render::{
+    BLOCKS_DUMP, GROUND_DUMP, MapInputs, SHAPES_HIGH_DUMP, SHAPES_LOW_DUMP, ShapeLayers,
+    UNDERGROWTH_PNG, VEGETATION_PGW, VEGETATION_PNG, VegetationLayers, WATER_BUILDINGS_DUMP,
+};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -97,36 +101,19 @@ fn main() {
     let tmpfolder = PathBuf::from(format!("temp{thread}"));
     fs::create_dir_all(&tmpfolder).expect("Could not create tmp folder");
 
-    let pnorthlinesangle = config.pnorthlinesangle;
-    let pnorthlineswidth = config.pnorthlineswidth;
-
     match command {
         // re-render a tile run with debug_intermediates=1; a normal run keeps only
         // products in temp/, so `pullauta` alone prints the usage there
         Command::Default if !batch && pullauta::render::check_inputs(&fs, &tmpfolder).is_ok() => {
-            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
+            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder, true));
             let inputs = &loaded.map_inputs();
             info!("Rendering png map with depressions");
-            or_exit(pullauta::render::render(
-                &fs,
-                &config,
-                &thread,
-                &tmpfolder,
-                inputs,
-                pnorthlinesangle,
-                pnorthlineswidth,
-                false,
+            or_exit(pullauta::process::render_map(
+                &fs, &config, &thread, inputs, false,
             ));
             info!("Rendering png map without depressions");
-            or_exit(pullauta::render::render(
-                &fs,
-                &config,
-                &thread,
-                &tmpfolder,
-                inputs,
-                pnorthlinesangle,
-                pnorthlineswidth,
-                true,
+            or_exit(pullauta::process::render_map(
+                &fs, &config, &thread, inputs, true,
             ));
             info!("\nAll done!");
         }
@@ -255,8 +242,8 @@ fn main() {
         Command::Blocks => {
             let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
             let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            pullauta::blocks::blocks(&fs, config.water_class, &tmpfolder, &ground, &returns)
-                .unwrap();
+            let blocks = pullauta::blocks::blocks(config.water_class, &ground, &returns);
+            pullauta::blocks::write_blocks(&fs, &tmpfolder, &blocks).unwrap();
         }
 
         Command::DotKnolls => {
@@ -436,12 +423,16 @@ fn main() {
 
         #[cfg(feature = "shapefile")]
         Command::UnzipMtk => {
-            pullauta::shapefile::unzip_and_render(&fs, &config, &tmpfolder, &args).unwrap();
+            // a stage command: the layers go to the temp folder, for a re-render
+            let frame = pullauta::shapefile::read_vegetation_frame(&fs, &tmpfolder).unwrap();
+            pullauta::shapefile::unzip_and_render(&fs, &config, &tmpfolder, &args, frame, true)
+                .unwrap();
         }
 
         #[cfg(feature = "shapefile")]
         Command::MtkShapeRender => {
-            pullauta::shapefile::render(&fs, &config, &tmpfolder, false).unwrap();
+            let frame = pullauta::shapefile::read_vegetation_frame(&fs, &tmpfolder).unwrap();
+            pullauta::shapefile::render(&fs, &config, &tmpfolder, frame, false, true).unwrap();
         }
 
         // without the shapefile feature these do nothing, like an unknown command
@@ -482,23 +473,26 @@ fn main() {
                 .and_then(|s| s.parse::<usize>().ok())
                 .expect("expected second argument to be nwidth");
             let nodepressions: bool = args.len() > 2 && args[2] == "nodepressions";
-            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
-            or_exit(pullauta::render::render(
-                &fs,
+            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder, true));
+            let map = pullauta::render::render(
                 &config,
-                &thread,
-                &tmpfolder,
                 &loaded.map_inputs(),
                 angle,
                 nwidth,
                 nodepressions,
+            );
+            or_exit(pullauta::render::write_map(
+                &fs,
+                &pullauta::render::map_stem(&thread, nodepressions),
+                &map,
+                config.epsg,
             ));
         }
 
         Command::Zip(first) => {
             let mut zips: Vec<String> = vec![first];
             zips.extend(args);
-            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder));
+            let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder, false));
             or_exit(pullauta::process::process_zip(
                 &fs,
                 &config,
@@ -507,6 +501,8 @@ fn main() {
                 &loaded.map_inputs(),
                 &zips,
                 false,
+                // a re-render works on the debug intermediates: the shape layers join them
+                true,
             ));
         }
 
@@ -751,6 +747,9 @@ struct RenderInputs {
     dot_knolls: DotKnollSet,
     cliffs: CliffSet,
     form_lines: Option<FormLineSelection>,
+    vegetation: VegetationLayers,
+    blocks: Option<image::RgbImage>,
+    shapes: Option<ShapeLayers>,
 }
 
 impl RenderInputs {
@@ -761,6 +760,9 @@ impl RenderInputs {
             dot_knolls: &self.dot_knolls,
             cliffs: &self.cliffs,
             form_lines: self.form_lines.as_ref(),
+            vegetation: &self.vegetation,
+            blocks: self.blocks.as_ref(),
+            shapes: self.shapes.as_ref(),
         }
     }
 }
@@ -768,11 +770,14 @@ impl RenderInputs {
 /// The inputs of a re-render (`render`, a shape-file zip, `pullauta` in a debug run's
 /// folder), once the raster family and every file it reads are there. The form lines
 /// are selected again from the ground model and the contours, and written as a tile run
-/// writes them (the dump too: a re-render works on the debug intermediates).
+/// writes them (the dump too: a re-render works on the debug intermediates). With
+/// `shapes` the shape files' layers left by an earlier run are loaded; a shape-file zip
+/// draws its own.
 fn read_render_inputs(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
+    shapes: bool,
 ) -> Result<RenderInputs, String> {
     pullauta::render::check_raster(config).map_err(|e| e.to_string())?;
     pullauta::render::check_inputs(fs, tmpfolder).map_err(|e| e.to_string())?;
@@ -787,7 +792,84 @@ fn read_render_inputs(
         dot_knolls: read_dot_knolls(fs, tmpfolder)?,
         cliffs: read_cliffs(fs, tmpfolder)?,
         form_lines,
+        vegetation: read_vegetation_layers(fs, tmpfolder)?,
+        blocks: read_optional_png(fs, tmpfolder, BLOCKS_DUMP)?.map(|png| png.to_rgb8()),
+        shapes: if shapes {
+            read_shape_layers(fs, tmpfolder)?
+        } else {
+            None
+        },
     })
+}
+
+/// The shape files' layers (`low.png` and `high.png`), for a re-render; None without
+/// them, or with a warning when only one of the two is there.
+fn read_shape_layers(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+) -> Result<Option<ShapeLayers>, String> {
+    match (
+        read_optional_png(fs, tmpfolder, SHAPES_LOW_DUMP)?,
+        read_optional_png(fs, tmpfolder, SHAPES_HIGH_DUMP)?,
+    ) {
+        (Some(low), Some(high)) => Ok(Some(ShapeLayers {
+            low: low.to_rgba8(),
+            high: high.to_rgba8(),
+        })),
+        (None, None) => Ok(None),
+        (low, _) => {
+            let (found, missing) = if low.is_some() {
+                (SHAPES_LOW_DUMP, SHAPES_HIGH_DUMP)
+            } else {
+                (SHAPES_HIGH_DUMP, SHAPES_LOW_DUMP)
+            };
+            warn!(
+                "{} has {found} but not {missing}: the shape files are not drawn",
+                tmpfolder.display()
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// The vegetation rasters (`vegetation.png`, `undergrowth.png`, `vegetation.pgw` and,
+/// when there, `blueblack.png`), for a re-render.
+fn read_vegetation_layers(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+) -> Result<VegetationLayers, String> {
+    let png = |name| {
+        let path = tmpfolder.join(name);
+        read_debug_dump(fs, &path, "vegetation rasters", || fs.read_image_png(&path))
+            .map(|png| png.to_rgba8())
+    };
+    let path = tmpfolder.join(VEGETATION_PGW);
+    let world = read_debug_dump(fs, &path, "vegetation rasters", || {
+        pullauta::mapframe::WorldFile::read(fs, &path)
+    })?;
+    Ok(VegetationLayers {
+        vegetation: png(VEGETATION_PNG)?,
+        undergrowth: png(UNDERGROWTH_PNG)?,
+        water_buildings: read_optional_png(fs, tmpfolder, WATER_BUILDINGS_DUMP)?
+            .map(|png| png.to_rgba8()),
+        world,
+    })
+}
+
+/// The PNG `name` in `tmpfolder`, None when it is not there: a re-render draws the
+/// [`pullauta::render::OPTIONAL_RENDER_INPUTS`] it finds.
+fn read_optional_png(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    name: &str,
+) -> Result<Option<image::DynamicImage>, String> {
+    let path = tmpfolder.join(name);
+    if !fs.exists(&path) {
+        return Ok(None);
+    }
+    fs.read_image_png(&path)
+        .map(Some)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))
 }
 
 /// The value, or exit with the error: for an error the user can act on, such as

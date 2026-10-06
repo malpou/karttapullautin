@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::Write;
 
 use tiny_skia::{PathBuilder, Transform};
 
@@ -159,14 +159,11 @@ impl Canvas<'_> {
         Ok(())
     }
 
-    #[inline]
-    pub fn load_from(fs: &impl FileSystem, filename: &std::path::Path) -> anyhow::Result<Self> {
-        let file_size = fs.file_size(filename)?;
-        let mut file = fs.open(filename)?;
-        let mut buff = Vec::with_capacity(file_size as usize);
-        file.read_to_end(&mut buff)?;
-        let pixmap = tiny_skia::Pixmap::decode_png(&buff)?;
-        Ok(Canvas::from_pixmap(pixmap))
+    /// The canvas as the PNG [`Self::save_as`] writes decodes: RGBA, demultiplied.
+    pub fn into_rgba(self) -> image::RgbaImage {
+        let (width, height) = (self.pixmap.width(), self.pixmap.height());
+        image::RgbaImage::from_raw(width, height, self.pixmap.take_demultiplied())
+            .expect("a pixmap holds four bytes per pixel")
     }
 
     #[inline]
@@ -179,5 +176,27 @@ impl Canvas<'_> {
             tiny_skia::Transform::identity(),
             None,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::fs::memory::MemoryFileSystem;
+    use std::path::Path;
+
+    #[test]
+    fn into_rgba_is_the_saved_png_decoded() {
+        let mut canvas = Canvas::new(8, 6);
+        canvas.set_color(Color::new(29, 190, 255));
+        canvas.draw_filled_polygon(&[vec![(1.0, 1.0), (6.0, 1.5), (3.0, 5.0), (1.0, 1.0)]]);
+        canvas.set_transparent_color();
+        canvas.draw_filled_polygon(&[vec![(0.0, 3.0), (8.0, 3.0), (8.0, 4.0), (0.0, 3.0)]]);
+
+        let fs = MemoryFileSystem::new();
+        canvas.save_as(&fs, Path::new("high.png")).unwrap();
+        let decoded = fs.read_image_png("high.png").unwrap();
+        assert!(matches!(decoded, image::DynamicImage::ImageRgba8(_)));
+        assert!(decoded.to_rgba8() == canvas.into_rgba());
     }
 }

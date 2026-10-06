@@ -12,6 +12,7 @@ use crate::{
     geojson,
     io::fs::FileSystem,
     mapframe::WorldFile,
+    render::{SHAPES_HIGH_DUMP, SHAPES_LOW_DUMP, ShapeLayers},
     shapefile::{
         canvas::{Canvas, Color},
         mapping::{Mapping, Operator},
@@ -39,18 +40,29 @@ enum Image {
     Yellow,
 }
 
-/// Draw the shape files onto the map layers `low.png` and `high.png` in `tmpfolder`,
-/// and with a vector mapping write its features to the tables (when
-/// [`Config::vector_tables`]). The map's frame is read from `vegetation.pgw` and
-/// `vegetation.png`; without them nothing is drawn.
+/// Draw the shape files onto the map layers in the vegetation raster's `frame` (None
+/// draws nothing), and with a vector mapping write its features to the tables (when
+/// [`Config::vector_tables`]). With `debug` the layers are also written to `tmpfolder` as
+/// `low.png` and `high.png`.
 pub fn render(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
+    frame: Option<VegetationFrame>,
     batch: bool,
-) -> Result<(), Box<dyn Error>> {
-    let frame = read_vegetation_frame(fs, tmpfolder)?;
-    shapes(fs, config, tmpfolder, frame, batch, true)
+    debug: bool,
+) -> Result<Option<ShapeLayers>, Box<dyn Error>> {
+    let Some((low, high)) = shapes(fs, config, tmpfolder, frame, batch, true)? else {
+        return Ok(None);
+    };
+    if debug {
+        high.save_as(fs, &tmpfolder.join(SHAPES_HIGH_DUMP))?;
+        low.save_as(fs, &tmpfolder.join(SHAPES_LOW_DUMP))?;
+    }
+    Ok(Some(ShapeLayers {
+        low: low.into_rgba(),
+        high: high.into_rgba(),
+    }))
 }
 
 /// Write a batch tile's vector mapping features to the tables without drawing them: the
@@ -62,12 +74,13 @@ pub fn vector_tables(
     tmpfolder: &Path,
     frame: VegetationFrame,
 ) -> Result<(), Box<dyn Error>> {
-    shapes(fs, config, tmpfolder, Some(frame), true, false)
+    shapes(fs, config, tmpfolder, Some(frame), true, false)?;
+    Ok(())
 }
 
 /// The vegetation raster's frame from `vegetation.pgw` and the size of `vegetation.png`
 /// in `tmpfolder`; None without the world file.
-fn read_vegetation_frame(
+pub fn read_vegetation_frame(
     fs: &impl FileSystem,
     tmpfolder: &Path,
 ) -> Result<Option<VegetationFrame>, Box<dyn Error>> {
@@ -92,8 +105,8 @@ fn read_vegetation_frame(
     }))
 }
 
-/// [`render`] in the vegetation raster's frame, drawing only with `draw`; nothing
-/// without the frame.
+/// [`render`] in the vegetation raster's frame, drawing only with `draw`: the layers
+/// under the contours and over the cliffs; nothing without the frame.
 fn shapes(
     fs: &impl FileSystem,
     config: &Config,
@@ -101,17 +114,7 @@ fn shapes(
     vegetation: Option<VegetationFrame>,
     batch: bool,
     draw: bool,
-) -> Result<(), Box<dyn Error>> {
-    let low_file = tmpfolder.join("low.png");
-    if fs.exists(&low_file) {
-        fs.remove_file(low_file).unwrap();
-    }
-
-    let high_file = tmpfolder.join("high.png");
-    if fs.exists(&high_file) {
-        fs.remove_file(high_file).unwrap();
-    }
-
+) -> Result<Option<(Canvas<'static>, Canvas<'static>)>, Box<dyn Error>> {
     let frame = config.map_frame;
     let px_per_metre = frame.px_per_metre();
 
@@ -133,7 +136,7 @@ fn shapes(
 
     let Some(vegetation) = vegetation else {
         info!("Could not find vegetation file");
-        return Ok(());
+        return Ok(None);
     };
     let x0 = vegetation.x_origin;
     let y0 = vegetation.y_origin;
@@ -782,7 +785,7 @@ fn shapes(
         )?;
     }
     if !draw {
-        return Ok(());
+        return Ok(None);
     }
 
     imgblue2.overlay(&mut imgblue, 0.0, 0.0);
@@ -815,22 +818,5 @@ fn shapes(
     imgblue.overlay(&mut imgblacktop, 0.0, 0.0);
     imgblue.overlay(&mut imgbrowntop, 0.0, 0.0);
 
-    let low_file = tmpfolder.join("low.png");
-    if fs.exists(&low_file) {
-        let mut low = Canvas::load_from(fs, &low_file).expect("could not load low.png");
-        imgolive.overlay(&mut low, 0.0, 0.0);
-    }
-
-    let high_file = tmpfolder.join("high.png");
-    if fs.exists(&high_file) {
-        let mut high = Canvas::load_from(fs, &high_file).expect("could not load high.png");
-        imgblue.overlay(&mut high, 0.0, 0.0);
-    }
-    imgblue
-        .save_as(fs, &high_file)
-        .expect("could not save high.png");
-    imgolive
-        .save_as(fs, &low_file)
-        .expect("could not save low.png");
-    Ok(())
+    Ok(Some((imgolive, imgblue)))
 }

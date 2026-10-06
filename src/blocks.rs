@@ -11,15 +11,18 @@ use crate::io::{
     xyz::{LasClass, XyzRecord},
 };
 
+/// The blocks [`blocks`] draws.
+pub struct Blocks {
+    /// The blocks, black on white, median filtered (`blocks.png` in the debug
+    /// intermediates); the map draws it.
+    pub map: RgbImage,
+    /// The other returns, white on transparent (`blocks2.png`, debug).
+    pub others: RgbaImage,
+}
+
 /// Draws the `returns` [`is_block`] picks as blocks, measuring their height above the
 /// `ground` model; `water_class` names the water class (ini `waterclass`).
-pub fn blocks(
-    fs: &impl FileSystem,
-    water_class: u8,
-    tmpfolder: &Path,
-    ground: &HeightMap,
-    returns: &[XyzRecord],
-) -> Result<(), Box<dyn Error>> {
+pub fn blocks(water_class: u8, ground: &HeightMap, returns: &[XyzRecord]) -> Blocks {
     info!("Identifying blocks...");
 
     let xstartxyz = ground.xoffset;
@@ -64,29 +67,33 @@ pub fn blocks(
         }
     }
 
-    img2.write_to(
-        &mut fs
-            .create(tmpfolder.join("blocks2.png"))
-            .expect("error saving png"),
-        image::ImageFormat::Png,
-    )
-    .expect("error saving png");
-
     let mut img = DynamicImage::ImageRgb8(img);
-
-    image::imageops::overlay(&mut img, &DynamicImage::ImageRgba8(img2), 0, 0);
+    let img2 = DynamicImage::ImageRgba8(img2);
+    image::imageops::overlay(&mut img, &img2, 0, 0);
 
     let filter_size = 2;
-    img = image::DynamicImage::ImageRgb8(median_filter(&img.to_rgb8(), filter_size, filter_size));
-
-    img.write_to(
-        &mut fs
-            .create(tmpfolder.join("blocks.png"))
-            .expect("error saving png"),
-        image::ImageFormat::Png,
-    )
-    .expect("error saving png");
+    let map = median_filter(&img.to_rgb8(), filter_size, filter_size);
     info!("Done");
+    Blocks {
+        map,
+        others: img2.into_rgba8(),
+    }
+}
+
+/// Writes `blocks.png` and `blocks2.png` to `tmpfolder`.
+pub fn write_blocks(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+    blocks: &Blocks,
+) -> Result<(), Box<dyn Error>> {
+    blocks.others.write_to(
+        &mut fs.create(tmpfolder.join("blocks2.png"))?,
+        image::ImageFormat::Png,
+    )?;
+    blocks.map.write_to(
+        &mut fs.create(tmpfolder.join(crate::render::BLOCKS_DUMP))?,
+        image::ImageFormat::Png,
+    )?;
     Ok(())
 }
 

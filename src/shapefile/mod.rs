@@ -3,29 +3,28 @@ use std::{error::Error, path::Path};
 use log::info;
 use std::path::PathBuf;
 
-use crate::{config::Config, io::fs::FileSystem};
+use crate::{config::Config, io::fs::FileSystem, render::ShapeLayers, vegetation::VegetationFrame};
 
 mod canvas;
 mod mapping;
 mod render;
 
-pub use render::{render, vector_tables};
+pub use render::{read_vegetation_frame, render, vector_tables};
 
-/// Unzips the shape files and renders them to a canvas.
+/// Unzips the shape files into `tmpfolder` and draws them as [`render`] does.
 pub fn unzip_and_render(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
     filenames: &[String],
-) -> Result<(), Box<dyn Error>> {
+    frame: Option<VegetationFrame>,
+    debug: bool,
+) -> Result<Option<ShapeLayers>, Box<dyn Error>> {
     for zip_name in filenames.iter() {
         info!("Opening zip file {zip_name}");
         fs.extract_zip(zip_name, tmpfolder)?;
     }
-
-    render::render(fs, config, tmpfolder, false).unwrap();
-
-    Ok(())
+    render::render(fs, config, tmpfolder, frame, false, debug)
 }
 
 /// Unzips the shape files to specific folder

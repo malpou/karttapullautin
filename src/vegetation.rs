@@ -626,7 +626,8 @@ pub struct VegetationRasters {
     /// One-channel undergrowth, 1 normal, 2 walk (`undergrowth_bit.png`, a product with
     /// `vege_bitmode`).
     pub undergrowth_bit: GrayImage,
-    /// The water and buildings (`blueblack.png`, debug; the map draws it).
+    /// The water and buildings (`blueblack.png`, debug; the map draws it from
+    /// [`MapRasters::layers`]).
     pub blueblack: PalettedImage,
     /// With `vege_bitmode`: the one-channel green shades (`greens_bit.png`, debug), open
     /// land (`yellow_bit.png`, debug) and both (`vegetation_bit.png`).
@@ -637,6 +638,42 @@ pub struct VegetationRasters {
     /// The frame of `undergrowth` (`undergrowth.pgw`).
     pub undergrowth_world: WorldFile,
     palette: Palette,
+}
+
+impl VegetationRasters {
+    /// The rasters the map is drawn on, dropping the rest.
+    pub fn into_map_rasters(self) -> MapRasters {
+        MapRasters {
+            vegetation: self.vegetation,
+            undergrowth: self.undergrowth,
+            blueblack: self.blueblack,
+            frame: self.frame,
+            palette: self.palette,
+        }
+    }
+}
+
+/// The vegetation rasters the map is drawn on, paletted, as [`VegetationRasters`] drew
+/// them.
+pub struct MapRasters {
+    vegetation: PalettedImage,
+    undergrowth: PalettedImage,
+    blueblack: PalettedImage,
+    frame: VegetationFrame,
+    palette: Palette,
+}
+
+impl MapRasters {
+    /// The layers the map is drawn on: `vegetation`, `undergrowth` and `blueblack` in the
+    /// colours their PNGs decode to.
+    pub fn layers(&self) -> crate::render::VegetationLayers {
+        crate::render::VegetationLayers {
+            vegetation: self.vegetation.to_rgba(&self.palette),
+            undergrowth: self.undergrowth.to_rgba(&self.palette),
+            water_buildings: Some(self.blueblack.to_rgba(&self.palette)),
+            world: self.frame.world_file(),
+        }
+    }
 }
 
 /// The one-channel vegetation rasters of `vege_bitmode`.
@@ -938,10 +975,9 @@ pub fn rasterise_vegetation(
 }
 
 /// Write `rasters` to `tmpfolder`: `vegetation.png`, `undergrowth.png`, their world
-/// files, `blueblack.png` (the map draws it) and, with `vege_bitmode`,
-/// `vegetation_bit.png` and `undergrowth_bit.png`; with `debug` also `greens.png`,
-/// `yellow.png`, `greens_bit.png` and `yellow_bit.png` (with `vege_bitmode`) and
-/// `undergrowth_bit.png`.
+/// files and, with `vege_bitmode`, `vegetation_bit.png` and `undergrowth_bit.png`; with
+/// `debug` also `greens.png`, `yellow.png`, `blueblack.png` (a re-render draws it),
+/// `greens_bit.png` and `yellow_bit.png` (with `vege_bitmode`) and `undergrowth_bit.png`.
 pub fn write_vegetation(
     fs: &impl FileSystem,
     tmpfolder: &Path,
@@ -974,7 +1010,9 @@ pub fn write_vegetation(
             .write_to(&mut png("vegetation_bit.png")?, image::ImageFormat::Png)?;
     }
     paletted("vegetation.png", &rasters.vegetation)?;
-    paletted("blueblack.png", &rasters.blueblack)?;
+    if debug {
+        paletted("blueblack.png", &rasters.blueblack)?;
+    }
     paletted("undergrowth.png", &rasters.undergrowth)?;
     if debug || rasters.bits.is_some() {
         rasters
@@ -1238,7 +1276,6 @@ mod tests {
         assert_eq!(
             names(&fs),
             [
-                "blueblack.png",
                 "undergrowth.pgw",
                 "undergrowth.png",
                 "vegetation.pgw",
@@ -1280,5 +1317,27 @@ mod tests {
                 "yellow_bit.png"
             ]
         );
+    }
+
+    /// The map layers are the written rasters as a re-render decodes them.
+    #[test]
+    fn map_layers_are_the_written_rasters_decoded() {
+        let rasters = rasterise_vegetation(&hand_built_model(), &params());
+        let tmp = Path::new("temp");
+        let fs = MemoryFileSystem::new();
+        fs.create_dir_all(tmp).unwrap();
+        write_vegetation(&fs, tmp, &rasters, true).unwrap();
+        let decoded = |name: &str| fs.read_image_png(tmp.join(name)).unwrap().to_rgba8();
+
+        let frame = rasters.frame;
+        let layers = rasters.into_map_rasters().layers();
+        assert!(decoded("vegetation.png") == layers.vegetation);
+        assert!(decoded("undergrowth.png") == layers.undergrowth);
+        assert!(Some(decoded("blueblack.png")) == layers.water_buildings);
+        assert_eq!(
+            WorldFile::read(&fs, tmp.join("vegetation.pgw")).unwrap(),
+            layers.world
+        );
+        assert_eq!(layers.frame(), frame);
     }
 }

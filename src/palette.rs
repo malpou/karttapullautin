@@ -69,6 +69,14 @@ impl PalettedImage {
         image::imageops::overlay(&mut self.image, &top.image, x, y);
     }
 
+    /// The image in `palette`'s colours: what decoding the PNG [`Self::write_to`] writes
+    /// gives (the PNG has a full transparency chunk, so it decodes as RGBA).
+    pub fn to_rgba(&self, palette: &Palette) -> image::RgbaImage {
+        image::RgbaImage::from_fn(self.image.width(), self.image.height(), |x, y| {
+            palette.colors[self.image.get_pixel(x, y).0[0] as usize]
+        })
+    }
+
     /// writes an indexed PNG to the specified writer
     pub fn write_to<W>(&self, writer: &mut W, palette: &Palette) -> anyhow::Result<()>
     where
@@ -323,5 +331,42 @@ impl image::Pixel for PaletteColor {
         }
 
         *self = *other;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_rgba_is_the_written_png_decoded() {
+        let params = crate::config::Config::from_file(std::path::Path::new("pullauta.default.ini"))
+            .unwrap()
+            .vegetation;
+        let palette = Palette::new(&params);
+        let mut image = PalettedImage::new(4, 3, PaletteColorEnum::Transparent.to_color());
+        let colors = [
+            PaletteColorEnum::Black,
+            PaletteColorEnum::Yellow2,
+            PaletteColorEnum::Blue,
+            PaletteColorEnum::Undergrowth,
+            PaletteColorEnum::GreenShade(0),
+            PaletteColorEnum::GreenShade(3),
+        ];
+        for (i, color) in colors.iter().enumerate() {
+            let rect = imageproc::rect::Rect::at(i as i32 % 4, i as i32 / 4).of_size(1, 1);
+            image.draw_filled_rect(rect, color.to_color());
+        }
+        // BackgroundWhite is not drawn by the canvas: put it in place directly
+        image
+            .image
+            .put_pixel(3, 2, PaletteColorEnum::BackgroundWhite.to_color());
+
+        let mut png = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut png, &palette).unwrap();
+        let decoded =
+            image::load_from_memory_with_format(png.get_ref(), image::ImageFormat::Png).unwrap();
+        assert!(matches!(decoded, image::DynamicImage::ImageRgba8(_)));
+        assert_eq!(decoded.to_rgba8(), image.to_rgba(&palette));
     }
 }

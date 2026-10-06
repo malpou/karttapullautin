@@ -295,7 +295,8 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
 
 /// Classify the returns into the vegetation model and write what `config` asks of it:
 /// the vegetation rasters with the raster family or `debug` (which also writes the
-/// helper rasters), and the vegetation vectors with a vector family.
+/// helper rasters), and the vegetation vectors with a vector family. The rasters the map
+/// is drawn on, when drawn, are returned.
 pub fn make_vegetation(
     fs: &impl FileSystem,
     config: &Config,
@@ -303,16 +304,42 @@ pub fn make_vegetation(
     ground: &HeightMap,
     returns: &[XyzRecord],
     debug: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Option<vegetation::MapRasters>, Box<dyn Error>> {
     let model = vegetation::makevege(ground, returns, &config.vegetation);
+    let mut rasters = None;
     if config.outputs.raster || debug {
-        let rasters = vegetation::rasterise_vegetation(&model, &config.vegetation);
-        vegetation::write_vegetation(fs, tmpfolder, &rasters, debug)?;
+        let drawn = vegetation::rasterise_vegetation(&model, &config.vegetation);
+        vegetation::write_vegetation(fs, tmpfolder, &drawn, debug)?;
+        rasters = Some(drawn.into_map_rasters());
     }
     if config.outputs.vectorizes_vegetation() {
         vege_vector::export_all(fs, config, tmpfolder, &model)?;
     }
-    Ok(())
+    Ok(rasters)
+}
+
+/// Renders the map of `inputs` with the depressions (`nodepressions` false) or without
+/// and writes it as `pullautus_depr{thread}` or `pullautus{thread}`.
+pub fn render_map(
+    fs: &impl FileSystem,
+    config: &Config,
+    thread: &str,
+    inputs: &render::MapInputs,
+    nodepressions: bool,
+) -> Result<(), Box<dyn Error>> {
+    let map = render::render(
+        config,
+        inputs,
+        config.pnorthlinesangle,
+        config.pnorthlineswidth,
+        nodepressions,
+    );
+    render::write_map(
+        fs,
+        &render::map_stem(thread, nodepressions),
+        &map,
+        config.epsg,
+    )
 }
 
 /// Selects the form lines of `contours` on `ground` and writes them to `tmpfolder`: the
@@ -339,61 +366,50 @@ pub fn make_form_lines(
 }
 
 /// Renders the shape files in `filenames` (or, in a batch, the ones already unzipped)
-/// and the map of the tile in `tmpfolder` from `inputs`.
+/// and the map of the tile in `tmpfolder` from `inputs` with them. With `debug` the
+/// shape files' layers are also written to `tmpfolder`.
+#[allow(clippy::too_many_arguments)]
 pub fn process_zip(
     fs: &impl FileSystem,
     config: &Config,
-    thread: &String,
+    thread: &str,
     tmpfolder: &Path,
     inputs: &render::MapInputs,
     filenames: &[String],
     batch: bool,
+    debug: bool,
 ) -> Result<(), Box<dyn Error>> {
     render::check_raster(config)?;
     let mut timing = Timing::start_now("process_zip");
-    let &Config {
-        pnorthlineswidth,
-        pnorthlinesangle,
-        ..
-    } = config;
     #[cfg(feature = "shapefile")]
-    {
+    let shapes = {
+        let frame = Some(inputs.vegetation.frame());
         if !batch && !filenames.is_empty() {
             info!("Rendering shape files");
             timing.start_section("unzip and render shape files");
-            crate::shapefile::unzip_and_render(fs, config, tmpfolder, filenames).unwrap();
+            crate::shapefile::unzip_and_render(fs, config, tmpfolder, filenames, frame, debug)
+                .unwrap()
         } else {
-            crate::shapefile::render(fs, config, tmpfolder, true).unwrap();
+            crate::shapefile::render(fs, config, tmpfolder, frame, true, debug).unwrap()
         }
-    }
+    };
+    #[cfg(not(feature = "shapefile"))]
+    let shapes = {
+        let _ = (filenames, batch, debug);
+        None
+    };
+    let inputs = &render::MapInputs {
+        shapes: shapes.as_ref(),
+        ..*inputs
+    };
 
     info!("Rendering png map with depressions");
     timing.start_section("Rendering png map with depressions");
-    render::render(
-        fs,
-        config,
-        thread,
-        tmpfolder,
-        inputs,
-        pnorthlinesangle,
-        pnorthlineswidth,
-        false,
-    )
-    .unwrap();
+    render_map(fs, config, thread, inputs, false)?;
 
     info!("Rendering png map without depressions");
     timing.start_section("Rendering png map without depressions");
-    render::render(
-        fs,
-        config,
-        thread,
-        tmpfolder,
-        inputs,
-        pnorthlinesangle,
-        pnorthlineswidth,
-        true,
-    )
-    .unwrap();
+    render_map(fs, config, thread, inputs, true)?;
 
     Ok(())
 }
@@ -417,6 +433,11 @@ pub struct TileValues {
     pub terrain: Option<TileTerrain>,
     /// The cliffs, unless vegeonly or contoursonly.
     pub cliffs: Option<cliffs::CliffSet>,
+    /// The vegetation rasters the map is drawn on, when drawn: with the raster family or
+    /// debug_intermediates=1, unless contoursonly or cliffsonly.
+    pub vegetation: Option<vegetation::MapRasters>,
+    /// The blocks, with detectbuildings unless vegeonly, contoursonly or cliffsonly.
+    pub blocks: Option<image::RgbImage>,
 }
 
 /// Runs every stage on the returns of `input_file` and, unless `skip_rendering`, renders
@@ -424,7 +445,7 @@ pub struct TileValues {
 pub fn process_tile(
     fs: &impl FileSystem,
     config: &Config,
-    thread: &String,
+    thread: &str,
     tmpfolder: &Path,
     input_file: &Path,
     tile: &str,
@@ -435,10 +456,7 @@ pub fn process_tile(
         .expect("Could not create tmp folder");
 
     let &Config {
-        pnorthlinesangle,
-        pnorthlineswidth,
-        skipknolldetection,
-        ..
+        skipknolldetection, ..
     } = config;
 
     timing.start_section("preparing input file");
@@ -599,10 +617,11 @@ pub fn process_tile(
         });
     }
 
+    let mut vegetation_rasters = None;
     if !cliffsonly && !contoursonly {
         info!("Vegetation generation");
         timing.start_section("vegetation generation");
-        make_vegetation(
+        vegetation_rasters = make_vegetation(
             fs,
             config,
             tmpfolder,
@@ -631,10 +650,16 @@ pub fn process_tile(
         }
         cliff_set = Some(cliffs);
     }
+    let mut block_map = None;
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");
         timing.start_section("detecting buildings");
-        blocks::blocks(fs, config.water_class, tmpfolder, &ground, &returns).unwrap();
+        let found = blocks::blocks(config.water_class, &ground, &returns);
+        if config.debug_intermediates {
+            blocks::write_blocks(fs, tmpfolder, &found)
+                .map_err(|e| format!("blocks in {}: {e}", tmpfolder.display()))?;
+        }
+        block_map = Some(found.map);
     }
     // rendering reads the stages' outputs, not the returns
     drop(returns);
@@ -655,44 +680,29 @@ pub fn process_tile(
     let full = !vegeonly && !contoursonly && !cliffsonly;
     if let Some(values) = &terrain
         && let Some(cliffs) = &cliff_set
+        && let Some(rasters) = &vegetation_rasters
         && !skip_rendering
         && full
         && config.outputs.raster
     {
+        let vegetation = rasters.layers();
         let inputs = &render::MapInputs {
             ground: &ground,
             contours: &values.contours,
             dot_knolls: &values.dot_knolls,
             cliffs,
             form_lines: values.form_lines.as_ref(),
+            vegetation: &vegetation,
+            blocks: block_map.as_ref(),
+            shapes: None,
         };
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
-        render::render(
-            fs,
-            config,
-            thread,
-            tmpfolder,
-            inputs,
-            pnorthlinesangle,
-            pnorthlineswidth,
-            false,
-        )
-        .unwrap();
+        render_map(fs, config, thread, inputs, false)?;
 
         info!("Rendering png map without depressions");
         timing.start_section("rendering png map without depressions");
-        render::render(
-            fs,
-            config,
-            thread,
-            tmpfolder,
-            inputs,
-            pnorthlinesangle,
-            pnorthlineswidth,
-            true,
-        )
-        .unwrap();
+        render_map(fs, config, thread, inputs, true)?;
     } else if contoursonly && (vegeonly || cliffsonly) {
         let other = if vegeonly { "vegeonly" } else { "cliffsonly" };
         warn!("contoursonly=1 with {other}=1: no contours are made, so no form lines are selected");
@@ -704,6 +714,8 @@ pub fn process_tile(
         ground,
         terrain,
         cliffs: cliff_set,
+        vegetation: vegetation_rasters,
+        blocks: block_map,
     })
 }
 
@@ -884,6 +896,8 @@ pub fn batch_process(
             ground,
             terrain,
             cliffs,
+            vegetation,
+            blocks,
         } = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
             .unwrap_or_else(|e| panic!("processing tile {laz} failed: {e}"));
         // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
@@ -897,15 +911,31 @@ pub fn batch_process(
             && let Some(terrain) = &terrain
             && let Some(cliffs) = &cliffs
         {
-            if outputs.raster {
+            if outputs.raster
+                && let Some(rasters) = &vegetation
+            {
+                let vegetation = rasters.layers();
                 let inputs = &render::MapInputs {
                     ground: &ground,
                     contours: &terrain.contours,
                     dot_knolls: &terrain.dot_knolls,
                     cliffs,
                     form_lines: terrain.form_lines.as_ref(),
+                    vegetation: &vegetation,
+                    blocks: blocks.as_ref(),
+                    shapes: None,
                 };
-                process_zip(fs, conf, thread, &tmpfolder, inputs, &[], true).unwrap();
+                process_zip(
+                    fs,
+                    conf,
+                    thread,
+                    &tmpfolder,
+                    inputs,
+                    &[],
+                    true,
+                    debug_intermediates,
+                )
+                .unwrap();
             } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
                 // the vector mapping's tables, without drawing the shapes
                 #[cfg(feature = "shapefile")]
@@ -918,9 +948,11 @@ pub fn batch_process(
                 .unwrap();
             }
         }
-        // the crop below re-encodes the PNGs: free the ground model first, and the
-        // terrain and the cliffs unless the .dxf.bin crops take them
+        // the crop below re-encodes the PNGs: free the ground model and the map's rasters
+        // first, and the terrain and the cliffs unless the .dxf.bin crops take them
         drop(ground);
+        drop(vegetation);
+        drop(blocks);
         let terrain = terrain.filter(|_| outputs.dxf || debug_intermediates);
         let cliffs = cliffs.filter(|_| outputs.dxf || debug_intermediates);
 
@@ -1250,8 +1282,8 @@ pub fn batch_process(
 }
 
 /// Remove `tmpfolder` if it exists, so a tile starts from an empty temp folder: files
-/// another run left there (such as `low.png` and `high.png`, drawn into the map when
-/// present) would leak into this tile's outputs.
+/// another run left there (such as `low.png` and `high.png`, which a re-render draws
+/// when present) would leak into this tile's outputs and debug intermediates.
 pub fn clear_tile_folder(fs: &impl FileSystem, tmpfolder: &Path) -> std::io::Result<()> {
     if fs.exists(tmpfolder) {
         fs.remove_dir_all(tmpfolder)?;
