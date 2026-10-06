@@ -787,7 +787,7 @@ pub fn process_tile(
 }
 
 /// The returns of `input_file` (`.xyz`, `.las`, `.laz` or `.xyz.bin`), in file order: the
-/// order the `vegethin` counter and the `cliffthin` draws follow. LAS/LAZ points are
+/// order the `vegethin` counter follows. LAS/LAZ points are
 /// scaled by `xfactor`, `yfactor` and `zfactor`, lifted by `zoff` and thinned by
 /// `thinfactor` with a generator seeded by `tile`.
 fn read_returns(

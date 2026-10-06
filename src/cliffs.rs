@@ -510,21 +510,23 @@ fn sampled(cliff_thin: f64, key: u64) -> bool {
 
 /// Thins `points` past `max` to the floor(len / n) with the lowest [`by_key`] order, n =
 /// floor((len - 1) / (max - 1)) + 1: as many as keeping every n-th did, but chosen by
-/// position, not by the order the points come in. The kept points are in no particular
-/// order, but the same order for the same input order.
+/// position, not by the order the points come in. The kept points are sorted by
+/// [`by_key`], a total order, so their order does not rest on how std's selection
+/// leaves them.
 fn thin(points: &mut Vec<Point>, max: usize) {
     if points.len() > max {
         let n = (points.len() - 1) / (max - 1) + 1;
         let keep = points.len() / n;
         points.select_nth_unstable_by(keep, by_key);
         points.truncate(keep);
+        points.sort_unstable_by(by_key);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CliffParams, CliffSet, IMPASSABLE_DUMP, PASSABLE_DUMP, PASSABLE_RASTER_DUMP, Point, by_key,
+        CliffParams, CliffSet, IMPASSABLE_DUMP, PASSABLE_DUMP, PASSABLE_RASTER_DUMP, by_key,
         makecliffs, point, sampled, thin, write_cliffs,
     };
     use crate::geometry::{BinaryDxf, Classification, Point2};
@@ -533,7 +535,6 @@ mod tests {
     use crate::io::heightmap::HeightMap;
     use crate::io::xyz::XyzRecord;
     use crate::vec2d::Vec2D;
-    use image::RgbImage;
     use rand::seq::SliceRandom;
     use rand::{RngExt, SeedableRng, rngs::Xoshiro256PlusPlus};
     use std::path::Path;
@@ -737,20 +738,25 @@ mod tests {
         );
     }
 
+    /// Terraces that step up 2.5 m every 6 m in x and 1.5 m every 7 m in y, with an 8 m
+    /// step at x = 327 m: local relief past `cliffflatplace`, and a drop past
+    /// `cliff_ground_drop` between ground model cells.
+    fn terrace(x: f64, y: f64) -> f64 {
+        let step = if x >= 327.0 { 8.0 } else { 0.0 };
+        100.0 + 2.5 * ((x - 300.0) / 6.0).floor() + 1.5 * ((y - 600.0) / 7.0).floor() + step
+    }
+
     /// Ground returns spread at random over x 300..354 m and y 600..630 m, 40 per square
-    /// metre, on terraces that step up 2.5 m every 6 m in x and 1.5 m every 7 m in y:
-    /// every 3 m bin is crowded past `bin_max_points` and its neighbourhood past
-    /// `neighbourhood_max_points`, and the steps are cliffs.
+    /// metre, on the [`terrace`]s, up to 0.1 m above them: every 3 m bin is crowded past
+    /// `bin_max_points` and its neighbourhood past `neighbourhood_max_points`, and the
+    /// steps are cliffs.
     fn dense_terraces() -> Vec<XyzRecord> {
         let mut rng = Xoshiro256PlusPlus::seed_from_u64(339);
         (0..54 * 30 * 40)
             .map(|_| {
                 let x = 300.0 + 54.0 * rng.random::<f64>();
                 let y = 600.0 + 30.0 * rng.random::<f64>();
-                let z = 100.0
-                    + 2.5 * ((x - 300.0) / 6.0).floor()
-                    + 1.5 * ((y - 600.0) / 7.0).floor()
-                    + 0.1 * rng.random::<f64>();
+                let z = terrace(x, y) + 0.1 * rng.random::<f64>();
                 XyzRecord {
                     x,
                     y,
@@ -773,12 +779,19 @@ mod tests {
         }
     }
 
-    fn cliffs_of(
-        ground: &HeightMap,
-        returns: &[XyzRecord],
-        params: &CliffParams,
-    ) -> (CliffSet, RgbImage) {
-        makecliffs(ground, returns, params)
+    /// The [`terrace`] ground model of 1 m cells from x = `x0` to `x1` and y = 597 to
+    /// 633 m.
+    fn terraced_ground(x0: f64, x1: f64) -> HeightMap {
+        let mut grid = Vec2D::new((x1 - x0) as usize, 36, 0.0);
+        for (i, j, h) in grid.iter_mut() {
+            *h = terrace(x0 + i as f64, 597.0 + j as f64);
+        }
+        HeightMap {
+            xoffset: x0,
+            yoffset: 597.0,
+            scale: 1.0,
+            grid,
+        }
     }
 
     fn dashes(cliffs: &CliffSet) -> Vec<(Vec<Point2>, Classification)> {
@@ -804,22 +817,23 @@ mod tests {
         let mut shuffled = returns.clone();
         shuffled.shuffle(&mut Xoshiro256PlusPlus::seed_from_u64(1));
         for params in [template(), with_cliff_thin(0.5)] {
-            let (cliffs, raster) = cliffs_of(&ground, &returns, &params);
+            let (cliffs, raster) = makecliffs(&ground, &returns, &params);
             assert!(
                 cliffs.passable.iter().next().is_some()
                     && cliffs.impassable.iter().next().is_some()
             );
-            let (again, again_raster) = cliffs_of(&ground, &returns, &params);
+            let (again, again_raster) = makecliffs(&ground, &returns, &params);
             assert_eq!(dashes(&again), dashes(&cliffs));
-            let (other, other_raster) = cliffs_of(&ground, &shuffled, &params);
+            let (other, other_raster) = makecliffs(&ground, &shuffled, &params);
             assert_eq!(dashes(&other), dashes(&cliffs));
             assert!(raster == again_raster && raster == other_raster);
         }
     }
 
-    /// Two tiles that overlap by 18 m, each read in its own order, find the same cliffs
-    /// in the middle of the overlap, where every bin and its neighbours hold the same
-    /// returns in both: the dashes centred within x = 323..331 m.
+    /// Two tiles that overlap by 18 m, each read in its own order and each with its own
+    /// terraced ground model, find the same cliffs in the middle of the overlap, where
+    /// every bin and its neighbours hold the same returns and cells in both: the dashes
+    /// centred within x = 323..331 m, among them the second pass's across the 8 m step.
     #[test]
     fn overlapping_tiles_find_the_same_cliffs_in_the_overlap() {
         let returns = dense_terraces();
@@ -833,10 +847,16 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         for params in [template(), with_cliff_thin(0.5)] {
-            let (west, _) = cliffs_of(&flat_ground(294.0, 340.0), &west, &params);
-            let (east, _) = cliffs_of(&flat_ground(312.0, 360.0), &east, &params);
+            let (west, _) = makecliffs(&terraced_ground(294.0, 340.0), &west, &params);
+            let (east, _) = makecliffs(&terraced_ground(312.0, 360.0), &east, &params);
             let shared = inside(&west);
-            assert!(!shared.is_empty());
+            for class in [
+                Classification::Cliff2,
+                Classification::Cliff3,
+                Classification::Cliff4,
+            ] {
+                assert!(shared.iter().any(|(_, c)| *c == class), "no {class:?}");
+            }
             assert_eq!(inside(&east), shared);
         }
     }
@@ -882,16 +902,13 @@ mod tests {
             let every_nth = len / ((len - 1) / (max - 1) + 1);
             let mut thinned = points.clone();
             thin(&mut thinned, max);
+            assert!(thinned.is_sorted_by(|a, b| by_key(a, b).is_le()));
             assert_eq!(thinned.len(), every_nth);
             assert!(thinned.len() <= max);
             let mut shuffled = points.clone();
             shuffled.shuffle(&mut rng);
             thin(&mut shuffled, max);
-            let sort = |mut v: Vec<Point>| {
-                v.sort_by(by_key);
-                v
-            };
-            assert_eq!(sort(shuffled), sort(thinned.clone()));
+            assert_eq!(shuffled, thinned);
         }
     }
 
