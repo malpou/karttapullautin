@@ -50,6 +50,19 @@ pub struct VegetationParams {
     pub pointvolumefactor: f64,
     /// The exponent of that balancing (ini `pointvolumeexponent`).
     pub pointvolumeexponent: f64,
+    /// The pulse density, per m², at which the green factor is taken as calibrated (ini
+    /// `vege_reference_density`); `None` (0) is off. When set, the `+ 1` that keeps the
+    /// green factor's ratios finite is scaled by the green cell's pulse density over this
+    /// one, so the same stand gets the same factor from a sparse and a dense scan.
+    /// The cell's pulse density is [`VegetationParams::pulse_density`] when given, else
+    /// the mean of the first returns per green cell over the 5x5 cells around it, per m².
+    pub reference_density: Option<f64>,
+    /// The pulse density, per m², `reference_density` scales by in every green cell
+    /// (no ini key: the batch's pulse density goes here); `None` measures it per cell.
+    pub pulse_density: Option<f64>,
+    /// Where the returns carry the LAS vegetation classes 3-5, only those returns count
+    /// as green or high hits above `greenground` (ini `vege_las_classes`).
+    pub las_classes: bool,
     /// Metres subtracted from every return's height before the green count (ini
     /// `vegezoffset`).
     pub vegezoffset: f64,
@@ -274,9 +287,19 @@ pub fn makevege(
         lastfactor,
         yellowfirstlast,
         vegethin,
+        reference_density,
+        pulse_density,
         ..
     } = params;
     let greenshades = &params.greenshades;
+    // only the vegetation classes count as green if the returns carry them
+    let vegetation_classes = params.las_classes
+        && returns.iter().any(|r| {
+            matches!(
+                r.class(),
+                LasClass::LowVegetation | LasClass::MediumVegetation | LasClass::HighVegetation
+            )
+        });
 
     let bounds = ground_bounds(ground);
     let Bounds {
@@ -418,7 +441,12 @@ pub fn makevege(
                 } else {
                     ghit[(xx, yy)] += 1;
                 }
-            } else {
+            } else if !vegetation_classes
+                || matches!(
+                    r3,
+                    LasClass::LowVegetation | LasClass::MediumVegetation | LasClass::HighVegetation
+                )
+            {
                 let mut last = 1.0;
                 if r4 == r5 {
                     last = lastfactor;
@@ -497,16 +525,27 @@ pub fn makevege(
                     (y as f64 * block / size) as usize,
                 )];
 
-            // find lowest firsthit in a 5x5 area
+            // find lowest firsthit in a 5x5 area, and its sum
             let mut firsthit2 = firsthit[(x, y)];
+            let (mut firstsum, mut cells) = (0, 0);
             for i in x.saturating_sub(2)..(x + 3).min(w_block) {
                 for j in y.saturating_sub(2)..(y + 3).min(h_block) {
                     let value = firsthit[(i, j)];
                     if value < firsthit2 {
                         firsthit2 = value;
                     }
+                    firstsum += value;
+                    cells += 1;
                 }
             }
+            // the `+ 1` of the ratios below, in returns at the reference density
+            let prior = match (reference_density, pulse_density) {
+                (Some(reference), Some(density)) => density / reference,
+                (Some(reference), None) => {
+                    firstsum as f64 / cells as f64 / (block * block) / reference
+                }
+                (None, _) => 1.0,
+            };
 
             let greenhit2 = greenhit[(x, y)] as f64;
             let highit2 = highit[(x, y)];
@@ -520,10 +559,10 @@ pub fn makevege(
                 }
             }
 
-            let thevalue = greenhit2 / (ghit2 as f64 + greenhit2 + 1.0)
+            let thevalue = greenhit2 / (ghit2 as f64 + greenhit2 + prior)
                 * (1.0 - topweight
                     + topweight * highit2 as f64
-                        / (ghit2 as f64 + greenhit2 + highit2 as f64 + 1.0))
+                        / (ghit2 as f64 + greenhit2 + highit2 as f64 + prior))
                 * (1.0 - pointvolumefactor * firsthit2 as f64 / (aveg + 0.00001))
                     .powf(pointvolumeexponent);
             if thevalue > 0.0 {
@@ -1076,6 +1115,131 @@ mod tests {
         assert_eq!((model.green.width(), model.green.height()), (10, 10));
         assert!(model.green.iter().all(|(_, _, shade)| shade == 4));
         assert!(model.open_land.iter().all(|(_, _, open)| open == 0));
+    }
+
+    /// `per_side` x `per_side` pulses per 3 m green cell of `ground`, evenly spaced: a
+    /// pulse density of `per_side² / 9` per m².
+    fn stand(
+        ground: &HeightMap,
+        per_side: usize,
+        mut pulse: impl FnMut(f64, f64) -> Vec<XyzRecord>,
+    ) -> Vec<XyzRecord> {
+        let spacing = 3.0 / per_side as f64;
+        let n = (ground.grid.width() as f64 / spacing) as usize;
+        let m = (ground.grid.height() as f64 / spacing) as usize;
+        let mut returns = Vec::new();
+        for i in 0..n {
+            for j in 0..m {
+                returns.extend(pulse(
+                    ground.minx() + (i as f64 + 0.5) * spacing,
+                    ground.miny() + (j as f64 + 0.5) * spacing,
+                ));
+            }
+        }
+        returns
+    }
+
+    /// A first return at 2 m (stratum1) and two more returns on the ground.
+    fn thin_stand(x: f64, y: f64) -> Vec<XyzRecord> {
+        vec![
+            record(x, y, 2.0, 1, 3, 1),
+            record(x, y, 0.0, 2, 3, 2),
+            record(x, y, 0.0, 2, 3, 3),
+        ]
+    }
+
+    /// The same stand sampled with one and with four pulses per green cell (0.11 and
+    /// 0.44 per m², the sparse end of national scans): one green and two ground hits per
+    /// pulse. Unscaled, the `+ 1` in the green factor weighs four times as much against
+    /// the sparse counts: 1/4 * 0.18 = 0.045 is shade 2, 4/13 * 0.18 = 0.055 shade 3
+    /// (shade 3 starts at 0.05). Scaled by the measured density over
+    /// `reference_density` = 0.5, the `+ 1` becomes `+ 0.22` and `+ 0.89`, and both are
+    /// 0.31 * 0.18 = 0.056: shade 3.
+    #[test]
+    fn density_scaling_gives_a_sparse_and_a_dense_scan_the_same_shade() {
+        let ground = flat_ground();
+        let sparse = stand(&ground, 1, thin_stand);
+        let dense = stand(&ground, 2, thin_stand);
+        let shade = |returns: &[XyzRecord], params: &VegetationParams| {
+            let model = makevege(&ground, returns, params);
+            let shades: Vec<u8> = model.green.iter().map(|(_, _, s)| s).collect();
+            assert!(shades.iter().all(|&s| s == shades[0]), "{shades:?}");
+            shades[0]
+        };
+
+        let unscaled = params();
+        assert_eq!(unscaled.reference_density, None);
+        assert_eq!(shade(&sparse, &unscaled), 2);
+        assert_eq!(shade(&dense, &unscaled), 3);
+
+        let scaled = VegetationParams {
+            reference_density: Some(0.5),
+            ..params()
+        };
+        assert_eq!(shade(&sparse, &scaled), 3);
+        assert_eq!(shade(&dense, &scaled), 3);
+
+        // a given pulse density replaces the measured one: the sparse scan's own density
+        // scales as the measured one does, the reference density scales by 1
+        let given = |pulse_density| VegetationParams {
+            pulse_density: Some(pulse_density),
+            ..scaled.clone()
+        };
+        assert_eq!(shade(&sparse, &given(1.0 / 9.0)), 3);
+        assert_eq!(shade(&sparse, &given(0.5)), 2);
+    }
+
+    /// At the reference density the scaled green factor is the unscaled one.
+    #[test]
+    fn density_scaling_at_the_reference_density_changes_nothing() {
+        let ground = flat_ground();
+        // 9 pulses per 3 m cell: 1 per m²
+        let returns = stand(&ground, 3, thin_stand);
+        let unscaled = makevege(&ground, &returns, &params());
+        let scaled = makevege(
+            &ground,
+            &returns,
+            &VegetationParams {
+                reference_density: Some(1.0),
+                ..params()
+            },
+        );
+        assert_eq!(scaled.green, unscaled.green);
+        assert!(unscaled.green.iter().all(|(_, _, s)| s > 0));
+    }
+
+    /// Returns of another class at 2 m count as green unless `las_classes` is on and
+    /// the returns carry vegetation classes (3-5): then only those count above
+    /// `greenground`.
+    #[test]
+    fn with_las_classes_only_vegetation_classes_count_as_green() {
+        let ground = flat_ground();
+        let classed = |class: u8| {
+            move |x: f64, y: f64| vec![record(x, y, 2.0, class, 2, 1), record(x, y, 0.0, 2, 2, 2)]
+        };
+        let shades = |returns: &[XyzRecord], las_classes: bool| {
+            let params = VegetationParams {
+                las_classes,
+                ..params()
+            };
+            let model = makevege(&ground, returns, &params);
+            model.green.iter().map(|(_, _, s)| s).collect::<Vec<u8>>()
+        };
+
+        // no vegetation class anywhere: the flag changes nothing
+        let buildings = pulses(&ground, classed(6));
+        assert!(shades(&buildings, false).iter().all(|&s| s == 4));
+        assert_eq!(shades(&buildings, true), shades(&buildings, false));
+
+        // one high-vegetation return, above every stratum, makes the classes present
+        let mut classified = buildings.clone();
+        classified.push(record(1000.5, 2000.5, 50.0, 5, 1, 1));
+        assert!(shades(&classified, false).iter().all(|&s| s > 0));
+        assert!(shades(&classified, true).iter().all(|&s| s == 0));
+
+        // the same stand classified as medium vegetation stays green
+        let vegetation = pulses(&ground, classed(4));
+        assert!(shades(&vegetation, true).iter().all(|&s| s == 4));
     }
 
     /// The water and building pixels are the 3x3 squares `draw_filled_rect_mut` draws,

@@ -48,6 +48,8 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Canopy top**: Highest vegetation return above the ground model in a cell. _Avoid_: roof, top
 **Stratum**: A height band above ground within which returns are counted. _Avoid_: zone, zones
 **Vegetation density**: Share of returns intercepted within the running-height strata.
+**Reference density**: The pulse density the green values are calibrated at (`vege_reference_density`). When set, the `+ 1` in the green factor's ratios counts as one return at that density, so the same stand gets the same green shade from a sparse and a dense scan. _Avoid_: base density
+**Vegetation class**: LAS class 3, 4 or 5 (low, medium, high vegetation). With `vege_las_classes=1`, where the returns carry them, only vegetation-class returns above `greenground` count in the strata. _Avoid_: vegetation classes for the per-cell output (that is the vegetation model)
 **Green shade**: One of the ordered runnability classes drawn in green (ISOM 406, 408, 410), numbered from 1 by its position in `greenshades`; that number is its greenshade index, `shade` in GeoJSON. _Avoid_: vegeshade
 **Open land**: Ground with almost no returns above knee height (ISOM 401/403). _Avoid_: yellow
 **Undergrowth**: Dense low vegetation under otherwise runnable forest (ISOM 407/409). _Avoid_: ug, ugg

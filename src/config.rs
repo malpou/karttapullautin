@@ -428,6 +428,12 @@ impl Config {
             topweight: parse_typed(gs, "topweight", 0.8),
             pointvolumefactor: parse_typed(gs, "pointvolumefactor", 0.1),
             pointvolumeexponent: parse_typed(gs, "pointvolumeexponent", 1.0),
+            reference_density: match gs.get("vege_reference_density") {
+                None => None,
+                Some(v) => parse_reference_density(v)?,
+            },
+            las_classes: flag(gs, "vege_las_classes", Some(false))?,
+            pulse_density: None,
             vegezoffset: parse_typed(gs, "vegezoffset", 0.0),
             addition: parse_typed(gs, "greendotsize", 0),
             firstandlastreturnasground: parse_typed(gs, "firstandlastreturnasground", 1),
@@ -807,6 +813,17 @@ fn parse_positive_metres(key: &str, v: &str) -> Result<f64, String> {
     }
 }
 
+/// Parse `vege_reference_density`: 0 (off), or a finite pulse density per m² above 0.
+fn parse_reference_density(v: &str) -> Result<Option<f64>, String> {
+    match v.trim().parse::<f64>() {
+        Ok(0.0) => Ok(None),
+        Ok(density) if density.is_finite() && density > 0.0 => Ok(Some(density)),
+        _ => Err(format!(
+            "Value {v} of `vege_reference_density` must be 0 (off) or pulses per m² above 0"
+        )),
+    }
+}
+
 /// Parse `mapscale`: the map scale's denominator, a finite number above 0.
 fn parse_map_scale(v: &str) -> Result<f64, String> {
     match v.trim().parse::<f64>() {
@@ -970,6 +987,34 @@ mod test {
             assert!(err.contains(&format!("`{key}`")), "{err}");
         }
         assert_eq!(load_with(&[("processes", "7")]).unwrap().processes, 7);
+    }
+
+    #[test]
+    fn vege_reference_density_and_las_classes_default_off() {
+        for config in [
+            load_with(&[]).unwrap(),
+            load_without("vege_reference_density").unwrap(),
+            load_without("vege_las_classes").unwrap(),
+        ] {
+            assert_eq!(config.vegetation.reference_density, None);
+            assert!(!config.vegetation.las_classes);
+        }
+        for (v, density) in [
+            ("0", None),
+            ("0.0", None),
+            ("0.5", Some(0.5)),
+            ("8", Some(8.0)),
+        ] {
+            let config = load_with(&[("vege_reference_density", v)]).unwrap();
+            assert_eq!(config.vegetation.reference_density, density, "{v}");
+        }
+        for bad in ["-1", "inf", "dense"] {
+            let err = load_with(&[("vege_reference_density", bad)]).err().unwrap();
+            assert!(err.contains("vege_reference_density"), "{bad}: {err}");
+        }
+        let config = load_with(&[("vege_las_classes", "1")]).unwrap();
+        assert!(config.vegetation.las_classes);
+        assert!(load_with(&[("vege_las_classes", "yes")]).is_err());
     }
 
     #[test]
