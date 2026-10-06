@@ -1,5 +1,5 @@
 # The commit whose output CI compares this branch's output with
 # (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
 # How to move it: CHANGES.md.
-ref = "45716e5e71522c7b3ccd6fec3696b1eab9178c8d"
-note = "pr/vector-validity commit 1: every written polygon OGC-valid, RFC 7946 rings, combined export clipped (0 px)"
+ref = "7e2e68a33387df143f4cbf5944bf2419bde728e0"
+note = "pr/cliff-thinning commit 1: cliff bins thinned and ordered by position, not read order (0.006 % px)"

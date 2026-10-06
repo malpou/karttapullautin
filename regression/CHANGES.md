@@ -28,12 +28,10 @@ or vector feature on the regression tile) lands in two commits:
 
 1. The change, plus `regression/expected.json`: the report of the change,
    `pullauta eval base/output head/output --format json > regression/expected.json`
-   (CI uploads it as `report.json`). Commit the CI report, not a local one:
-   the batch job's rasters differ in absolute colour counts between the CI
-   runner and other machines (ENG-339), so a locally made report gates
-   locally but never equals CI's. Push commit 1 with a local report, take
-   `report.json` from its Regression artifact, check it shows the same
-   change, and commit it on top; that commit is the new `ref`.
+   (CI uploads it as `report.json`). A local report equals CI's: directory
+   listings are sorted (ENG-542), so the batch rasters no longer depend on
+   the machine. (Before ENG-542 the shapefile paint order followed the
+   filesystem's `read_dir` order and CI's report had to be committed.)
 2. "Rebase regression baseline for <slug>": `ref` = the sha of commit 1 and a
    new `note`, `expected.json` deleted, and a dated entry below giving the
    reason, the share of changed pixels (single job and batch job) and the
@@ -302,3 +300,27 @@ were byte-identical. Baseline moves to 45716e5.
   Hausdorff 1.7-3.4 m; 407.000 unchanged.
 - Bytes: `output.dxf` and both `vegetation.dxf` grow (split pinch rings);
   every other file identical.
+
+### 2026-10-06: pr/cliff-thinning
+
+Cliff detection no longer depends on read order or tile extent: crowded
+3 m bins and 3x3 neighbourhoods keep the floor(len/n) returns with the
+lowest position key (a hash of the cm-rounded x, y, height), the
+`cliffthin` share is drawn from the same key, and every bin is sorted by
+key. pr/las14-wkt-e2e-v2 and the cards between it and 45716e5 were
+byte-identical (ENG-542 changed only local batch rasters, to CI's).
+Baseline moves to 7e2e68a.
+
+- No bin on the regression tile is crowded and `cliffthin=1`, so the
+  thinning itself never fires; every change comes from the bin order
+  (which dash wins a passable-raster pixel, and the dash order).
+- Pixels: single job 2 901 of 7093^2 (0.0058 %), batch job 2 859 of
+  7088^2 (0.0057 %); `#000000` IoU 0.9933 (single), 0.9991 (batch).
+- Per-tile tables: 201 the same 46 747 dashes in a new order; 202 3 924
+  dashes, length 11 531.6 -> 11 531.5 m, precision/recall 0.9991/0.9992.
+- Combined `out/cliffs.geojson`: 201 162 features, 13 304.6 -> 13 293.3 m;
+  202 63 -> 67 features, 1 101.3 -> 1 143.3 m (chaining follows the pixel
+  winners).
+- Everything else identical. Seam check (PR description): on a densified
+  tile, reversed read order changed 13 422 dashes in a tile overlap before
+  and 0 after.
