@@ -82,17 +82,9 @@ Replace `EPSG:3067` by the coordinates ESPG codename of that the LAZ file uses.
 
 You will have a zip file `map.shp.zip` that you can use with karttapullautin.
 
-#### Converting the internal XYZ format
-
-Previously, Karttapullautin used regular text-based `.xyz` files to store the temporary files which could be opened and visualized by many external tools. But with the introduction of an internal (non-stable) binary format for increased performance and reduced disk usage, there is now a new command that can do the conversion into the previous format for you. This will, for example, convert the `xyztemp.xyz.bin` file (kept with `debug_intermediates=1`) into a regular `xyztemp.xyz` file (with one line per point) which can be opened by external tools:
-```
-./pullauta internal2xyz temp/xyztemp.xyz.bin temp/xyztemp.xyz
-```
-> Note: this also works for the binary `.hmap` files.
-
 #### Converting the internal binary geometry format to DXF
 
-Similar as the XYZ files mentioned above, Karttapullautin previously used regular text-based `.dxf` files to store the temporary geometry which could be opened and visualized by many external tools. But with the introduction of an internal (non-stable) binary format for increased performance and reduced disk usage, there is now a new command that can do the conversion into `DXF` for you. Example usage:
+Karttapullautin previously used regular text-based `.dxf` files to store the temporary geometry which could be opened and visualized by many external tools. But with the introduction of an internal (non-stable) binary format for increased performance and reduced disk usage, there is now a new command that can do the conversion into `DXF` for you. Example usage:
 ```
 ./pullauta bin2dxf temp/c2g.dxf.bin temp/c2g.dxf
 ```
@@ -107,15 +99,11 @@ For Ini file configuration explanation, see ini file comments.
 
 ### Re-processing steps again
 
-When the process is done and you find there is too much green or too small cliffs, you can make parts of the process again with different parameters without having to do it all again. The stages read the previous run's debug intermediates, so run the tile with `debug_intermediates=1` first. To re-generate only vegetation type from command line:
+The stages run only as part of a tile: change the settings and run the tile again. A tile run with `debug_intermediates=1` keeps the values the map is drawn from in the temp folder, and `pullauta` alone (or `pullauta render <angle> <width>`) re-renders the map from them, for example after changing the map's colours or form line settings:
 
-    ./pullauta makevege
-    ./pullauta 
-
-To make cliffs again:
-
-    ./pullauta makecliffs xyztemp.xyz 1.0 1.15
     ./pullauta
+
+The stage commands of earlier versions (`blocks`, `dotknolls`, `knolldetector`, `makecliffs`, `makevege`, `smoothjoin`, `xyzknolls`, `xyz2contours`) and `internal2xyz` were removed.
 
 ### Vectors
 

@@ -322,9 +322,8 @@ pub fn dotknolls(
     }
 }
 
-/// The ground model's debug intermediate that the knoll stage commands read
-/// (`knolldetector`, `xyzknolls`); `xyz2.hmap` ([`crate::render::GROUND_DUMP`]) holds
-/// the same bytes.
+/// The ground model's debug intermediate under the knoll stage's name; `xyz2.hmap`
+/// ([`crate::render::GROUND_DUMP`]) holds the same bytes.
 pub const KNOLL_GROUND_DUMP: &str = "xyz_03.hmap";
 
 /// The debug intermediate of the fine contours knolldetector picks its candidates from.

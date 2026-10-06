@@ -500,15 +500,10 @@ pub fn process_tile(
     if !vegeonly && !cliffsonly {
         if let Some(basemapcontours) = config.basemapcontours {
             info!("Basemap contours");
-            contours::heightmap2contours(
-                fs,
-                tmpfolder,
-                basemapcontours,
-                &ground,
-                "basemap.dxf.bin", // generate dxf contours
-                config.outputs.dxf,
-            )
-            .expect("contour generation failed");
+            let dxf =
+                contours::contours_to_bindxf(&contours::trace(&ground, basemapcontours), &ground);
+            contours::write_bindxf(fs, tmpfolder, "basemap.dxf.bin", &dxf, config.outputs.dxf)
+                .expect("contour generation failed");
         }
         // the fine contours the knoll candidates come from; with skipknolldetection
         // traced only for their debug dump

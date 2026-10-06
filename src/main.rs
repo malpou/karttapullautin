@@ -8,7 +8,7 @@ use pullauta::formlines::FormLineSelection;
 use pullauta::io::fs::FileSystem;
 use pullauta::io::fs::memory::MemoryFileSystem;
 use pullauta::io::heightmap::HeightMap;
-use pullauta::knolls::{DotKnollSet, KNOLL_GROUND_DUMP};
+use pullauta::knolls::DotKnollSet;
 use pullauta::merge::ContourSet;
 use pullauta::render::{
     BLOCKS_DUMP, GROUND_DUMP, MapInputs, SHAPES_HIGH_DUMP, SHAPES_LOW_DUMP, ShapeLayers,
@@ -57,6 +57,14 @@ fn main() {
         }
     }
 
+    // an unknown or removed command word is reported before the config file and the
+    // temp folder are created
+    let Invocation {
+        thread,
+        command,
+        args,
+    } = or_exit(Invocation::parse(raw_args));
+
     let mut config = match Config::load_or_create_default() {
         Ok(config) => config,
         Err(e) => {
@@ -66,12 +74,6 @@ fn main() {
     };
 
     let fs = pullauta::io::fs::local::LocalFileSystem;
-
-    let Invocation {
-        thread,
-        command,
-        args,
-    } = Invocation::parse(env::args().skip(1).collect());
 
     if matches!(command, Command::Default | Command::Tile(_)) {
         const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -218,48 +220,12 @@ fn main() {
             .unwrap();
         }
 
-        Command::PerlOnly => {
-            info!("Not implemented in this version, use the perl version");
-        }
-
-        Command::Internal2Xyz => {
-            if args.len() < 2 {
-                info!("USAGE: internal2xyz [input file] [output file]");
-                return;
-            }
-
-            pullauta::io::internal2xyz(&fs, &args[0], &args[1]).unwrap();
-        }
-
         Command::Bin2Dxf => {
             if args.len() < 2 {
                 info!("USAGE: bin2dxf [.dxf.bin input file] [.dxf output file]");
                 return;
             }
             pullauta::io::bin2dxf(&fs, &args[0], &args[1]).unwrap();
-        }
-
-        Command::Blocks => {
-            let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
-            let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            let blocks = pullauta::blocks::blocks(config.water_class, &ground, &returns);
-            pullauta::blocks::write_blocks(&fs, &tmpfolder, &blocks).unwrap();
-        }
-
-        Command::DotKnolls => {
-            let lifted = or_exit(read_lifted_ground(&fs, &tmpfolder));
-            let contours = or_exit(read_contours(&fs, &tmpfolder));
-            let candidates = or_exit(read_dot_knoll_candidates(&fs, &tmpfolder));
-            let dot_knolls =
-                pullauta::knolls::dotknolls(&contours, &candidates, &lifted, &config.knoll);
-            pullauta::knolls::write_dot_knolls(
-                &fs,
-                &tmpfolder,
-                &dot_knolls,
-                true,
-                config.outputs.dxf,
-            )
-            .unwrap();
         }
 
         Command::DxfMerge => {
@@ -273,42 +239,6 @@ fn main() {
             }
             pullauta::merge::bindxfmerge(&fs, &config).unwrap();
             pullauta::merge::pngmergevege(&fs, &config, scale, false).unwrap();
-        }
-
-        Command::KnollDetector => {
-            let ground = or_exit(read_ground(&fs, &tmpfolder.join(KNOLL_GROUND_DUMP)));
-            let candidates = or_exit(read_candidates(&fs, &tmpfolder));
-            let (detected, pins) =
-                pullauta::knolls::knolldetector(&ground, &candidates, &config.knoll);
-            pullauta::knolls::write_detected(&fs, &tmpfolder, &detected, &pins, config.outputs.dxf)
-                .unwrap();
-        }
-
-        Command::MakeCliffs => {
-            let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
-            let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            // no tile name here: the `cliffthin` seed is the empty name
-            let (cliffs, passable_raster) =
-                pullauta::cliffs::makecliffs(&ground, &returns, "", &config.cliff);
-            // the dumps a re-render reads, as the stage wrote them before
-            pullauta::cliffs::write_cliffs(
-                &fs,
-                &tmpfolder,
-                &cliffs,
-                &passable_raster,
-                true,
-                config.outputs.dxf,
-            )
-            .unwrap();
-        }
-
-        Command::MakeVege => {
-            let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
-            let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            // a stage command writes the debug intermediates too, as the tile run does
-            // with debug_intermediates=1
-            pullauta::process::make_vegetation(&fs, &config, &tmpfolder, &ground, &returns, true)
-                .unwrap();
         }
 
         Command::PngMerge { depr } => {
@@ -386,44 +316,9 @@ fn main() {
             .unwrap();
         }
 
-        Command::SmoothJoin => {
-            let lifted = or_exit(read_lifted_ground(&fs, &tmpfolder));
-            let traced = or_exit(read_contour_lines(
-                &fs,
-                &tmpfolder,
-                pullauta::merge::TRACED_DUMP,
-                "traced contours",
-            ));
-            let (contours, candidates) =
-                pullauta::merge::smoothjoin(&traced, &lifted, &config.smoothjoin);
-            pullauta::merge::write_contours(
-                &fs,
-                &tmpfolder,
-                &contours,
-                &candidates,
-                true,
-                config.outputs.dxf,
-            )
-            .unwrap();
-        }
-
-        Command::XyzKnolls => {
-            let ground = or_exit(read_ground(&fs, &tmpfolder.join(KNOLL_GROUND_DUMP)));
-            // as in a tile run: with skipknolldetection there are no pins
-            let pins = if config.skipknolldetection {
-                Vec::new()
-            } else {
-                or_exit(read_pins(&fs, &tmpfolder))
-            };
-            let lifted = pullauta::knolls::xyzknolls(&ground, &pins, &config.knoll);
-            lifted
-                .to_file(&fs, tmpfolder.join(pullauta::knolls::LIFTED_GROUND_DUMP))
-                .unwrap();
-        }
-
         #[cfg(feature = "shapefile")]
         Command::UnzipMtk => {
-            // a stage command: the layers go to the temp folder, for a re-render
+            // the layers go to the temp folder, for a re-render
             let frame = pullauta::shapefile::read_vegetation_frame(&fs, &tmpfolder).unwrap();
             pullauta::shapefile::unzip_and_render(&fs, &config, &tmpfolder, &args, frame, true)
                 .unwrap();
@@ -435,32 +330,10 @@ fn main() {
             pullauta::shapefile::render(&fs, &config, &tmpfolder, frame, false, true).unwrap();
         }
 
-        // without the shapefile feature these do nothing, like an unknown command
         #[cfg(not(feature = "shapefile"))]
-        Command::UnzipMtk | Command::MtkShapeRender => {}
-
-        Command::Xyz2Contours => {
-            let cinterval: f64 = args[0].parse::<f64>().unwrap();
-            let xyzfilein = args[1].clone();
-            let xyzfileout = args[2].clone();
-            let dxffile = args[3].clone();
-            let returns = or_exit(read_dump(&fs, &tmpfolder.join(&xyzfilein), false));
-            let hmap =
-                pullauta::contours::xyz2heightmap(&returns, &config.ground, config.water_class);
-
-            if xyzfileout != "null" && !xyzfileout.is_empty() {
-                hmap.to_file(&fs, xyzfileout).unwrap();
-            }
-
-            pullauta::contours::heightmap2contours(
-                &fs,
-                &tmpfolder,
-                cinterval,
-                &hmap,
-                &dxffile,
-                config.outputs.dxf,
-            )
-            .unwrap();
+        Command::UnzipMtk | Command::MtkShapeRender => {
+            error!("this pullauta was built without the shapefile feature");
+            std::process::exit(1);
         }
 
         Command::Render => {
@@ -591,101 +464,22 @@ fn main() {
                 .unwrap();
             }
         }
-
-        Command::Unknown => {}
     }
 }
 
-/// The returns in the `.xyz.bin` file `path`, for the stage commands. `debug_dump` is
-/// set for the implicit `temp/xyztemp.xyz.bin`, which a tile run writes only with
-/// debug_intermediates=1: a missing one asks for the flag.
-fn read_dump(
-    fs: &impl FileSystem,
-    path: &Path,
-    debug_dump: bool,
-) -> Result<Vec<pullauta::io::xyz::XyzRecord>, String> {
-    if !fs.exists(path) {
-        return Err(if debug_dump {
-            format!(
-                "cannot read the returns: {} is missing. The stage commands read the tile's \
-                 returns from its debug intermediates: re-run the tile with debug_intermediates=1",
-                path.display()
-            )
-        } else {
-            format!("{} is missing", path.display())
-        });
-    }
-    fs.open(path)
-        .and_then(pullauta::io::xyz::read_all)
-        .map_err(|e| format!("cannot read the returns from {}: {e}", path.display()))
-}
-
-/// The ground model's debug intermediate at `path` (`xyz_03.hmap` or its copy
-/// `xyz2.hmap`), for the stage commands. A tile run writes both only with debug_intermediates=1: a missing one asks
-/// for the flag.
+/// The ground model's debug intermediate at `path` (`xyz2.hmap`), for a re-render. A
+/// tile run writes it only with debug_intermediates=1: a missing one asks for the flag.
 fn read_ground(fs: &impl FileSystem, path: &Path) -> Result<HeightMap, String> {
     read_debug_dump(fs, path, "ground model", || HeightMap::from_file(fs, path))
 }
 
-/// The lifted ground model dump (`xyz_knolls.hmap`), for smoothjoin and dotknolls.
-fn read_lifted_ground(fs: &impl FileSystem, tmpfolder: &Path) -> Result<HeightMap, String> {
-    let path = tmpfolder.join(pullauta::knolls::LIFTED_GROUND_DUMP);
-    read_debug_dump(fs, &path, "lifted ground model", || {
-        HeightMap::from_file(fs, &path)
-    })
-}
-
-/// The knoll candidate contours dump (`contours03.dxf.bin`), for knolldetector.
-fn read_candidates(
-    fs: &impl FileSystem,
-    tmpfolder: &Path,
-) -> Result<Vec<pullauta::geometry::Contour>, String> {
-    read_contour_lines(
-        fs,
-        tmpfolder,
-        pullauta::knolls::CANDIDATES_DUMP,
-        "knoll candidate contours",
-    )
-}
-
-/// The contours in the contour file dump `name` (`contours03.dxf.bin`, `out.dxf.bin`),
-/// which holds the tile's `what`.
-fn read_contour_lines(
-    fs: &impl FileSystem,
-    tmpfolder: &Path,
-    name: &str,
-    what: &str,
-) -> Result<Vec<pullauta::geometry::Contour>, String> {
-    let path = tmpfolder.join(name);
-    read_debug_dump(fs, &path, what, || {
-        let dxf = pullauta::geometry::BinaryDxf::from_reader(&mut fs.open(&path)?)?;
-        match dxf.take_geometry().swap_remove(0) {
-            pullauta::geometry::Geometry::Polylines3(lines) => {
-                Ok(pullauta::contours::contours_from_lines(&lines))
-            }
-            _ => Err(anyhow::anyhow!("it holds no 3D contour lines")),
-        }
-    })
-}
-
-/// smoothjoin's contours dump (`out2.dxf.bin`), for dotknolls and a re-render.
+/// smoothjoin's contours dump (`out2.dxf.bin`), for a re-render.
 fn read_contours(fs: &impl FileSystem, tmpfolder: &Path) -> Result<ContourSet, String> {
     let path = tmpfolder.join(pullauta::merge::CONTOURS_DUMP);
     read_debug_dump(fs, &path, "contours", || {
         ContourSet::from_bindxf(pullauta::geometry::BinaryDxf::from_reader(
             &mut fs.open(&path)?,
         )?)
-    })
-}
-
-/// The dot knoll candidates dump (`dotknolls.bin`), for dotknolls.
-fn read_dot_knoll_candidates(
-    fs: &impl FileSystem,
-    tmpfolder: &Path,
-) -> Result<Vec<pullauta::knolls::DotKnollCandidate>, String> {
-    let path = tmpfolder.join(pullauta::merge::DOT_KNOLL_CANDIDATES_DUMP);
-    read_debug_dump(fs, &path, "dot knoll candidates", || {
-        pullauta::util::read_object(fs.open(&path)?)
     })
 }
 
@@ -713,14 +507,6 @@ fn read_cliffs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<CliffSet, Strin
         .map_err(|e| format!("cannot read the cliffs from {}: {e}", tmpfolder.display()))
 }
 
-/// The knoll pins dump (`pins.bin`), for xyzknolls.
-fn read_pins(fs: &impl FileSystem, tmpfolder: &Path) -> Result<Vec<pullauta::knolls::Pin>, String> {
-    let path = tmpfolder.join(pullauta::knolls::PINS_DUMP);
-    read_debug_dump(fs, &path, "knoll pins", || {
-        pullauta::util::read_object(fs.open(&path)?)
-    })
-}
-
 /// Read the debug dump at `path`, which holds the tile's `what`, with `read`. A tile run
 /// writes the dumps only with debug_intermediates=1: a missing one asks for the flag.
 fn read_debug_dump<T, E: std::fmt::Display>(
@@ -731,7 +517,7 @@ fn read_debug_dump<T, E: std::fmt::Display>(
 ) -> Result<T, String> {
     if !fs.exists(path) {
         return Err(format!(
-            "cannot read the {what}: {} is missing. The stage commands read the tile's \
+            "cannot read the {what}: {} is missing. A re-render reads the tile's \
              {what} from its debug intermediates: re-run the tile with \
              debug_intermediates=1",
             path.display()
@@ -892,7 +678,8 @@ struct Invocation {
 }
 
 impl Invocation {
-    fn parse(mut args: Vec<String>) -> Self {
+    /// An error naming what to do instead when the command word is not a command.
+    fn parse(mut args: Vec<String>) -> Result<Self, String> {
         let thread = if args
             .first()
             .is_some_and(|a| a.trim().parse::<usize>().is_ok())
@@ -904,13 +691,13 @@ impl Invocation {
         let command = if args.is_empty() {
             Command::Default
         } else {
-            Command::parse(args.remove(0))
+            Command::parse(args.remove(0))?
         };
-        Self {
+        Ok(Self {
             thread,
             command,
             args,
-        }
+        })
     }
 }
 
@@ -921,17 +708,9 @@ enum Command {
     /// No command: render the temp folder's map, print the usage, or run the
     /// batch (`batch=1`).
     Default,
-    /// A command only the Perl version implements.
-    PerlOnly,
-    Internal2Xyz,
     Bin2Dxf,
-    Blocks,
-    DotKnolls,
     DxfMerge,
     Merge,
-    KnollDetector,
-    MakeCliffs,
-    MakeVege,
     /// `pngmerge`, or `pngmergedepr` for the map with depressions.
     PngMerge {
         depr: bool,
@@ -942,47 +721,58 @@ enum Command {
     },
     PolylineDxfCrop,
     PointDxfCrop,
-    SmoothJoin,
-    XyzKnolls,
     UnzipMtk,
     MtkShapeRender,
-    Xyz2Contours,
     Render,
     /// A `.zip` file, the first of the zips to process.
     Zip(String),
     /// A `.las`, `.laz`, `.xyz` or `.xyz.bin` point cloud to process.
     Tile(String),
-    /// Anything else: does nothing.
-    Unknown,
 }
 
+/// The stage commands that ran one stage on a tile's debug intermediates; the stages now
+/// pass their values in memory (ADR 0004), so they run only as part of a tile.
+const REMOVED_STAGE_COMMANDS: [&str; 8] = [
+    "blocks",
+    "dotknolls",
+    "knolldetector",
+    "makecliffs",
+    "makevege",
+    "smoothjoin",
+    "xyzknolls",
+    "xyz2contours",
+];
+
+/// The commands only the Perl version implements.
+const PERL_ONLY_COMMANDS: [&str; 9] = [
+    "cliffgeneralize",
+    "ground",
+    "ground2",
+    "groundfix",
+    "profile",
+    "makecliffsold",
+    "makeheight",
+    "xyzfixer",
+    "vege",
+];
+
 impl Command {
-    /// Command names match exactly; file extensions ignore case.
-    fn parse(word: String) -> Self {
-        match word.as_str() {
+    /// Command names match exactly; file extensions ignore case. Anything else is an
+    /// error saying what to do instead.
+    fn parse(word: String) -> Result<Self, String> {
+        Ok(match word.as_str() {
             "" => Self::Default,
-            "cliffgeneralize" | "ground" | "ground2" | "groundfix" | "profile"
-            | "makecliffsold" | "makeheight" | "xyzfixer" | "vege" => Self::PerlOnly,
-            "internal2xyz" => Self::Internal2Xyz,
             "bin2dxf" => Self::Bin2Dxf,
-            "blocks" => Self::Blocks,
-            "dotknolls" => Self::DotKnolls,
             "dxfmerge" => Self::DxfMerge,
             "merge" => Self::Merge,
-            "knolldetector" => Self::KnollDetector,
-            "makecliffs" => Self::MakeCliffs,
-            "makevege" => Self::MakeVege,
             "pngmerge" => Self::PngMerge { depr: false },
             "pngmergedepr" => Self::PngMerge { depr: true },
             "pngmergevege" => Self::PngMergeVege { undergrowth: false },
             "pngmergevegeundergrowth" => Self::PngMergeVege { undergrowth: true },
             "polylinedxfcrop" => Self::PolylineDxfCrop,
             "pointdxfcrop" => Self::PointDxfCrop,
-            "smoothjoin" => Self::SmoothJoin,
-            "xyzknolls" => Self::XyzKnolls,
             "unzipmtk" => Self::UnzipMtk,
             "mtkshaperender" => Self::MtkShapeRender,
-            "xyz2contours" => Self::Xyz2Contours,
             "render" => Self::Render,
             _ if word.to_lowercase().ends_with(".zip") => Self::Zip(word),
             _ if is_las(&word) || {
@@ -992,8 +782,34 @@ impl Command {
             {
                 Self::Tile(word)
             }
-            _ => Self::Unknown,
-        }
+            w if REMOVED_STAGE_COMMANDS.contains(&w) => {
+                return Err(format!(
+                    "the `{w}` command was removed: the stages no longer run alone on a \
+                     tile's temp files. Change pullauta.ini and run the tile again \
+                     (`pullauta <tile.laz>`); with debug_intermediates=1, `pullauta` alone \
+                     re-renders the map from its temp folder"
+                ));
+            }
+            "internal2xyz" => {
+                return Err(
+                    "the `internal2xyz` command was removed: the .xyz.bin and .hmap \
+                            files are debug intermediates with no format guarantee"
+                        .to_string(),
+                );
+            }
+            w if PERL_ONLY_COMMANDS.contains(&w) => {
+                return Err(format!(
+                    "`{w}` is a command of the Perl karttapullautin, which this version does \
+                     not implement: see README.md"
+                ));
+            }
+            w => {
+                return Err(format!(
+                    "unknown command `{w}`: see README.md for the commands, or give a \
+                     .las, .laz, .xyz, .xyz.bin or .zip file"
+                ));
+            }
+        })
     }
 }
 
@@ -1008,29 +824,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stage_commands_read_the_dump_or_ask_for_debug_intermediates() {
-        let fs = MemoryFileSystem::new();
-        let path = Path::new("temp/xyztemp.xyz.bin");
-        let err = read_dump(&fs, path, true).unwrap_err();
-        assert!(err.contains("temp/xyztemp.xyz.bin is missing"), "{err}");
-        assert!(err.contains("debug_intermediates=1"), "{err}");
-
-        let record = pullauta::io::xyz::XyzRecord {
-            x: 1.0,
-            classification: 2,
-            ..Default::default()
-        };
-        fs.create_dir_all("temp").unwrap();
-        pullauta::io::xyz::write_all(fs.create(path).unwrap(), &[record, record]).unwrap();
-        assert_eq!(read_dump(&fs, path, true).unwrap(), [record, record]);
-
-        // a file the user named is just missing
-        let err = read_dump(&fs, Path::new("temp/named.xyz.bin"), false).unwrap_err();
-        assert_eq!(err, "temp/named.xyz.bin is missing");
-    }
-
-    #[test]
-    fn stage_commands_read_the_ground_model_dump_or_ask_for_debug_intermediates() {
+    fn a_re_render_reads_the_ground_model_dump_or_asks_for_debug_intermediates() {
         let fs = MemoryFileSystem::new();
         let path = Path::new("temp/xyz2.hmap");
         let err = read_ground(&fs, path).unwrap_err();
@@ -1049,35 +843,21 @@ mod tests {
     }
 
     #[test]
-    fn terrain_stage_commands_ask_for_debug_intermediates_without_their_dumps() {
+    fn a_re_render_asks_for_debug_intermediates_without_the_terrain_dumps() {
         let fs = MemoryFileSystem::new();
         let temp = Path::new("temp");
         let errors = [
-            read_candidates(&fs, temp).unwrap_err(),
-            read_pins(&fs, temp).unwrap_err(),
-            read_lifted_ground(&fs, temp).unwrap_err(),
-            read_contour_lines(&fs, temp, pullauta::merge::TRACED_DUMP, "traced contours")
-                .unwrap_err(),
             read_contours(&fs, temp).unwrap_err(),
-            read_dot_knoll_candidates(&fs, temp).unwrap_err(),
             read_dot_knolls(&fs, temp).unwrap_err(),
         ];
-        for (err, dump) in errors.iter().zip([
-            "contours03.dxf.bin",
-            "pins.bin",
-            "xyz_knolls.hmap",
-            "out.dxf.bin",
-            "out2.dxf.bin",
-            "dotknolls.bin",
-            "dotknolls.dxf.bin",
-        ]) {
+        for (err, dump) in errors.iter().zip(["out2.dxf.bin", "dotknolls.dxf.bin"]) {
             assert!(err.contains(&format!("temp/{dump} is missing")), "{err}");
             assert!(err.contains("debug_intermediates=1"), "{err}");
         }
     }
 
     fn parse(args: &[&str]) -> Invocation {
-        Invocation::parse(args.iter().map(|a| a.to_string()).collect())
+        Invocation::parse(args.iter().map(|a| a.to_string()).collect()).unwrap()
     }
 
     fn strings(args: &[&str]) -> Vec<String> {
@@ -1126,15 +906,9 @@ mod tests {
     #[test]
     fn command_names_match_exactly() {
         let cases = [
-            ("internal2xyz", Command::Internal2Xyz),
             ("bin2dxf", Command::Bin2Dxf),
-            ("blocks", Command::Blocks),
-            ("dotknolls", Command::DotKnolls),
             ("dxfmerge", Command::DxfMerge),
             ("merge", Command::Merge),
-            ("knolldetector", Command::KnollDetector),
-            ("makecliffs", Command::MakeCliffs),
-            ("makevege", Command::MakeVege),
             ("pngmerge", Command::PngMerge { depr: false }),
             ("pngmergedepr", Command::PngMerge { depr: true }),
             ("pngmergevege", Command::PngMergeVege { undergrowth: false }),
@@ -1144,38 +918,38 @@ mod tests {
             ),
             ("polylinedxfcrop", Command::PolylineDxfCrop),
             ("pointdxfcrop", Command::PointDxfCrop),
-            ("smoothjoin", Command::SmoothJoin),
-            ("xyzknolls", Command::XyzKnolls),
             ("unzipmtk", Command::UnzipMtk),
             ("mtkshaperender", Command::MtkShapeRender),
-            ("xyz2contours", Command::Xyz2Contours),
             ("render", Command::Render),
         ];
         for (word, command) in cases {
-            assert_eq!(Command::parse(word.to_string()), command, "{word}");
+            assert_eq!(Command::parse(word.to_string()), Ok(command), "{word}");
         }
-        assert_eq!(Command::parse("Render".to_string()), Command::Unknown);
-        assert_eq!(Command::parse("pngmergefoo".to_string()), Command::Unknown);
+        for word in ["Render", "pngmergefoo"] {
+            let err = Command::parse(word.to_string()).unwrap_err();
+            assert!(err.starts_with("unknown command"), "{err}");
+        }
+    }
+
+    #[test]
+    fn removed_commands_say_what_to_do_instead() {
+        for word in REMOVED_STAGE_COMMANDS {
+            let err = Command::parse(word.to_string()).unwrap_err();
+            assert!(err.contains("was removed"), "{err}");
+            assert!(err.contains("run the tile again"), "{err}");
+        }
+        let err = Command::parse("internal2xyz".to_string()).unwrap_err();
+        assert!(err.contains("was removed"), "{err}");
+        // the error ends the invocation, whatever follows
+        let err = Invocation::parse(strings(&["2", "makevege"])).unwrap_err();
+        assert!(err.contains("`makevege`"), "{err}");
     }
 
     #[test]
     fn perl_only_commands() {
-        for word in [
-            "cliffgeneralize",
-            "ground",
-            "ground2",
-            "groundfix",
-            "profile",
-            "makecliffsold",
-            "makeheight",
-            "xyzfixer",
-            "vege",
-        ] {
-            assert_eq!(
-                Command::parse(word.to_string()),
-                Command::PerlOnly,
-                "{word}"
-            );
+        for word in PERL_ONLY_COMMANDS {
+            let err = Command::parse(word.to_string()).unwrap_err();
+            assert!(err.contains("Perl"), "{err}");
         }
     }
 
@@ -1184,15 +958,15 @@ mod tests {
         for word in ["a.las", "a.LAZ", "dir/a.xyz", "a.XYZ.BIN"] {
             assert_eq!(
                 Command::parse(word.to_string()),
-                Command::Tile(word.to_string()),
+                Ok(Command::Tile(word.to_string())),
                 "{word}"
             );
         }
         assert_eq!(
             Command::parse("A.ZIP".to_string()),
-            Command::Zip("A.ZIP".to_string())
+            Ok(Command::Zip("A.ZIP".to_string()))
         );
-        assert_eq!(Command::parse("a.tif".to_string()), Command::Unknown);
+        assert!(Command::parse("a.tif".to_string()).is_err());
     }
 
     #[test]

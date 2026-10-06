@@ -216,15 +216,6 @@ impl<W: Write + Seek> Drop for XyzInternalWriter<W> {
     }
 }
 
-pub struct XyzInternalReader<R: Read> {
-    inner: R,
-    n_records: u64,
-    records_read: u64,
-    // for stats
-    start: Option<Instant>,
-    buffer: [XyzRecord; 1024],
-}
-
 /// Read and check the header of an `.xyz.bin` file: the magic number and the number of
 /// records. Version 1 files (`XYZB`) are rejected with a hint to regenerate them.
 fn read_header(inner: &mut impl Read) -> std::io::Result<u64> {
@@ -272,56 +263,6 @@ pub fn write_all<W: Write + Seek>(inner: W, records: &[XyzRecord]) -> std::io::R
     writer.finish()
 }
 
-impl<R: Read> XyzInternalReader<R> {
-    pub fn new(mut inner: R) -> std::io::Result<Self> {
-        let n_records = read_header(&mut inner)?;
-        Ok(Self {
-            inner,
-            n_records,
-            records_read: 0,
-            start: None,
-            buffer: [XyzRecord::default(); 1024],
-        })
-    }
-
-    pub fn next_chunk(&mut self) -> std::io::Result<Option<&[XyzRecord]>> {
-        if self.records_read >= self.n_records {
-            // TODO: log statistics about the read records
-            if let Some(start) = self.start {
-                let elapsed = start.elapsed();
-                debug!(
-                    "Read {} records in {:.2?} ({:.2?}/record, {:.3}M records/s, {:.2}MB/s)",
-                    self.records_read,
-                    elapsed,
-                    elapsed / self.records_read as u32,
-                    self.records_read as f64 / (10e6 * elapsed.as_secs_f64()),
-                    self.records_read as f64 * size_of::<XyzRecord>() as f64
-                        / (1024.0 * 1024.0 * elapsed.as_secs_f64()),
-                );
-            }
-
-            return Ok(None);
-        }
-
-        if self.records_read == 0 {
-            self.start = Some(Instant::now());
-        }
-
-        // read as many as we can fit in the buffer
-        let records_left = self.n_records - self.records_read;
-        let records_to_read = (self.buffer.len() as u64).min(records_left);
-
-        // treat buffer as mutable slice of bytes
-        let records_buffer = &mut self.buffer[..records_to_read as usize];
-        let buffer: &mut [u8] = bytemuck::cast_slice_mut(records_buffer);
-        self.inner.read_exact(buffer)?;
-        self.records_read += records_to_read;
-
-        // return reference to it
-        Ok(Some(records_buffer))
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::io::Cursor;
@@ -352,14 +293,7 @@ mod test {
         // now read the records
         let data = writer.finish().unwrap().into_inner();
         let cursor = Cursor::new(data);
-        let mut reader = super::XyzInternalReader::new(cursor).unwrap();
-        let chunk = reader.next_chunk().unwrap().unwrap();
-
-        assert_eq!(chunk.len(), 3);
-        assert_eq!(chunk[0], record);
-        assert_eq!(chunk[1], record);
-        assert_eq!(chunk[2], record);
-        assert_eq!(reader.next_chunk().unwrap(), None);
+        assert_eq!(super::read_all(cursor).unwrap(), [record; 3]);
     }
 
     #[test]
@@ -391,8 +325,7 @@ mod test {
             let mut writer = XyzInternalWriter::new(Cursor::new(Vec::new()));
             writer.write_records(&[record]).unwrap();
             let data = writer.finish().unwrap().into_inner();
-            let mut reader = XyzInternalReader::new(Cursor::new(data)).unwrap();
-            let read = reader.next_chunk().unwrap().unwrap()[0];
+            let read = read_all(Cursor::new(data)).unwrap()[0];
             assert_eq!(
                 (read.is_withheld(), read.is_synthetic(), read.is_overlap()),
                 (w, s, o)
@@ -404,7 +337,7 @@ mod test {
     fn rejects_version_1_files_with_a_regenerate_hint() {
         let mut data = b"XYZB".to_vec();
         0u64.to_bytes(&mut data).unwrap();
-        let err = XyzInternalReader::new(Cursor::new(data)).err().unwrap();
+        let err = read_all(Cursor::new(data)).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("older build"), "{err}");
         assert!(err.to_string().contains("regenerate"), "{err}");
@@ -463,7 +396,7 @@ mod test {
 
     #[test]
     fn rejects_an_unknown_magic() {
-        let err = XyzInternalReader::new(Cursor::new(b"XYZ3\0\0\0\0\0\0\0\0".to_vec()))
+        let err = read_all(Cursor::new(b"XYZ3\0\0\0\0\0\0\0\0".to_vec()))
             .err()
             .unwrap();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);

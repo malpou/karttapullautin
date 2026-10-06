@@ -253,6 +253,7 @@ pub fn join_contours(contours: &[Contour], max_vertices: usize) -> Vec<Contour> 
 
 /// The contours of a contour file's lines ([`contours_to_bindxf`]): each line's vertices
 /// without their z, at its traced level.
+#[cfg(test)]
 pub fn contours_from_lines(lines: &Polylines<Point3, (Classification, f64)>) -> Vec<Contour> {
     lines
         .iter()
@@ -357,22 +358,6 @@ pub fn write_dxf_files(
             .and_then(|mut f| dxf.to_dxf(&mut f))
             .with_context(|| format!("writing {}", path.display()))?;
     }
-    Ok(())
-}
-
-/// Traces the contours of `heightmap` ([`trace`]) and writes them to `tmpfolder/dxffile`
-/// ([`contours_to_bindxf`], [`write_bindxf`]).
-pub fn heightmap2contours(
-    fs: &impl FileSystem,
-    tmpfolder: &Path,
-    cinterval: f64,
-    heightmap: &HeightMap,
-    dxffile: &str,
-    output_dxf: bool,
-) -> Result<(), Box<dyn Error>> {
-    let dxf = contours_to_bindxf(&trace(heightmap, cinterval), heightmap);
-    write_bindxf(fs, tmpfolder, dxffile, &dxf, output_dxf)?;
-    info!("Done");
     Ok(())
 }
 
@@ -794,7 +779,8 @@ mod tests {
         move |x, y| peak - ((x - c).powi(2) + (y - c).powi(2)).sqrt()
     }
 
-    /// Trace `grid` into a contour file with [`heightmap2contours`] and read it back.
+    /// Trace `grid` into a contour file ([`trace`], [`contours_to_bindxf`]) and read it
+    /// back.
     fn contour_file(
         grid: Vec2D<f64>,
         offset: (f64, f64),
@@ -808,7 +794,8 @@ mod tests {
             scale,
             grid,
         };
-        heightmap2contours(&fs, Path::new(""), cinterval, &hmap, "c.dxf.bin", false).unwrap();
+        let dxf = contours_to_bindxf(&trace(&hmap, cinterval), &hmap);
+        write_bindxf(&fs, Path::new(""), "c.dxf.bin", &dxf, false).unwrap();
         let dxf = BinaryDxf::from_reader(&mut fs.open("c.dxf.bin").unwrap()).unwrap();
         match dxf.take_geometry().swap_remove(0) {
             crate::geometry::Geometry::Polylines3(lines) => lines,
@@ -951,8 +938,8 @@ mod tests {
         }
     }
 
-    /// The contours read back from a contour file are the traced ones, bit for bit: the
-    /// stage commands run knolldetector on the `contours03.dxf.bin` dump.
+    /// The contours read back from a contour file are the traced ones, bit for bit, as
+    /// the `contours03.dxf.bin` debug intermediate holds them.
     #[test]
     fn contour_file_round_trips_the_traced_contours() {
         let hmap = HeightMap {
