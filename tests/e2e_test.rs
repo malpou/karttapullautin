@@ -1002,3 +1002,30 @@ fn assert_batch_merge(out: &Path) {
         assert!(dxf.contains(&format!("  8\r\n{code}\r\n")), "{code}");
     }
 }
+
+/// How many returns of the regression tile the ingest filter drops, per reason, for the
+/// PR that wires it in (it changes the output only when this is non-zero).
+#[test]
+#[ignore]
+fn ingest_drop_counts_on_the_regression_tile() {
+    use pullauta::io::xyz::{XyzRecord, drop_noise};
+
+    let mut reader = las::Reader::from_path(input("test_file.laz")).unwrap();
+    let returns: Vec<XyzRecord> = reader
+        .read_all()
+        .unwrap()
+        .points()
+        .map(|p| {
+            let p = p.unwrap();
+            XyzRecord {
+                classification: p.classification.into(),
+                flags: XyzRecord::pack_flags(p.is_withheld, p.is_synthetic, p.is_overlap),
+                ..Default::default()
+            }
+        })
+        .collect();
+    let read = returns.len();
+    let (kept, counts) = drop_noise(returns);
+    println!("read {read}, kept {}, dropped {counts:?}", kept.len());
+    assert_eq!(kept.len() as u64 + counts.total(), read as u64);
+}

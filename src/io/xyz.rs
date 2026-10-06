@@ -137,6 +137,69 @@ impl XyzRecord {
     pub fn is_overlap(&self) -> bool {
         self.flags & Self::OVERLAP != 0
     }
+
+    /// Why ingest leaves this return out, or `None` when it is kept. Withheld wins over
+    /// the class, so a withheld noise return counts once, as withheld. Synthetic and
+    /// overlap returns are kept.
+    pub fn ingest_drop(&self) -> Option<IngestDrop> {
+        if self.is_withheld() {
+            return Some(IngestDrop::Withheld);
+        }
+        match self.class() {
+            LasClass::LowNoise => Some(IngestDrop::LowNoise),
+            LasClass::HighNoise => Some(IngestDrop::HighNoise),
+            _ => None,
+        }
+    }
+
+    /// Whether ingest keeps this return: it is not withheld and not class 7 or 18.
+    pub fn kept_at_ingest(&self) -> bool {
+        self.ingest_drop().is_none()
+    }
+}
+
+/// Why ingest leaves a return out (see [`XyzRecord::ingest_drop`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestDrop {
+    /// The supplier withheld the return ([`XyzRecord::WITHHELD`]).
+    Withheld,
+    /// Class 7, [`LasClass::LowNoise`].
+    LowNoise,
+    /// Class 18, [`LasClass::HighNoise`].
+    HighNoise,
+}
+
+/// How many returns [`drop_noise`] left out, per reason.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IngestDropCounts {
+    pub withheld: u64,
+    pub low_noise: u64,
+    pub high_noise: u64,
+}
+
+impl IngestDropCounts {
+    pub fn total(&self) -> u64 {
+        self.withheld + self.low_noise + self.high_noise
+    }
+}
+
+/// Drops the withheld and noise returns (classes 7 and 18), keeping the rest in their
+/// order: stages downstream depend on it (vegetation thinning counts returns, cliff
+/// thinning draws from a seeded RNG per return).
+pub fn drop_noise(mut returns: Vec<XyzRecord>) -> (Vec<XyzRecord>, IngestDropCounts) {
+    let mut counts = IngestDropCounts::default();
+    returns.retain(|r| match r.ingest_drop() {
+        None => true,
+        Some(reason) => {
+            *match reason {
+                IngestDrop::Withheld => &mut counts.withheld,
+                IngestDrop::LowNoise => &mut counts.low_noise,
+                IngestDrop::HighNoise => &mut counts.high_noise,
+            } += 1;
+            false
+        }
+    });
+    (returns, counts)
 }
 
 pub struct XyzInternalWriter<W: Write + Seek> {
@@ -467,5 +530,76 @@ mod test {
             .err()
             .unwrap();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    fn ret(classification: u8, flags: u8, z: f32) -> XyzRecord {
+        XyzRecord {
+            z,
+            classification,
+            flags,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ingest_drops_noise_classes_and_withheld_returns() {
+        assert_eq!(ret(7, 0, 0.0).ingest_drop(), Some(IngestDrop::LowNoise));
+        assert_eq!(ret(18, 0, 0.0).ingest_drop(), Some(IngestDrop::HighNoise));
+        for class in [0, 2, 9, 18] {
+            assert_eq!(
+                ret(class, XyzRecord::WITHHELD, 0.0).ingest_drop(),
+                Some(IngestDrop::Withheld),
+                "class {class}"
+            );
+        }
+    }
+
+    #[test]
+    fn ingest_keeps_every_other_class_and_flag() {
+        let other_flags = [0, XyzRecord::SYNTHETIC, XyzRecord::OVERLAP];
+        for class in (0..=u8::MAX).filter(|c| ![7, 18].contains(c)) {
+            for flags in other_flags {
+                assert!(ret(class, flags, 0.0).kept_at_ingest(), "{class} {flags}");
+            }
+        }
+    }
+
+    #[test]
+    fn drop_noise_keeps_order_and_counts_each_reason() {
+        let input: Vec<_> = [
+            (2, 0),
+            (7, 0),
+            (5, XyzRecord::OVERLAP),
+            (18, 0),
+            (7, XyzRecord::WITHHELD),
+            (1, XyzRecord::SYNTHETIC),
+            (18, 0),
+            (2, XyzRecord::WITHHELD),
+            (9, 0),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, &(class, flags))| ret(class, flags, i as f32))
+        .collect();
+
+        let (kept, counts) = drop_noise(input);
+        let kept_z: Vec<f32> = kept.iter().map(|r| r.z).collect();
+        assert_eq!(kept_z, [0.0, 2.0, 5.0, 8.0]);
+        assert_eq!(
+            counts,
+            IngestDropCounts {
+                withheld: 2,
+                low_noise: 1,
+                high_noise: 2,
+            }
+        );
+        assert_eq!(counts.total(), 5);
+    }
+
+    #[test]
+    fn drop_noise_of_nothing_is_nothing() {
+        let (kept, counts) = drop_noise(Vec::new());
+        assert!(kept.is_empty());
+        assert_eq!(counts, IngestDropCounts::default());
     }
 }
