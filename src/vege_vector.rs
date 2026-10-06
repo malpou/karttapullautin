@@ -498,8 +498,11 @@ fn area_features(
 }
 
 /// Vectorize and write all vegetation vector outputs from the classes `makevege` drew
-/// (`vector_vege=1`); with `vector_shade=1` the green areas also carry their greenshade
-/// index. The open land grid's origin is shifted +1.5 m (makevege's 2x2 sum window).
+/// (with a vector family in `outputs`): the `vegetation_areas` table when
+/// [`Config::vector_tables`], `vegetation.dxf` with the dxf family, and always
+/// `vegetation.dxf.bin`, the batch crop's input; with `vector_shade=1` the green areas
+/// also carry their greenshade index. The open land grid's origin is shifted +1.5 m
+/// (makevege's 2x2 sum window).
 pub fn export_all(
     fs: &impl FileSystem,
     config: &Config,
@@ -566,17 +569,19 @@ pub fn export_all(
     );
 
     // only the green areas have shades; open land and undergrowth are 0/1 grids
-    let features = area_features(&green_polys, config.vector_shade)
-        .chain(area_features(&open_land_polys, false))
-        .chain(area_features(&undergrowth_polys, false))
-        .collect();
-    geojson::write_tables(
-        fs,
-        tmpfolder,
-        geojson::Source::Vegetation,
-        features,
-        config.epsg,
-    )?;
+    if config.vector_tables() {
+        let features = area_features(&green_polys, config.vector_shade)
+            .chain(area_features(&open_land_polys, false))
+            .chain(area_features(&undergrowth_polys, false))
+            .collect();
+        geojson::write_tables(
+            fs,
+            tmpfolder,
+            geojson::Source::Vegetation,
+            features,
+            config.epsg,
+        )?;
+    }
 
     // combined DXF in draw order (stable sort keeps the traced order within a symbol)
     let mut all: Vec<&VegPolygon> = green_polys
@@ -597,7 +602,7 @@ pub fn export_all(
     }
     let dxf = BinaryDxf::new(bounds.clone(), vec![lines.into()]);
     dxf.to_writer(&mut fs.create(tmpfolder.join("vegetation.dxf.bin"))?)?;
-    if config.output_dxf {
+    if config.outputs.dxf {
         dxf.to_dxf(&mut fs.create(tmpfolder.join("vegetation.dxf"))?)?;
     }
     log::info!("Done");

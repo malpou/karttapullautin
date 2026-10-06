@@ -22,8 +22,8 @@ pub struct Config {
 
     pub experimental_use_in_memory_fs: bool,
 
-    /// Whether to output the result as DXF.
-    pub output_dxf: bool,
+    /// The product families the run writes (ini `outputs`).
+    pub outputs: Outputs,
 
     // only one can be set at a time
     pub vegeonly: bool,
@@ -85,11 +85,9 @@ pub struct Config {
     pub vegetation: VegetationParams,
 
     // vector export
-    /// Vectorize the vegetation, yellow and undergrowth grids into GeoJSON and DXF areas,
-    /// and write contours, form lines, knolls and cliffs as GeoJSON too.
-    pub vector_vege: bool,
     /// Symbol code per greenshade index (1-based); a shorter list repeats its last code.
-    /// Empty when `vector_vege` is off.
+    /// Empty when neither vector family is in `outputs` (the vegetation is not
+    /// vectorized).
     pub vector_greenshade_isom: Vec<VegetationPropertiesIsomCode>,
     /// Douglas-Peucker tolerance in metres for vegetation areas; 0 disables simplification.
     pub vector_simplify: f64,
@@ -107,6 +105,81 @@ pub struct Config {
     pub vectorconf: String,
     pub mtkskiplayers: Vec<String>,
     pub cliffdebug: bool,
+}
+
+/// The product families a run writes to disk (ini `outputs`, a comma-separated list
+/// of [`Outputs::NAMES`], default all three): the rendered map rasters, the DXF files and
+/// the GeoJSON tables. The stages a selected family needs still run; what no family
+/// needs is not computed, and what is computed only on the way is a debug intermediate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outputs {
+    /// The map PNGs (and the depression variant) with their world files and CRS
+    /// sidecars, the vegetation and undergrowth rasters, and the merged rasters.
+    pub raster: bool,
+    /// The DXF files: the tile's DXFs, the batch's per-tile and merged DXFs, and the
+    /// combined export's `output.dxf` and `output.ocdCrt`.
+    pub dxf: bool,
+    /// The GeoJSON tables: the tile's tables, the batch's per-tile, merged and combined
+    /// tables.
+    pub geojson: bool,
+}
+
+impl Outputs {
+    /// Every family: the default.
+    pub const ALL: Self = Self {
+        raster: true,
+        dxf: true,
+        geojson: true,
+    };
+
+    /// The family names `outputs` lists.
+    pub const NAMES: [&str; 3] = ["raster", "dxf", "geojson"];
+
+    /// Parse an `outputs` value: any non-empty subset of [`Self::NAMES`], comma
+    /// separated, in any order.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let names = Self::NAMES.join(", ");
+        if value.trim().is_empty() {
+            return Err(format!(
+                "Value of `outputs` is empty: list the product families to write, any of \
+                 {names}"
+            ));
+        }
+        let mut outputs = Self {
+            raster: false,
+            dxf: false,
+            geojson: false,
+        };
+        for name in value.split(',').map(str::trim) {
+            match name {
+                "raster" => outputs.raster = true,
+                "dxf" => outputs.dxf = true,
+                "geojson" => outputs.geojson = true,
+                _ => {
+                    return Err(format!(
+                        "Value {value} of `outputs`: `{name}` is not a product family; the \
+                         families are {names}"
+                    ));
+                }
+            }
+        }
+        Ok(outputs)
+    }
+
+    /// Whether the vegetation is vectorized: its areas are `vegetation.dxf` (dxf) and
+    /// the `vegetation_areas` table (geojson).
+    pub fn vectorizes_vegetation(&self) -> bool {
+        self.dxf || self.geojson
+    }
+}
+
+impl Config {
+    /// Whether a tile writes the GeoJSON tables: for the geojson family, and in a batch
+    /// that merges with the dxf family, as the source of the combined export's
+    /// `output.dxf` (then removed with the batch's other intermediates).
+    pub fn vector_tables(&self) -> bool {
+        self.outputs.geojson || (self.batch && self.batchmerge && self.outputs.dxf)
+    }
 }
 
 const DEFAULT_CONFIG_FILE: &str = "pullauta.ini";
@@ -160,7 +233,10 @@ impl Config {
         }
 
         let laz_parallel: bool = gs.get("parallel_laz_decompression").unwrap_or("0") == "1";
-        let output_dxf: bool = gs.get("output_dxf").unwrap_or("0") == "1";
+        let outputs = match gs.get("outputs") {
+            None => Outputs::ALL,
+            Some(v) => Outputs::parse(v)?,
+        };
 
         let pnorthlinesangle: f64 = parse_typed(gs, "northlinesangle", 0.0);
         let pnorthlineswidth: usize = parse_typed(gs, "northlineswidth", 0);
@@ -372,9 +448,8 @@ impl Config {
         };
 
         // vector export
-        let vector_vege = flag(gs, "vector_vege", Some(false))?;
         let greenshade_isom = gs.get("vector_greenshade_isom");
-        let vector_greenshade_isom = if vector_vege {
+        let vector_greenshade_isom = if outputs.vectorizes_vegetation() {
             parse_greenshade_isom(
                 greenshade_isom.unwrap_or("406.000|406.000|408.000|408.000|410.000"),
             )?
@@ -383,8 +458,14 @@ impl Config {
         };
         let vector_shade = match gs.get("vector_shade").unwrap_or("0") {
             "0" => false,
-            "1" if vector_vege => true,
-            "1" => return Err("`vector_shade=1` requires `vector_vege=1`".into()),
+            "1" if outputs.geojson => true,
+            "1" => {
+                return Err(
+                    "`vector_shade=1` requires geojson in `outputs`: the shade is a GeoJSON \
+                     property"
+                        .into(),
+                );
+            }
             v => return Err(format!("Value {v} of `vector_shade` must be 0 or 1").into()),
         };
         let epsg: Option<u32> = match gs.get("epsg").map(str::trim).unwrap_or("") {
@@ -469,7 +550,7 @@ impl Config {
         Ok(Self {
             batch,
             processes,
-            output_dxf,
+            outputs,
             laz_parallel,
             experimental_use_in_memory_fs,
             vegeonly,
@@ -522,7 +603,6 @@ impl Config {
             water_class,
             cliff,
             vegetation,
-            vector_vege,
             vector_greenshade_isom,
             vector_simplify,
             vector_shade,
@@ -596,7 +676,7 @@ impl<'a> Keys<'a> {
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
 /// unknown. A key ending in `{i}` stands for that prefix and a number.
-const REMOVED_KEYS: [(&str, &str); 13] = [
+const REMOVED_KEYS: [(&str, &str); 15] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
@@ -627,13 +707,23 @@ const REMOVED_KEYS: [(&str, &str); 13] = [
     ),
     (
         "savetempfiles",
-        "the tile rasters are always written to the batch output folder; with \
-         output_dxf=1 each tile's DXF as <tile>_<layer>.dxf, with vector_vege=1 its \
-         tables as <tile>_<table>.geojson; debug_intermediates=1 keeps the .dxf.bin files",
+        "the tile rasters are written to the batch output folder with raster in `outputs`, \
+         each tile's DXF as <tile>_<layer>.dxf with dxf, its tables as \
+         <tile>_<table>.geojson with geojson; debug_intermediates=1 keeps the .dxf.bin files",
     ),
     (
         "savetempfolders",
         "debug_intermediates=1 keeps each tile's temp folder as temp_<tile>_dir",
+    ),
+    (
+        "output_dxf",
+        "the DXF files are the dxf family of `outputs` (default raster,dxf,geojson); for \
+         output_dxf=0 list the families without dxf",
+    ),
+    (
+        "vector_vege",
+        "the GeoJSON tables are the geojson family of `outputs` (default \
+         raster,dxf,geojson); for vector_vege=0 list the families without geojson",
     ),
 ];
 
@@ -760,7 +850,7 @@ fn parse_greenshade_isom(
 mod test {
     use std::path::Path;
 
-    use super::Config;
+    use super::{Config, Outputs};
     use crate::mapframe::MapFrame;
 
     #[test]
@@ -819,10 +909,10 @@ mod test {
 
     #[test]
     fn unknown_keys_are_rejected_with_the_nearest_known_key() {
-        let err = load_appended("vectorvege=1\nfrobnicate=2").err().unwrap();
+        let err = load_appended("vectorshade=1\nfrobnicate=2").err().unwrap();
         assert!(err.contains("unknown keys"), "{err}");
         assert!(
-            err.contains("`vectorvege` (did you mean `vector_vege`?)"),
+            err.contains("`vectorshade` (did you mean `vector_shade`?)"),
             "{err}"
         );
         assert!(err.contains("`frobnicate`"), "{err}");
@@ -845,6 +935,8 @@ mod test {
             "cliffnosmallciffs",
             "savetempfiles",
             "savetempfolders",
+            "output_dxf",
+            "vector_vege",
         ] {
             let err = load_appended(&format!("{key}=1")).err().unwrap();
             assert!(err.contains(&format!("`{key}` (removed: ")), "{err}");
@@ -1237,42 +1329,96 @@ mod test {
     }
 
     #[test]
-    fn vector_vege_defaults_off_with_default_simplify() {
+    fn outputs_default_to_every_family() {
         let config = load_with(&[]).unwrap();
-        assert!(!config.vector_vege);
-        assert!(config.vector_greenshade_isom.is_empty());
+        assert_eq!(config.outputs, Outputs::ALL);
         assert_eq!(config.vector_simplify, 2.0);
+        assert_eq!(load_without("outputs").unwrap().outputs, Outputs::ALL);
     }
 
     #[test]
-    fn vector_vege_must_be_0_or_1() {
-        let err = load_with(&[("vector_vege", "yes")]).err().unwrap();
-        assert!(err.contains("vector_vege"), "{err}");
+    fn outputs_is_any_subset_in_any_order() {
+        let parse = |v: &str| load_with(&[("outputs", v)]).map(|c| c.outputs);
+        let outputs = |raster, dxf, geojson| Outputs {
+            raster,
+            dxf,
+            geojson,
+        };
+        assert_eq!(parse("raster").unwrap(), outputs(true, false, false));
+        assert_eq!(parse("dxf").unwrap(), outputs(false, true, false));
+        assert_eq!(parse("geojson").unwrap(), outputs(false, false, true));
+        assert_eq!(parse("geojson,raster").unwrap(), outputs(true, false, true));
+        assert_eq!(
+            parse(" dxf , geojson ").unwrap(),
+            outputs(false, true, true)
+        );
+        assert_eq!(parse("geojson,dxf,raster").unwrap(), Outputs::ALL);
+        assert_eq!(parse("dxf,dxf").unwrap(), outputs(false, true, false));
+    }
+
+    #[test]
+    fn outputs_rejects_unknown_families_and_an_empty_list() {
+        for bad in [
+            "png",
+            "raster,vector",
+            "raster,,dxf",
+            "Raster",
+            "raster;dxf",
+        ] {
+            let err = load_with(&[("outputs", bad)])
+                .err()
+                .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
+            assert!(err.contains("`outputs`"), "{err}");
+            assert!(err.contains("raster, dxf, geojson"), "{err}");
+        }
+        for empty in ["", " "] {
+            let err = load_with(&[("outputs", empty)]).err().unwrap();
+            assert!(err.contains("`outputs` is empty"), "{err}");
+            assert!(err.contains("raster, dxf, geojson"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_tables_are_written_for_geojson_and_for_a_merged_batch_dxf() {
+        let tables = |settings: &[(&str, &str)]| load_with(settings).unwrap().vector_tables();
+        assert!(tables(&[]));
+        assert!(tables(&[("outputs", "geojson")]));
+        assert!(!tables(&[("outputs", "raster,dxf")]));
+        // the combined output.dxf is made from the merged tables
+        let batch = [("batch", "1"), ("batchmerge", "1"), ("outputs", "dxf")];
+        assert!(tables(&batch));
+        assert!(!tables(&[("batch", "1"), ("outputs", "dxf")]));
+        assert!(!tables(&[
+            ("batch", "1"),
+            ("batchmerge", "1"),
+            ("outputs", "raster")
+        ]));
     }
 
     #[test]
     fn vector_greenshade_isom_parses_vegetation_codes() {
         use crate::geojson::geojson_types::VegetationPropertiesIsomCode as S;
-        let config = load_with(&[("vector_vege", "1")]).unwrap();
+        let config = load_with(&[]).unwrap();
         assert_eq!(
             config.vector_greenshade_isom,
             [S::X406000, S::X406000, S::X408000, S::X408000, S::X410000]
         );
         let config =
-            load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", "403.000")]).unwrap();
+            load_with(&[("outputs", "dxf"), ("vector_greenshade_isom", "403.000")]).unwrap();
         assert_eq!(config.vector_greenshade_isom, [S::X403000]);
     }
 
     #[test]
     fn vector_greenshade_isom_rejects_empty_and_non_vegetation_codes() {
         for bad in ["", "406.000||410.000", "406.000|409.000", "406", "101.000"] {
-            let err = load_with(&[("vector_vege", "1"), ("vector_greenshade_isom", bad)])
+            let err = load_with(&[("vector_greenshade_isom", bad)])
                 .err()
                 .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
             assert!(err.contains("vector_greenshade_isom"), "{err}");
         }
-        // not read while vector_vege is off
-        load_with(&[("vector_greenshade_isom", "")]).unwrap();
+        // not read when the vegetation is not vectorized
+        let config = load_with(&[("outputs", "raster"), ("vector_greenshade_isom", "")]).unwrap();
+        assert!(config.vector_greenshade_isom.is_empty());
     }
 
     #[test]
@@ -1288,14 +1434,16 @@ mod test {
     }
 
     #[test]
-    fn vector_shade_is_0_or_1_and_needs_vector_vege() {
+    fn vector_shade_is_0_or_1_and_needs_geojson() {
         assert!(!load_with(&[]).unwrap().vector_shade);
-        let config = load_with(&[("vector_vege", "1"), ("vector_shade", "1")]).unwrap();
+        let config = load_with(&[("vector_shade", "1")]).unwrap();
         assert!(config.vector_shade);
-        let err = load_with(&[("vector_shade", "1")]).err().unwrap();
-        assert!(err.contains("vector_vege"), "{err}");
+        let err = load_with(&[("outputs", "raster,dxf"), ("vector_shade", "1")])
+            .err()
+            .unwrap();
+        assert!(err.contains("geojson in `outputs`"), "{err}");
         for bad in ["yes", "", "2"] {
-            let err = load_with(&[("vector_vege", "1"), ("vector_shade", bad)])
+            let err = load_with(&[("vector_shade", bad)])
                 .err()
                 .unwrap_or_else(|| panic!("`{bad}` must fail the config load"));
             assert!(err.contains("vector_shade"), "{err}");

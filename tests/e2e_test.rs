@@ -367,7 +367,7 @@ fn table_path(folder: &Path, table: IsomTable) -> PathBuf {
     folder.join(geojson::file_name(table))
 }
 
-/// Check a tile's terrain tables with vector_vege=1, each at `path(table)`: contours with
+/// Check a tile's terrain tables, each at `path(table)`: contours with
 /// the renderer's form lines, knoll points and cliffs.
 fn assert_terrain_outputs(path: impl Fn(IsomTable) -> PathBuf) {
     let contours = assert_terrain_features(
@@ -418,9 +418,10 @@ fn assert_terrain_outputs(path: impl Fn(IsomTable) -> PathBuf) {
     );
 }
 
-/// Single job on the regression tile: run.sh's single job plus vector_vege=1. The
-/// terrain and vegetation tables land in temp/, declaring the tile's CRS, the green
-/// areas without `shade` (vector_shade=0), and temp/ keeps only the products.
+/// Single job on the regression tile: run.sh's single job, the default ini (every
+/// product family). The terrain and vegetation tables land in temp/, declaring the
+/// tile's CRS, the green areas without `shade` (vector_shade=0), and temp/ keeps only
+/// the products.
 #[test]
 #[ignore]
 fn single_job_writes_terrain_geojson() {
@@ -442,7 +443,7 @@ fn single_job_writes_terrain_geojson() {
     assert_eq!(assert_schema_conformance(&dir), 4);
 
     // debug_intermediates=0: temp/ keeps only the products, the tables, the DXF files
-    // (output_dxf=1) and the vegetation rasters
+    // and the vegetation rasters
     let kept: BTreeSet<String> = std::fs::read_dir(&temp)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -484,19 +485,51 @@ fn assert_closed_dxf_areas(dxf_path: &Path, codes: &BTreeSet<String>) {
 }
 
 /// Run the single job on the regression tile in a fresh run directory `name`, with
-/// vegetation vectorization on and the given extra settings. Returns the directory.
+/// the default ini and the given settings. Returns the directory.
 fn run_single_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
     let dir = run_dir(name);
     std::fs::copy(input("test_file.laz"), dir.join("test_file.laz")).unwrap();
-    write_ini(&dir, &[&[("vector_vege", "1")], settings].concat());
+    write_ini(&dir, settings);
 
     run_pullauta(&dir, &["test_file.laz"]);
     dir
 }
 
+/// `outputs=geojson`: the single job writes the tables only, no map, raster or DXF, and
+/// the tables are byte-identical to a run with every family.
+#[test]
+#[ignore]
+fn single_job_with_geojson_only_writes_the_tables_alone() {
+    let full = run_single_job("e2e-single-full", &[]);
+    let dir = run_single_job("e2e-single-geojson", &[("outputs", "geojson")]);
+
+    let written: Vec<PathBuf> = files(&dir)
+        .into_iter()
+        .map(|p| p.strip_prefix(&dir).unwrap().to_path_buf())
+        .filter(|p| !["pullauta.ini", "test_file.laz"].contains(&p.to_str().unwrap()))
+        .collect();
+    let tables: Vec<PathBuf> = [
+        IsomTable::Cliffs,
+        IsomTable::Contours,
+        IsomTable::KnollsPoints,
+        IsomTable::VegetationAreas,
+    ]
+    .into_iter()
+    .map(|t| Path::new("temp").join(geojson::file_name(t)))
+    .collect();
+    assert_eq!(written, tables);
+    for table in &tables {
+        assert!(
+            std::fs::read(dir.join(table)).unwrap() == std::fs::read(full.join(table)).unwrap(),
+            "{} differs from the full run's",
+            table.display()
+        );
+    }
+}
+
 /// Batch job as in regression/run.sh: one tile plus the OSM shapefile zip, with
-/// `vectorconf=osm.txt`, and vegetation vectorization on, with the greenshade index
-/// (`vector_shade=1`). `batchmerge=1` runs the merges and the combined export into
+/// `vectorconf=osm.txt`, every product family (the default `outputs`), and the
+/// greenshade index (`vector_shade=1`). `batchmerge=1` runs the merges and the combined export into
 /// `out/`. `epsg` is unset: every GeoJSON file declares the EPSG code the tile's GeoTIFF
 /// CRS keys name. Without debug_intermediates nothing but the products is left: the
 /// tile's tables are read from their crops in `out/`.
@@ -580,7 +613,7 @@ fn batch_with_osm_vectorconf() {
         .filter(|p| p.to_string_lossy().ends_with(".dxf.bin"))
         .collect();
     assert!(bins.is_empty(), "{bins:?}");
-    // the tile's vegetation rasters and DXF crops (output_dxf=1), and the merged DXF
+    // the tile's vegetation rasters and DXF crops, and the merged DXF
     for name in [
         "out/test_file_vege.png",
         "out/test_file_undergrowth.png",
@@ -618,6 +651,84 @@ fn batch_with_debug_intermediates_keeps_the_tile_folder() {
     }
 }
 
+/// The batch job with `outputs=dxf`: no raster is rendered or merged and no GeoJSON is
+/// left; the tile DXF crops, the merged DXF and the combined `output.dxf` (made from the
+/// tables, then removed) are written.
+#[test]
+#[ignore]
+fn batch_with_dxf_only_leaves_the_dxf_files() {
+    let dir = run_batch_job(
+        "e2e-batch-dxf",
+        &[("outputs", "dxf"), ("vector_shade", "0")],
+    );
+    let left: Vec<PathBuf> = files(&dir)
+        .into_iter()
+        .filter(|p| {
+            let name = p.to_string_lossy();
+            [".png", ".jpg", ".pgw", ".geojson", ".dxf.bin"]
+                .iter()
+                .any(|ext| name.ends_with(ext))
+        })
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    for name in [
+        "out/test_file_contours.dxf",
+        "out/test_file_vegetation.dxf",
+        "merged.dxf",
+        "out/output.dxf",
+        "out/output.ocdCrt",
+    ] {
+        assert!(dir.join(name).exists(), "{name} was not written");
+    }
+    // the combined DXF carries the OSM mapping's and the vegetation's layers
+    let dxf = std::fs::read_to_string(dir.join("out/output.dxf")).unwrap();
+    for code in ["101.000", "406.000", "521.000"] {
+        assert!(dxf.contains(&format!("  8\r\n{code}\r\n")), "{code}");
+    }
+}
+
+/// The batch job with `outputs=geojson`: no raster or DXF is written, and every GeoJSON
+/// file in `out/` (the OSM tables matched without drawing included) is byte-identical to
+/// the full batch run's.
+#[test]
+#[ignore]
+fn batch_with_geojson_only_writes_the_full_runs_tables() {
+    let full = run_batch_job("e2e-batch-full", &[]);
+    let dir = run_batch_job("e2e-batch-geojson", &[("outputs", "geojson")]);
+
+    let left: Vec<PathBuf> = files(&dir)
+        .into_iter()
+        .filter(|p| {
+            let name = p.to_string_lossy();
+            [
+                ".png", ".jpg", ".pgw", ".jgw", ".dxf", ".dxf.bin", ".ocdCrt",
+            ]
+            .iter()
+            .any(|ext| name.ends_with(ext))
+        })
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    let tables = |root: &Path| -> Vec<PathBuf> {
+        files(&root.join("out"))
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "geojson"))
+            .map(|p| p.strip_prefix(root).unwrap().to_path_buf())
+            .collect()
+    };
+    let names = tables(&dir);
+    assert_eq!(names, tables(&full));
+    // each table per tile, merged and combined
+    assert_eq!(names.len(), 3 * IsomTable::ALL.len());
+    for name in &names {
+        assert!(
+            std::fs::read(dir.join(name)).unwrap() == std::fs::read(full.join(name)).unwrap(),
+            "{} differs from the full run's",
+            name.display()
+        );
+    }
+}
+
 /// Run the batch job of [`batch_with_osm_vectorconf`] in a fresh run directory `name`,
 /// with the given extra settings. Returns the directory.
 fn run_batch_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
@@ -636,9 +747,7 @@ fn run_batch_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
     let batch = [
         ("batch", "1"),
         ("vectorconf", "osm.txt"),
-        ("vector_vege", "1"),
         ("vector_shade", "1"),
-        ("output_dxf", "1"),
         ("batchmerge", "1"),
     ];
     write_ini(&dir, &[&batch, settings].concat());

@@ -38,11 +38,35 @@ enum Image {
     Yellow,
 }
 
+/// Draw the shape files onto the map layers `low.png` and `high.png` in `tmpfolder`,
+/// and with a vector mapping write its features to the tables (when
+/// [`Config::vector_tables`]).
 pub fn render(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
     batch: bool,
+) -> Result<(), Box<dyn Error>> {
+    shapes(fs, config, tmpfolder, batch, true)
+}
+
+/// Write a batch tile's vector mapping features to the tables without drawing them: the
+/// shapes are matched as [`render`] matches them, on empty canvases.
+pub fn vector_tables(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+) -> Result<(), Box<dyn Error>> {
+    shapes(fs, config, tmpfolder, true, false)
+}
+
+/// [`render`], drawing only with `draw`.
+fn shapes(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    batch: bool,
+    draw: bool,
 ) -> Result<(), Box<dyn Error>> {
     let low_file = tmpfolder.join("low.png");
     if fs.exists(&low_file) {
@@ -89,15 +113,19 @@ pub fn render(
     );
     img_reader.set_format(image::ImageFormat::Png);
     img_reader.no_limits();
-    let img = img_reader.decode().unwrap();
-    let w = img.width() as f64;
-    let h = img.height() as f64;
+    let (w, h) = img_reader.into_dimensions()?;
+    let (w, h) = (w as f64, h as f64);
 
     let outw = frame.to_px(w);
     let outh = frame.to_px(h);
 
     // TODO: only allocate the canvas that are actually used... in a lazy way
-    let (width, height) = (outw as u32, outh as u32);
+    // without drawing, one-pixel canvases: the shapes are matched, not drawn
+    let (width, height) = if draw {
+        (outw as u32, outh as u32)
+    } else {
+        (1, 1)
+    };
     let mut imgbrown = Canvas::new(width, height);
     let mut imgbrowntop = Canvas::new(width, height);
     let mut imgblack = Canvas::new(width, height);
@@ -719,6 +747,21 @@ pub fn render(
         }
     }
     info!("Total time elapsed in drawing shapes: {total_elapsed:.2?}",);
+
+    if !vectorconf_mappings.is_empty() && config.vector_tables() {
+        mapped_lines.append(&mut mapped_areas);
+        geojson::write_tables(
+            fs,
+            tmpfolder,
+            geojson::Source::VectorMapping,
+            mapped_lines,
+            config.epsg,
+        )?;
+    }
+    if !draw {
+        return Ok(());
+    }
+
     imgblue2.overlay(&mut imgblue, 0.0, 0.0);
     imgblue2.overlay(&mut imgblue, 1.0, 0.0);
     imgblue2.overlay(&mut imgblue, 0.0, 1.0);
@@ -766,17 +809,5 @@ pub fn render(
     imgolive
         .save_as(fs, &low_file)
         .expect("could not save low.png");
-
-    if !vectorconf_mappings.is_empty() {
-        mapped_lines.append(&mut mapped_areas);
-        let features = mapped_lines;
-        geojson::write_tables(
-            fs,
-            tmpfolder,
-            geojson::Source::VectorMapping,
-            features,
-            config.epsg,
-        )?;
-    }
     Ok(())
 }

@@ -184,19 +184,39 @@ fn main() {
             if config.batchmerge {
                 info!("Batch done, merging tiles");
                 let out = Path::new(&config.batchoutfolder);
-                pullauta::merge::pngmerge(&fs, &config, 4.0, false).unwrap();
-                pullauta::merge::pngmerge(&fs, &config, 4.0, true).unwrap();
-                pullauta::merge::pngmergevege(&fs, &config, 1.0, false).unwrap();
-                pullauta::merge::bindxfmerge(&fs, &config).unwrap();
-                pullauta::geojson::merge_geojson(&fs, out).unwrap();
-                pullauta::geojson::export_combined(&fs, out, &config.map_frame, config.epsg)
+                if config.outputs.raster {
+                    pullauta::merge::pngmerge(&fs, &config, 4.0, false).unwrap();
+                    pullauta::merge::pngmerge(&fs, &config, 4.0, true).unwrap();
+                    pullauta::merge::pngmergevege(&fs, &config, 1.0, false).unwrap();
+                }
+                if config.outputs.dxf || config.debug_intermediates {
+                    pullauta::merge::bindxfmerge(&fs, &config).unwrap();
+                }
+                if config.vector_tables() {
+                    pullauta::geojson::merge_geojson(&fs, out).unwrap();
+                    pullauta::geojson::export_combined(
+                        &fs,
+                        out,
+                        &config.map_frame,
+                        config.epsg,
+                        config.outputs,
+                    )
                     .unwrap();
+                }
             }
-            // the tiles' .dxf.bin crops are the merge's input, not output
-            pullauta::process::remove_tile_bins(
+            // the tiles' .dxf.bin crops are the merge's input, not output, and so are
+            // the tables when they were written only for the combined DXF
+            let tiles: Vec<String> = pullauta::process::batch_tiles(&fs, &config.lazfolder)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|p| Some(p.file_stem()?.to_string_lossy().into_owned()))
+                .collect();
+            let intermediate_tables = config.vector_tables() && !config.outputs.geojson;
+            pullauta::process::remove_batch_intermediates(
                 &fs,
                 &config.batchoutfolder,
                 config.debug_intermediates,
+                intermediate_tables.then_some(tiles.as_slice()),
             )
             .unwrap();
         }
@@ -227,7 +247,8 @@ fn main() {
         }
 
         Command::DotKnolls => {
-            pullauta::knolls::dotknolls(&fs, &config.knoll, config.output_dxf, &tmpfolder).unwrap();
+            pullauta::knolls::dotknolls(&fs, &config.knoll, config.outputs.dxf, &tmpfolder)
+                .unwrap();
         }
 
         Command::DxfMerge => {
@@ -244,20 +265,20 @@ fn main() {
         }
 
         Command::KnollDetector => {
-            pullauta::knolls::knolldetector(&fs, &config.knoll, config.output_dxf, &tmpfolder)
+            pullauta::knolls::knolldetector(&fs, &config.knoll, config.outputs.dxf, &tmpfolder)
                 .unwrap();
         }
 
         Command::MakeCliffs => {
             // no tile name here: the `cliffthin` seed is the empty name
-            pullauta::cliffs::makecliffs(&fs, &config.cliff, config.output_dxf, &tmpfolder, "")
+            pullauta::cliffs::makecliffs(&fs, &config.cliff, config.outputs.dxf, &tmpfolder, "")
                 .unwrap();
         }
 
         Command::MakeVege => {
             let classes =
                 pullauta::vegetation::makevege(&fs, &config.vegetation, &tmpfolder).unwrap();
-            if config.vector_vege {
+            if config.outputs.vectorizes_vegetation() {
                 pullauta::vege_vector::export_all(&fs, &config, &tmpfolder, &classes).unwrap();
             }
         }
@@ -300,7 +321,7 @@ fn main() {
                 &fs,
                 dxffilein,
                 dxffileout,
-                config.output_dxf,
+                config.outputs.dxf,
                 minx,
                 miny,
                 maxx,
@@ -328,7 +349,7 @@ fn main() {
                 &fs,
                 dxffilein,
                 dxffileout,
-                config.output_dxf,
+                config.outputs.dxf,
                 minx,
                 miny,
                 maxx,
@@ -338,7 +359,7 @@ fn main() {
         }
 
         Command::SmoothJoin => {
-            pullauta::merge::smoothjoin(&fs, &config.smoothjoin, config.output_dxf, &tmpfolder)
+            pullauta::merge::smoothjoin(&fs, &config.smoothjoin, config.outputs.dxf, &tmpfolder)
                 .unwrap();
         }
 
@@ -378,7 +399,7 @@ fn main() {
                 cinterval,
                 &hmap,
                 &dxffile,
-                config.output_dxf,
+                config.outputs.dxf,
             )
             .unwrap();
         }
@@ -444,6 +465,7 @@ fn main() {
                     &fs,
                     &tmpfolder,
                     config.debug_intermediates,
+                    config.outputs,
                     config.vege_bitmode,
                 )
                 .unwrap();
@@ -486,6 +508,7 @@ fn main() {
                     &fs,
                     &tmpfolder,
                     config.debug_intermediates,
+                    config.outputs,
                     config.vege_bitmode,
                 )
                 .unwrap();

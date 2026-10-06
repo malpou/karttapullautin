@@ -53,8 +53,9 @@ baseline past it. A push runs CI only on the branch tip, so:
   committing and pushing commit 2.
 
 A branch that renames or drops a key the jobs set writes the setting as
-`new|old=value` in `run.sh` so the baseline build still gets it, and drops the
-old name when it rebases the baseline.
+`new|old=value` in `run.sh` (or `new=value|old=value` when the replacement
+takes another value) so the baseline build still gets it, and drops the old
+name when it rebases the baseline.
 
 Branches are never force-pushed, so every `ref` stays reachable and CI can
 fetch it.

@@ -231,7 +231,7 @@ pub fn pngmerge(
 
 /// Merge the tiles' `.dxf.bin` crops in the batch output folder, per stage and all
 /// together, into `merged_<stage>.dxf` and `merged.dxf` in the working directory with
-/// output_dxf=1; the `.dxf.bin` merges are intermediates, written with
+/// the dxf family in `outputs`; the `.dxf.bin` merges are intermediates, written with
 /// debug_intermediates=1.
 pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> {
     let batchoutfolder = &config.batchoutfolder;
@@ -351,7 +351,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
         if config.debug_intermediates {
             output.to_writer(&mut fs.create(&output_file)?)?;
         }
-        if config.output_dxf {
+        if config.outputs.dxf {
             let output_file = PathBuf::from(format!("merged_{suffix}.dxf"));
             output.to_dxf(&mut fs.create(&output_file)?)?;
         }
@@ -363,7 +363,7 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
         if config.debug_intermediates {
             out_merged.to_writer(&mut fs.create(MERGED_DXF_BIN)?)?;
         }
-        if config.output_dxf {
+        if config.outputs.dxf {
             out_merged.to_dxf(&mut fs.create("merged.dxf")?)?;
         }
     }

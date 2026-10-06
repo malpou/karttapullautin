@@ -10,7 +10,7 @@
 # Jobs, both on the regression tile:
 #   single  `pullauta test_file.laz` with the default ini (the out-of-the-box map)
 #   batch   the tile and the OSM shapefile zip in in/, with batch=1,
-#           vectorconf=osm.txt, vector_vege=1 and batchmerge=1, then
+#           vectorconf=osm.txt, every product family (outputs) and batchmerge=1, then
 #           `pullauta pngmerge 1` and `pullauta pngmergedepr 1` (full-scale merges;
 #           they replace batchmerge's 4x ones)
 # Both jobs leave only their products (debug_intermediates=0): the gate compares the
@@ -58,13 +58,14 @@ if [ -e "$out" ]; then
     fi
 fi
 
-# job settings: key=value, or new|old=value to set whichever name the build's
-# default ini has (for a branch that renames a key; the rebase commit drops old)
+# job settings: key=value, or alternatives separated by | to set the first name the
+# build's default ini has: new|old=value (a renamed key, same value) or
+# new=value|old=value (a replaced key with its own value). The rebase commit drops old.
 single_settings=()
 batch_settings=(
     batch=1
     vectorconf=osm.txt
-    vector_vege=1
+    'outputs=raster,dxf,geojson|vector_vege=1'
     batchmerge=1
 )
 
@@ -78,16 +79,39 @@ download() { # file url
 download test_file.laz https://cdn.routechoic.es/test.laz
 download test_file.shp.zip https://cdn.routechoic.es/test-osm.shp.zip
 
+# split a setting into its |-separated alternatives in the array `alternatives`; a |
+# starts an alternative only before `name=`, or before a bare `name` while no value has
+# started, so a value's own pipes (vector_greenshade_isom=406.000|408.000) stay in it
+split_alternatives() {
+    local part parts seen_value=
+    alternatives=()
+    IFS='|' read -ra parts <<<"$1"
+    for part in "${parts[@]}"; do
+        if [[ $part =~ ^[A-Za-z_][A-Za-z0-9_{}]*= ]] ||
+            { [ -z "$seen_value" ] && [[ $part =~ ^[A-Za-z_][A-Za-z0-9_{}]*$ ]]; } ||
+            [ ${#alternatives[@]} -eq 0 ]; then
+            alternatives+=("$part")
+        else
+            alternatives[${#alternatives[@]}-1]+="|$part"
+        fi
+        case $part in *=*) seen_value=1 ;; esac
+    done
+}
+
 # write the build's default ini with the given settings into ./pullauta.ini
 write_ini() {
     cp "$src/pullauta.default.ini" pullauta.ini
-    local setting names value name found alternatives
+    local setting value name found alternative last
     for setting in "$@"; do
-        names=${setting%%=*}
-        value=${setting#*=}
         found=
-        IFS='|' read -ra alternatives <<<"$names"
-        for name in "${alternatives[@]}"; do
+        split_alternatives "$setting"
+        last=${alternatives[${#alternatives[@]}-1]}
+        for alternative in "${alternatives[@]}"; do
+            name=${alternative%%=*}
+            case $alternative in
+            *=*) value=${alternative#*=} ;;
+            *) value=${last#*=} ;; # new|old=value: the last one's value
+            esac
             if grep -q "^$name *=" pullauta.ini; then
                 awk -v k="$name" -v v="$value" \
                     '$0 ~ "^" k " *=" { print k "=" v; next } { print }' \
@@ -98,7 +122,7 @@ write_ini() {
             fi
         done
         if [ -z "$found" ]; then
-            echo "run.sh: $names is not in $src/pullauta.default.ini" >&2
+            echo "run.sh: none of $setting is in $src/pullauta.default.ini" >&2
             exit 1
         fi
     done

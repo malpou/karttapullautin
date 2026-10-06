@@ -9,7 +9,7 @@ mod canvas;
 mod mapping;
 mod render;
 
-pub use render::render;
+pub use render::{render, vector_tables};
 
 /// Unzips the shape files and renders them to a canvas.
 pub fn unzip_and_render(

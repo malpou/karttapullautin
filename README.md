@@ -50,7 +50,9 @@ You can run the `pullauta` executable with the path to your file as argument:
 > ```
 > Other log level available is `warn`, in which no info of current run will be displayed, `error`, which will only show errors, and `trace` which will output a lot of log messages about small details during the processing.
 
-As output Karttapullautin writes two 600 dpi png map images. One without depressions and one with purple depressions. It also writes contours and cliffs as dxf files to temp folder (with `output_dxf=1`, the default) to be post processed, for example using Open Orienteering Mapper or OCAD. The temp folder keeps only these products (see [Vectors](#vectors)); every other stage result is a debug intermediate, kept only with `debug_intermediates=1`, with no format guarantee.
+As output Karttapullautin writes two 600 dpi png map images. One without depressions and one with purple depressions. It also writes contours and cliffs as dxf files and GeoJSON tables to temp folder to be post processed, for example using Open Orienteering Mapper or OCAD. The temp folder keeps only these products (see [Vectors](#vectors)); every other stage result is a debug intermediate, kept only with `debug_intermediates=1`, with no format guarantee.
+
+The ini key `outputs` selects the product families written to disk, comma separated in any order: `raster` (the map pngs, the vegetation and undergrowth rasters, and the merged pngs), `dxf` (the dxf files) and `geojson` (the GeoJSON tables). The default is `outputs=raster,dxf,geojson`. Without `raster` no map is rendered: `outputs=geojson` runs only the stages the tables need and leaves only the tables.
 
 You can re-render png map files (like with changed north line settings) by running the binary without arguments. Re-rendering reads the debug intermediates, so the tile must have been processed with `debug_intermediates=1`:
     
@@ -95,7 +97,7 @@ Similar as the XYZ files mentioned above, Karttapullautin previously used regula
 ./pullauta bin2dxf temp/c2g.dxf.bin temp/c2g.dxf
 ```
 
-There is also a configuration option `output_dxf` which when set to `1` will output regular `.dxf` files next to the binary files at the expense of higher disk usage and performance. The `.dxf.bin` files are debug intermediates, kept only with `debug_intermediates=1`.
+With `dxf` in `outputs` regular `.dxf` files are written next to the binary files. The `.dxf.bin` files are debug intermediates, kept only with `debug_intermediates=1`.
 
 ### Fine tuning the output
 
@@ -117,16 +119,16 @@ To make cliffs again:
 
 ### Vectors
 
-In additon to the png raster map imges, Karttapullautin makes also vector contours and cliffs and also some raster vector files one might find intresting for mapping use. After the process you can find them in temp folder, which keeps only these products unless `debug_intermediates=1`. The DXF files are written with `output_dxf=1`.
+In additon to the png raster map imges, Karttapullautin makes also vector contours and cliffs and also some raster vector files one might find intresting for mapping use. After the process you can find them in temp folder, which keeps only these products unless `debug_intermediates=1`. The DXF files are written with `dxf` in `outputs`, the rasters with `raster` and the tables with `geojson`.
 
 - `out2.dxf`: final contours with 2.5 m interval
 - `dotknolls.dxf`: dot knolls and small U -depressions. Some are not rendered to png files for legibility reasons.
 - `c2g.dxf`: small cliffs
 - `c3g.dxf`: big cliffs
 - `formlines.dxf`: the form lines the renderer drew
-- `vegetation.dxf` (with `vector_vege=1`) and `basemap.dxf` (with `basemapinterval` above 0)
+- `vegetation.dxf`: the vegetation areas, symbol codes as layers, and `basemap.dxf` (with `basemapinterval` above 0)
 - `vegetation.png + vegetation.pgw`: generalized green/yellow as raster, same as at the background of final map png files; `undergrowth.png + undergrowth.pgw` the undergrowth (and with `vege_bitmode=1` the one-channel `vegetation_bit.png` and `undergrowth_bit.png`).
-- `<table>.geojson` (with `vector_vege=1`): the vector output for the [isom-maplibre](https://github.com/MetsaApp/isom-maplibre) style, one file per table it reads (`contours`, `knolls_points`, `cliffs`, `vegetation_areas`, and with a `vectorconf` also `water`, `paths`, `manmade`), each feature with its ISOM 2017-2 symbol code as `isom_code` (`"101.000"`).
+- `<table>.geojson`: the vector output for the [isom-maplibre](https://github.com/MetsaApp/isom-maplibre) style, one file per table it reads (`contours`, `knolls_points`, `cliffs`, `vegetation_areas`, and with a `vectorconf` also `water`, `paths`, `manmade`), each feature with its ISOM 2017-2 symbol code as `isom_code` (`"101.000"`).
 
 For importing Maastotietokanta, try reading shape filed directly to your mapping app. Note that the `dxf` files need to be converted from the internal `.bin.dxf` format using the command `bin2dxf` as mentioned above.
 
@@ -153,11 +155,11 @@ vegetation backround images (each tile's `<tile>_vege.png` and `<tile>_undergrow
 The last paramameter (number) is scale factor. 2 reduces size to 50%, 4 to 25%, 20 to 5% and so on. Command writes out jpg and png versions (merged.png, merged.jpg and their world files) into the batch output folder. 
 Note, you easily run out of memory if you try merging together too large area with too high resolution.
 
-You can also merge dxf files. The merge reads each tile's `.dxf.bin` crops, which the batch removes when it is done unless `debug_intermediates=1`; `batchmerge=1` merges them during the run. With `output_dxf=1` each tile's crops are also kept as `<tile>_<layer>.dxf` in the output folder, and the merge writes `merged.dxf` and `merged_<layer>.dxf` in the working directory.
+You can also merge dxf files. The merge reads each tile's `.dxf.bin` crops, which the batch removes when it is done unless `debug_intermediates=1`; `batchmerge=1` merges them during the run. With `dxf` in `outputs` each tile's crops are also kept as `<tile>_<layer>.dxf` in the output folder, and the merge writes `merged.dxf` and `merged_<layer>.dxf` in the working directory.
 
     ./pullauta dxfmerge
 
-With `batchmerge=1` the batch run does all of the merging itself when the tiles are done: the png merges, the dxf merge, and, for the vector outputs (`vector_vege=1`, or a `vectorconf`), each tile's tables cropped to the tile, merged into `merged_<table>.geojson`, and published as one `<table>.geojson` per table, one `output.dxf` (symbol codes as DXF layers) and `output.ocdCrt` (the cross reference table for OCAD's DXF import), all in the batch output folder. The GeoJSON files declare the coordinate system the input LAS/LAZ files declare (as an EPSG code, from their WKT or GeoTIFF CRS records), and each map png/jpg with a world file gets a `<name>.png.aux.xml` sidecar naming it, which QGIS and GDAL read; set `epsg` to override it, for files with a missing or wrong CRS. A batch stops before processing when a tile declares a different coordinate system, or one without an EPSG code, unless `epsg` is set; tiles that declare none are assumed to share the others'.
+With `batchmerge=1` the batch run does all of the merging itself when the tiles are done: the png merges (`raster`), the dxf merge (`dxf`), and each tile's tables cropped to the tile, merged into `merged_<table>.geojson`, and published as one `<table>.geojson` per table (`geojson`), one `output.dxf` (symbol codes as DXF layers) and `output.ocdCrt` (the cross reference table for OCAD's DXF import) (`dxf`), all in the batch output folder. `output.dxf` is made from the tables: without `geojson` they are written, merged and removed when the batch is done. The GeoJSON files declare the coordinate system the input LAS/LAZ files declare (as an EPSG code, from their WKT or GeoTIFF CRS records), and each map png/jpg with a world file gets a `<name>.png.aux.xml` sidecar naming it, which QGIS and GDAL read; set `epsg` to override it, for files with a missing or wrong CRS. A batch stops before processing when a tile declares a different coordinate system, or one without an EPSG code, unless `epsg` is set; tiles that declare none are assumed to share the others'.
 
 ### Note:
 

@@ -32,6 +32,17 @@ const RENDER_INPUTS: [&str; 8] = [
     "c3g.dxf.bin",
 ];
 
+/// An error when `outputs` leaves out the raster family: the map is a raster product, so
+/// rendering it (a re-render, `render`, a shape-file zip) would write what was not asked
+/// for.
+pub fn check_raster(config: &Config) -> Result<(), Box<dyn Error>> {
+    if config.outputs.raster {
+        Ok(())
+    } else {
+        Err("outputs has no raster family: nothing to render".into())
+    }
+}
+
 /// An error naming the [`RENDER_INPUTS`] missing from `tmpfolder`, if any: re-rendering
 /// needs the debug intermediates of a tile run.
 pub fn check_inputs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<(), Box<dyn Error>> {
@@ -61,6 +72,7 @@ pub fn render(
     nodepressions: bool,
 ) -> Result<(), Box<dyn Error>> {
     info!("Rendering...");
+    check_raster(config)?;
     check_inputs(fs, tmpfolder)?;
 
     let frame = config.map_frame;
@@ -984,13 +996,13 @@ pub fn write_formlines(
         .to_writer(&mut fs.create(tmpfolder.join("formlines.dxf.bin"))?)
         .expect("Could not write formlines.dxf.bin");
 
-    if config.output_dxf {
+    if config.outputs.dxf {
         formlines.to_dxf(&mut fs.create(tmpfolder.join("formlines.dxf"))?)?;
     }
 
     // As for contours (process_tile): 103.000 in the contours table is this
     // selected set, not the half-interval contours.
-    if config.vector_vege {
+    if config.vector_tables() {
         crate::geojson::bindxf_to_tables(
             fs,
             &[tmpfolder.join("formlines.dxf.bin")],

@@ -66,3 +66,4 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Output change**: Any difference in pixels, debug intermediates or vector output on the regression tile against the previous baseline. _Avoid_: regression (for an intended change)
 **Regression tile**: The fixed test tile whose rendered map and vector output every branch is compared against. _Avoid_: test file, golden tile
 **Debug intermediates**: Stage results written to disk only on request, for inspection, with no format guarantee. _Avoid_: temp files, cache
+**Product family**: One of the three kinds of output a run can be asked for in the `outputs` ini key: raster (the map and vegetation rasters), dxf (the DXF files) or geojson (the GeoJSON tables). A run writes the products of the selected families only; what it computes on the way is a debug intermediate. _Avoid_: output type, format

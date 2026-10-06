@@ -9,6 +9,7 @@ use std::path::Path;
 use log::{info, warn};
 use serde_json::{Value, json};
 
+use crate::config::Outputs;
 use crate::geometry::{BinaryDxf, Classification, Geometry, Point2};
 use crate::io::fs::FileSystem;
 use crate::isom::{IsomCode, IsomTable, SymbolGeometry};
@@ -1253,11 +1254,12 @@ impl Combined {
 
 /// Combine every merged table in the batch output folder into one GeoJSON file per
 /// table ([`file_name`], every table, empty ones included, so none is left over from an
-/// earlier run) and [`COMBINED_DXF`] (layer names = symbol codes), plus [`COMBINED_CRT`],
-/// the cross reference table for OCAD's "Import DXF" layer-to-symbol conversion.
+/// earlier run) with the geojson family in `outputs`, and with the dxf family into
+/// [`COMBINED_DXF`] (layer names = symbol codes), plus [`COMBINED_CRT`], the cross
+/// reference table for OCAD's "Import DXF" layer-to-symbol conversion.
 ///
 /// The source is the `merged_<table>.geojson` files: the terrain and vegetation tables
-/// (vector_vege=1) and a vector mapping's features. On the way:
+/// and a vector mapping's features. On the way:
 /// - knoll and small depression points: spacing-filtered by [`published_knolls`];
 /// - contours and form lines: one Chaikin pass, ISOM generalisation, broken around the
 ///   published knolls, with the ISOM sizes at `frame`'s map scale;
@@ -1271,6 +1273,7 @@ pub fn export_combined(
     batchoutfolder: &Path,
     frame: &MapFrame,
     epsg: Option<u32>,
+    outputs: Outputs,
 ) -> anyhow::Result<()> {
     use geojson_types::FeatureProperties as P;
 
@@ -1335,9 +1338,14 @@ pub fn export_combined(
         return Ok(());
     }
 
-    for &table in IsomTable::ALL {
-        let features = out.tables.remove(&table).unwrap_or_default();
-        write_feature_collection(fs, &batchoutfolder.join(file_name(table)), features, epsg)?;
+    if outputs.geojson {
+        for &table in IsomTable::ALL {
+            let features = out.tables.remove(&table).unwrap_or_default();
+            write_feature_collection(fs, &batchoutfolder.join(file_name(table)), features, epsg)?;
+        }
+    }
+    if !outputs.dxf {
+        return Ok(());
     }
 
     // $ACADVER is required for SPLINE entities
@@ -2284,7 +2292,7 @@ mod tests {
         let out = Path::new("out");
         merged_outputs(&fs, out);
 
-        export_combined(&fs, out, &MapFrame::default(), Some(25832)).unwrap();
+        export_combined(&fs, out, &MapFrame::default(), Some(25832), Outputs::ALL).unwrap();
 
         let contours = read(&fs, &out.join(file_name(IsomTable::Contours)));
         assert_eq!(
@@ -2389,7 +2397,7 @@ mod tests {
             vec![terrain_point(Classification::Dotknoll, [50.0, 0.0])],
         );
 
-        export_combined(&fs, out, &MapFrame::default(), None).unwrap();
+        export_combined(&fs, out, &MapFrame::default(), None, Outputs::ALL).unwrap();
 
         let combined = read_combined(&fs, out);
         let lines: Vec<Vec<[f64; 2]>> = combined
@@ -2413,10 +2421,37 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let out = Path::new("out");
         fs.create_dir_all(out).unwrap();
-        export_combined(&fs, out, &MapFrame::default(), None).unwrap();
+        export_combined(&fs, out, &MapFrame::default(), None, Outputs::ALL).unwrap();
         for &table in IsomTable::ALL {
             assert!(!fs.exists(out.join(file_name(table))));
         }
         assert!(!fs.exists(out.join(COMBINED_DXF)));
+    }
+
+    #[test]
+    fn export_combined_writes_the_selected_families() {
+        let combined = |geojson, dxf| {
+            let fs = crate::io::fs::memory::MemoryFileSystem::new();
+            let out = Path::new("out");
+            merged_outputs(&fs, out);
+            let outputs = Outputs {
+                raster: false,
+                dxf,
+                geojson,
+            };
+            export_combined(&fs, out, &MapFrame::default(), None, outputs).unwrap();
+            let tables = IsomTable::ALL
+                .iter()
+                .filter(|&&t| fs.exists(out.join(file_name(t))))
+                .count();
+            let dxf = [COMBINED_DXF, COMBINED_CRT].map(|name| fs.exists(out.join(name)));
+            (tables, dxf)
+        };
+        assert_eq!(
+            combined(true, false),
+            (IsomTable::ALL.len(), [false, false])
+        );
+        assert_eq!(combined(false, true), (0, [true, true]));
+        assert_eq!(combined(true, true), (IsomTable::ALL.len(), [true, true]));
     }
 }

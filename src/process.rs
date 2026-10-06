@@ -14,7 +14,7 @@ use std::thread;
 
 use crate::blocks;
 use crate::cliffs;
-use crate::config::Config;
+use crate::config::{Config, Outputs};
 use crate::contours;
 use crate::crop;
 use crate::geojson;
@@ -297,6 +297,7 @@ pub fn process_zip(
     filenames: &[String],
     batch: bool,
 ) -> Result<(), Box<dyn Error>> {
+    render::check_raster(config)?;
     render::check_inputs(fs, tmpfolder)?;
     let mut timing = Timing::start_now("process_zip");
     let &Config {
@@ -522,7 +523,7 @@ pub fn process_tile(
             config.knoll.candidate_interval_m,
             &xyz_03,
             "contours03.dxf.bin", // dxf curves generated from the heightmap
-            config.output_dxf,
+            config.outputs.dxf,
         )
         .expect("contour generation failed");
     }
@@ -546,14 +547,14 @@ pub fn process_tile(
                 basemapcontours,
                 &xyz2,
                 "basemap.dxf.bin", // generate dxf contours
-                config.output_dxf,
+                config.outputs.dxf,
             )
             .expect("contour generation failed");
         }
         if !skipknolldetection {
             info!("Knoll detection part 2");
             timing.start_section("knoll detection part 2");
-            knolls::knolldetector(fs, &config.knoll, config.output_dxf, tmpfolder).map_err(
+            knolls::knolldetector(fs, &config.knoll, config.outputs.dxf, tmpfolder).map_err(
                 |e| {
                     format!(
                         "knoll detection (knolldetector) in {}: {e:#}",
@@ -584,7 +585,7 @@ pub fn process_tile(
                 trace_interval,
                 &xyz_knolls,
                 "out.dxf.bin", // generates dxf curves
-                config.output_dxf,
+                config.outputs.dxf,
             )
             .unwrap();
         } else {
@@ -596,21 +597,21 @@ pub fn process_tile(
                 trace_interval,
                 &hmap,
                 "out.dxf.bin", // generate dxf curves
-                config.output_dxf,
+                config.outputs.dxf,
             )
             .unwrap();
         }
         info!("Contour generation part 3");
         timing.start_section("contour generation part 3");
-        merge::smoothjoin(fs, &config.smoothjoin, config.output_dxf, tmpfolder).unwrap();
+        merge::smoothjoin(fs, &config.smoothjoin, config.outputs.dxf, tmpfolder).unwrap();
 
         info!("Contour generation part 4");
         timing.start_section("contour generation part 4");
-        knolls::dotknolls(fs, &config.knoll, config.output_dxf, tmpfolder).unwrap();
+        knolls::dotknolls(fs, &config.knoll, config.outputs.dxf, tmpfolder).unwrap();
 
         // The terrain reaches vector output as GeoJSON written next to its source: the
         // .dxf.bin files are intermediates.
-        if config.vector_vege {
+        if config.vector_tables() {
             for (input, source) in [
                 ("out2.dxf.bin", geojson::Source::Contours),
                 ("dotknolls.dxf.bin", geojson::Source::Knolls),
@@ -631,7 +632,7 @@ pub fn process_tile(
         info!("Vegetation generation");
         timing.start_section("vegetation generation");
         let classes = vegetation::makevege(fs, &config.vegetation, tmpfolder).unwrap();
-        if config.vector_vege {
+        if config.outputs.vectorizes_vegetation() {
             vege_vector::export_all(fs, config, tmpfolder, &classes).unwrap();
         }
     }
@@ -639,9 +640,9 @@ pub fn process_tile(
     if !vegeonly && !contoursonly {
         info!("Cliff generation");
         timing.start_section("cliff generation");
-        cliffs::makecliffs(fs, &config.cliff, config.output_dxf, tmpfolder, tile).unwrap();
+        cliffs::makecliffs(fs, &config.cliff, config.outputs.dxf, tmpfolder, tile).unwrap();
 
-        if config.vector_vege {
+        if config.vector_tables() {
             geojson::bindxf_to_tables(
                 fs,
                 &[tmpfolder.join("c2g.dxf.bin"), tmpfolder.join("c3g.dxf.bin")],
@@ -657,7 +658,10 @@ pub fn process_tile(
         timing.start_section("detecting buildings");
         blocks::blocks(fs, config, tmpfolder).unwrap();
     }
-    if !skip_rendering && !vegeonly && !contoursonly && !cliffsonly {
+    // the map, or without the raster family the form lines alone (the renderer selects
+    // them) when a vector family takes them
+    let terrain = !vegeonly && !contoursonly && !cliffsonly;
+    if !skip_rendering && terrain && config.outputs.raster {
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
         render::render(
@@ -683,9 +687,10 @@ pub fn process_tile(
             true,
         )
         .unwrap();
-    } else if contoursonly {
-        info!("Rendering formlines");
-        timing.start_section("rendering formlines");
+    } else if contoursonly || (terrain && !config.outputs.raster) {
+        // outputs is never empty: without raster a vector family takes the form lines
+        info!("Selecting formlines");
+        timing.start_section("selecting formlines");
         let mut img = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
         if let Some(formlines) =
             render::draw_curves(fs, &config.curves, &mut img, tmpfolder, false, false).unwrap()
@@ -712,7 +717,7 @@ pub fn batch_process(
         cliffsonly,
         contoursonly,
         debug_intermediates,
-        output_dxf,
+        outputs,
         map_frame: frame,
         vege_bitmode,
         ..
@@ -758,12 +763,18 @@ pub fn batch_process(
         }
 
         if has_zip && !vegeonly && !cliffsonly && !contoursonly {
-            process_zip(fs, conf, thread, &tmpfolder, &[], true).unwrap();
+            if outputs.raster {
+                process_zip(fs, conf, thread, &tmpfolder, &[], true).unwrap();
+            } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
+                // the vector mapping's tables, without drawing the shapes
+                #[cfg(feature = "shapefile")]
+                crate::shapefile::vector_tables(fs, conf, &tmpfolder).unwrap();
+            }
         }
 
         // crop
         let tfw_in = PathBuf::from(format!("pullautus{thread}.pgw"));
-        if fs.exists(&tfw_in) {
+        if outputs.raster && fs.exists(&tfw_in) {
             let tfw = WorldFile::read(fs, &tfw_in).expect("PGW file does not exist");
 
             let dx = minx - tfw.x_origin;
@@ -858,7 +869,7 @@ pub fn batch_process(
         }
 
         // the vegetation rasters, cropped to the tile like the map
-        if !contoursonly && !cliffsonly {
+        if outputs.raster && !contoursonly && !cliffsonly {
             let path = format!("temp{thread}/undergrowth.pgw");
             let tfw_in = Path::new(&path);
             let tfw = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
@@ -995,18 +1006,19 @@ pub fn batch_process(
             }
         }
 
-        // the .dxf.bin crops: the batch merge's input for the merged DXF, and with
-        // output_dxf=1 each tile's DXF crop. The .dxf.bin crops are removed after the
-        // batch unless debug_intermediates=1 (remove_tile_bins); contours03, which the
-        // merge does not read, and detected, the knoll candidates, are debug only.
-        if output_dxf || debug_intermediates {
+        // the .dxf.bin crops: the batch merge's input for the merged DXF, and with the
+        // dxf family each tile's DXF crop. The .dxf.bin crops are removed after the
+        // batch unless debug_intermediates=1 (remove_batch_intermediates); contours03,
+        // which the merge does not read, and detected, the knoll candidates, are debug
+        // only.
+        if outputs.dxf || debug_intermediates {
             let out2_path = PathBuf::from(format!("temp{thread}/out2.dxf.bin"));
             if fs.exists(&out2_path) {
                 crop::polylinebindxfcrop(
                     fs,
                     &out2_path,
                     Path::new(&format!("{batchoutfolder}/{laz}_contours.dxf.bin")),
-                    conf.output_dxf,
+                    outputs.dxf,
                     minx,
                     miny,
                     maxx,
@@ -1033,7 +1045,7 @@ pub fn batch_process(
                         fs,
                         &dxf_path,
                         Path::new(&format!("{batchoutfolder}/{laz}_{dxf_file}.dxf.bin")),
-                        conf.output_dxf,
+                        outputs.dxf,
                         minx,
                         miny,
                         maxx,
@@ -1048,7 +1060,7 @@ pub fn batch_process(
                     fs,
                     &dotknolls_file,
                     Path::new(&format!("{batchoutfolder}/{laz}_dotknolls.dxf.bin")),
-                    conf.output_dxf,
+                    outputs.dxf,
                     minx,
                     miny,
                     maxx,
@@ -1062,7 +1074,7 @@ pub fn batch_process(
                     fs,
                     &basemap_file,
                     Path::new(&format!("{batchoutfolder}/{laz}_basemap.dxf.bin")),
-                    conf.output_dxf,
+                    outputs.dxf,
                     minx,
                     miny,
                     maxx,
@@ -1071,8 +1083,8 @@ pub fn batch_process(
                 .unwrap();
             }
         }
-        // the tables (vector_vege=1, or a vectorconf with shapefiles), cropped to the
-        // tile like the rasters
+        // the tables (Config::vector_tables, the vector mapping's with shapefiles), cropped
+        // to the tile like the rasters
         for &table in IsomTable::ALL {
             let path = tmpfolder.join(geojson::file_name(table));
             if fs.exists(&path) {
@@ -1140,13 +1152,13 @@ fn finish_tile_folder(
     fs.remove_dir_all(&tmpfolder)
 }
 
-/// Whether `name`, a file in a tile's temp folder, is a product: a GeoJSON table, a DXF
-/// (written with output_dxf=1) of the contours, cliffs, knolls, form lines, vegetation
-/// or base map, or the vegetation and undergrowth rasters with their world files (and
-/// the one-channel `_bit` rasters with vege_bitmode=1). Everything else is a debug
-/// intermediate.
-fn is_tile_product(name: &str, vege_bitmode: bool) -> bool {
-    const PRODUCTS: [&str; 11] = [
+/// Whether `name`, a file in a tile's temp folder, is a product of the families in
+/// `outputs`: a GeoJSON table (geojson); a DXF of the contours, cliffs, knolls, form
+/// lines, vegetation or base map (dxf); the vegetation and undergrowth rasters with
+/// their world files, and the one-channel `_bit` rasters with vege_bitmode=1 (raster).
+/// Everything else is a debug intermediate.
+fn is_tile_product(name: &str, outputs: Outputs, vege_bitmode: bool) -> bool {
+    const DXF: [&str; 7] = [
         "out2.dxf",
         "c2g.dxf",
         "c3g.dxf",
@@ -1154,22 +1166,27 @@ fn is_tile_product(name: &str, vege_bitmode: bool) -> bool {
         "formlines.dxf",
         "vegetation.dxf",
         "basemap.dxf",
+    ];
+    const RASTER: [&str; 4] = [
         "vegetation.png",
         "vegetation.pgw",
         "undergrowth.png",
         "undergrowth.pgw",
     ];
-    name.ends_with(".geojson")
-        || PRODUCTS.contains(&name)
-        || (vege_bitmode && ["vegetation_bit.png", "undergrowth_bit.png"].contains(&name))
+    (outputs.geojson && name.ends_with(".geojson"))
+        || (outputs.dxf && DXF.contains(&name))
+        || (outputs.raster
+            && (RASTER.contains(&name)
+                || (vege_bitmode && ["vegetation_bit.png", "undergrowth_bit.png"].contains(&name))))
 }
 
-/// Leave only the products ([`is_tile_product`]) in a single tile's temp folder, unless
-/// `debug` (debug_intermediates=1) keeps everything.
+/// Leave only the products of `outputs` ([`is_tile_product`]) in a single tile's temp
+/// folder, unless `debug` (debug_intermediates=1) keeps everything.
 pub fn prune_tile_folder(
     fs: &impl FileSystem,
     tmpfolder: &Path,
     debug: bool,
+    outputs: Outputs,
     vege_bitmode: bool,
 ) -> std::io::Result<()> {
     if debug {
@@ -1177,7 +1194,7 @@ pub fn prune_tile_folder(
     }
     for path in fs.list(tmpfolder)? {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if is_tile_product(&name, vege_bitmode) {
+        if is_tile_product(&name, outputs, vege_bitmode) {
             continue;
         }
         // the trait cannot tell a file from a folder: a folder fails remove_file
@@ -1188,20 +1205,40 @@ pub fn prune_tile_folder(
     Ok(())
 }
 
-/// Remove the tiles' `.dxf.bin` crops from the batch output folder once the batch (and
-/// its merge) is done, unless `debug` (debug_intermediates=1) keeps them.
-pub fn remove_tile_bins(
+/// Remove the batch's intermediates from the batch output folder once the batch (and
+/// its merge) is done, unless `debug` (debug_intermediates=1) keeps them: the tiles'
+/// `.dxf.bin` crops, and with `intermediate_tables` (the batch's tile names, when this
+/// run wrote the tables only as the source of the combined `output.dxf`) the tables it
+/// wrote: each tile's, the merged and the combined ones. Other GeoJSON files, such as
+/// an earlier run's published tables, are left alone.
+pub fn remove_batch_intermediates(
     fs: &impl FileSystem,
     batchoutfolder: impl AsRef<Path>,
     debug: bool,
+    intermediate_tables: Option<&[String]>,
 ) -> std::io::Result<()> {
+    let batchoutfolder = batchoutfolder.as_ref();
     // a batch with no tiles may never create the folder
-    if debug || !fs.exists(&batchoutfolder) {
+    if debug || !fs.exists(batchoutfolder) {
         return Ok(());
     }
     for path in fs.list(batchoutfolder)? {
         if path.to_string_lossy().ends_with(".dxf.bin") {
             fs.remove_file(&path)?;
+        }
+    }
+    if let Some(tiles) = intermediate_tables {
+        for &table in IsomTable::ALL {
+            let names = tiles
+                .iter()
+                .map(|tile| geojson::tile_file_name(table, tile))
+                .chain([geojson::merged_file_name(table), geojson::file_name(table)]);
+            for name in names {
+                let path = batchoutfolder.join(name);
+                if fs.exists(&path) {
+                    fs.remove_file(&path)?;
+                }
+            }
         }
     }
     Ok(())
@@ -1328,36 +1365,99 @@ mod test {
             touch(&fs, &format!("temp/{name}"));
         }
 
-        prune_tile_folder(&fs, Path::new("temp"), true, false).unwrap();
+        prune_tile_folder(&fs, Path::new("temp"), true, Outputs::ALL, false).unwrap();
         assert_eq!(
             names(&fs, "temp").len(),
             products.len() + intermediates.len()
         );
 
-        prune_tile_folder(&fs, Path::new("temp"), false, false).unwrap();
+        prune_tile_folder(&fs, Path::new("temp"), false, Outputs::ALL, false).unwrap();
         assert_eq!(names(&fs, "temp"), products);
     }
 
     #[test]
-    fn the_bit_rasters_are_products_with_vege_bitmode() {
-        assert!(is_tile_product("undergrowth_bit.png", true));
-        assert!(is_tile_product("vegetation_bit.png", true));
-        assert!(!is_tile_product("undergrowth_bit.png", false));
-        assert!(!is_tile_product("greens_bit.png", true));
+    fn a_single_tile_keeps_the_products_of_the_selected_families() {
+        let kept = |raster, dxf, geojson| {
+            let fs = MemoryFileSystem::new();
+            for name in [
+                "contours.geojson",
+                "c2g.dxf",
+                "vegetation.png",
+                "vegetation.pgw",
+            ] {
+                touch(&fs, &format!("temp/{name}"));
+            }
+            let outputs = Outputs {
+                raster,
+                dxf,
+                geojson,
+            };
+            prune_tile_folder(&fs, Path::new("temp"), false, outputs, false).unwrap();
+            names(&fs, "temp")
+        };
+        assert_eq!(kept(false, false, true), ["contours.geojson"]);
+        assert_eq!(kept(false, true, false), ["c2g.dxf"]);
+        assert_eq!(
+            kept(true, false, false),
+            ["vegetation.pgw", "vegetation.png"]
+        );
     }
 
     #[test]
-    fn the_tile_bins_are_removed_unless_debug() {
-        let fs = MemoryFileSystem::new();
-        for name in ["tile_c2g.dxf.bin", "tile_c2g.dxf", "tile.png"] {
-            touch(&fs, &format!("out/{name}"));
-        }
-        remove_tile_bins(&fs, "out", true).unwrap();
-        assert_eq!(names(&fs, "out").len(), 3);
-        remove_tile_bins(&fs, "out", false).unwrap();
-        assert_eq!(names(&fs, "out"), ["tile.png", "tile_c2g.dxf"]);
+    fn the_bit_rasters_are_products_with_vege_bitmode() {
+        let all = Outputs::ALL;
+        assert!(is_tile_product("undergrowth_bit.png", all, true));
+        assert!(is_tile_product("vegetation_bit.png", all, true));
+        assert!(!is_tile_product("undergrowth_bit.png", all, false));
+        assert!(!is_tile_product("greens_bit.png", all, true));
+        let vectors = Outputs {
+            raster: false,
+            ..all
+        };
+        assert!(!is_tile_product("vegetation_bit.png", vectors, true));
+    }
+
+    #[test]
+    fn the_batch_intermediates_are_removed_unless_debug() {
+        let all = [
+            "contours.geojson",
+            "merged_contours.geojson",
+            "other_contours.geojson",
+            "parcels.geojson",
+            "tile.png",
+            "tile_c2g.dxf",
+            "tile_c2g.dxf.bin",
+            "tile_contours.geojson",
+        ];
+        let tiles = ["tile".to_string()];
+        let left = |debug, intermediate_tables: Option<&[String]>| {
+            let fs = MemoryFileSystem::new();
+            for name in all {
+                touch(&fs, &format!("out/{name}"));
+            }
+            remove_batch_intermediates(&fs, "out", debug, intermediate_tables).unwrap();
+            names(&fs, "out")
+        };
+        assert_eq!(left(true, Some(&tiles)).len(), all.len());
+        // no tables as intermediates (geojson on, or none written): every GeoJSON
+        // stays, an earlier run's published tables included
+        let mut geojson_kept = all.to_vec();
+        geojson_kept.retain(|n| *n != "tile_c2g.dxf.bin");
+        assert_eq!(left(false, None), geojson_kept);
+        // the tables only fed the combined DXF: this batch's tables go, files it did
+        // not write (another tile's, an unrelated layer) stay
+        assert_eq!(
+            left(false, Some(&tiles)),
+            [
+                "other_contours.geojson",
+                "parcels.geojson",
+                "tile.png",
+                "tile_c2g.dxf"
+            ]
+        );
         // a batch with no tiles has no output folder
-        remove_tile_bins(&fs, "missing", false).unwrap();
+        let fs = MemoryFileSystem::new();
+        remove_batch_intermediates(&fs, "missing", false, None).unwrap();
     }
 
     #[test]
