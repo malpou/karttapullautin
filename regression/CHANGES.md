@@ -254,3 +254,21 @@ to 59bda5d (b849b6f plus the CI-made expected.json).
 - Not exercised by the jobs: `export_combined` now reads only the merged
   tables (it used `merged.dxf.bin` when one existed, which needed
   `savetempfiles=1`).
+
+### 2026-10-06: pr/output-selection
+
+One key, `outputs` (default `raster,dxf,geojson`), selects the product
+families; `output_dxf` and `vector_vege` are removed. The default now
+includes the GeoJSON tables, which needed `vector_vege=1` before, so the
+single job (default ini) gains them. The batch job set `vector_vege=1`
+and `output_dxf=1` already and is unchanged. `run.sh` drops the
+`|vector_vege=1` alternative now that the baseline knows `outputs`.
+Baseline moves to 27d42bf (af1beae plus the CI-made expected.json).
+
+- Pixels: 0 changed in the single job and the batch job; every per-code
+  metric and every file both runs have identical.
+- Added (5, single job): `temp/cliffs.geojson`, `temp/contours.geojson`,
+  `temp/knolls_points.geojson`, `temp/vegetation_areas.geojson` and
+  `temp/vegetation.dxf` (vegetation vectorisation now runs whenever dxf
+  or geojson is selected).
+- Removed: none.

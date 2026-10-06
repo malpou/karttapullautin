@@ -1,5 +1,5 @@
 # The commit whose output CI compares this branch's output with
 # (.github/workflows/regression.yml). Full sha; it must stay reachable on origin.
 # How to move it: CHANGES.md.
-ref = "59bda5d6d2faff33f3404e5e147ed0b9cd5a81b0"
-note = "pr/debug-intermediates commit 1: intermediates only with debug_intermediates=1 (0 px, file set changes)"
+ref = "27d42bf3ff223b247e3103b29517fc46f20d85c2"
+note = "pr/output-selection commit 1: outputs = raster,dxf,geojson; single job gains GeoJSON tables (0 px)"

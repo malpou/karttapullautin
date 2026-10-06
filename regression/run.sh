@@ -65,7 +65,7 @@ single_settings=()
 batch_settings=(
     batch=1
     vectorconf=osm.txt
-    'outputs=raster,dxf,geojson|vector_vege=1'
+    'outputs=raster,dxf,geojson'
     batchmerge=1
 )
 
