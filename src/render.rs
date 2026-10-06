@@ -1058,13 +1058,6 @@ mod tests {
         (vec![0.0, s, s, 0.0, 0.0], vec![0.0, 0.0, s, s, 0.0])
     }
 
-    fn at_scale(scale_denominator: f64) -> MapFrame {
-        MapFrame {
-            scale_denominator,
-            ..MapFrame::default()
-        }
-    }
-
     #[test]
     fn rendering_a_pruned_folder_asks_for_the_debug_intermediates() {
         use crate::io::fs::FileSystem;
@@ -1117,14 +1110,14 @@ mod tests {
         // Same 20 m ring at 1:15 000 => 2/3 of the pixels, and the verdict must not change;
         // the bound is the same 16.5 m there.
         for scale in [10_000.0, 15_000.0] {
-            let frame = at_scale(scale);
+            let frame = MapFrame::at_scale(scale);
             let (x, y) = ring(20.0, &frame);
             assert!(!closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
             let (x, y) = ring(16.0, &frame);
             assert!(closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
         }
         // 1:5 000 draws symbols at 100 %: the minimum is 5.5 m.
-        let frame = at_scale(5_000.0);
+        let frame = MapFrame::at_scale(5_000.0);
         let (x, y) = ring(6.0, &frame);
         assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
     }
@@ -1140,7 +1133,7 @@ mod tests {
         assert_eq!((map.rotation_x, map.rotation_y), (0.0, 0.0));
         assert_eq!((map.x_origin, map.y_origin), (123456.5, 7891011.5));
         assert_eq!(
-            map_world_file(&vege, &at_scale(20_000.0)).pixel_size_x,
+            map_world_file(&vege, &MapFrame::at_scale(20_000.0)).pixel_size_x,
             2.0 * map.pixel_size_x
         );
     }
@@ -1150,7 +1143,7 @@ mod tests {
         use super::pixel_to_ground;
         let (x0, y0) = (500000.0, 6700000.0);
         for scale in [5_000.0, 7_000.0, 10_000.0, 13_000.0, 20_000.0] {
-            let frame = at_scale(scale);
+            let frame = MapFrame::at_scale(scale);
             for (gx, gy) in [
                 (500123.4, 6699876.6),
                 (500001.1, 6699999.3),

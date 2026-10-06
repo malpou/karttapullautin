@@ -68,6 +68,14 @@ pub const ISOM_MINIMA_MM: IsomMinima = IsomMinima {
 };
 
 impl MapFrame {
+    /// The default sheet (600 dpi) at 1:`scale_denominator`.
+    pub fn at_scale(scale_denominator: f64) -> Self {
+        Self {
+            scale_denominator,
+            ..Self::default()
+        }
+    }
+
     /// The map scale as a multiple of 1:10 000, which the 254 m inch is given for.
     fn per_10k(&self) -> f64 {
         self.scale_denominator / 10_000.0
@@ -225,10 +233,7 @@ mod tests {
 
     #[test]
     fn a_coarser_scale_has_fewer_pixels_per_metre() {
-        let frame = MapFrame {
-            scale_denominator: 15_000.0,
-            ..MapFrame::default()
-        };
+        let frame = MapFrame::at_scale(15_000.0);
         let default = MapFrame::default().px_per_metre();
         assert!((frame.px_per_metre() - default * 2.0 / 3.0).abs() < 1e-15);
         assert_eq!(frame.to_px(381.0), 600.0);
@@ -263,10 +268,7 @@ mod tests {
     #[test]
     fn isom_minima_are_the_old_ground_metres_at_both_isom_scales() {
         for scale_denominator in [10_000.0, 15_000.0] {
-            let frame = MapFrame {
-                scale_denominator,
-                ..MapFrame::default()
-            };
+            let frame = MapFrame::at_scale(scale_denominator);
             assert!(frame.is_isom_scale());
             let m = frame.isom_minima();
             let bits = |v: f64| v.to_bits();
@@ -283,10 +285,7 @@ mod tests {
     /// 1:15 000 ground sizes.
     #[test]
     fn isom_minima_follow_other_scales_at_full_symbol_size() {
-        let frame = MapFrame {
-            scale_denominator: 4_000.0,
-            ..MapFrame::default()
-        };
+        let frame = MapFrame::at_scale(4_000.0);
         assert!(!frame.is_isom_scale());
         assert_eq!(frame.symbol_enlargement(), 1.0);
         let m = frame.isom_minima();
@@ -346,10 +345,7 @@ mod tests {
             b"0.42333332155810494\r\n0\r\n0\r\n-0.42333332155810494\r\n381234\r\n6671298\r\n"
         );
         for scale_denominator in [5_000.0, 10_000.0, 13_000.0] {
-            let frame = MapFrame {
-                scale_denominator,
-                ..MapFrame::default()
-            };
+            let frame = MapFrame::at_scale(scale_denominator);
             let tmpfactor = frame.px_per_metre() as f32;
             let w = WorldFile::north_up(1.0 / f64::from(tmpfactor), 381234.0, 6671298.0);
             let mut out = Vec::new();

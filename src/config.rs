@@ -271,13 +271,10 @@ impl Config {
         };
         let batchmerge = flag(gs, "batchmerge", Some(false))?;
 
-        let map_frame = MapFrame {
-            scale_denominator: match gs.get("mapscale") {
-                None => 10_000.0,
-                Some(v) => parse_map_scale(v)?,
-            },
-            ..MapFrame::default()
-        };
+        let map_frame = MapFrame::at_scale(match gs.get("mapscale") {
+            None => 10_000.0,
+            Some(v) => parse_map_scale(v)?,
+        });
         if let Some(warning) = map_scale_warning(&map_frame) {
             warn!("{warning}");
         }
@@ -1171,10 +1168,7 @@ mod test {
     #[test]
     fn mapscale_warns_outside_the_isom_scales() {
         use super::map_scale_warning;
-        let at = |scale_denominator| MapFrame {
-            scale_denominator,
-            ..MapFrame::default()
-        };
+        let at = MapFrame::at_scale;
         assert_eq!(map_scale_warning(&at(10_000.0)), None);
         assert_eq!(map_scale_warning(&at(15_000.0)), None);
         let warning = map_scale_warning(&at(4_000.0)).unwrap();

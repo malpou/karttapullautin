@@ -981,11 +981,7 @@ mod tests {
     #[test]
     fn the_isom_sizes_follow_the_map_scale() {
         let (x, y) = ring(4.0);
-        let minima = MapFrame {
-            scale_denominator: 4_000.0,
-            ..MapFrame::default()
-        }
-        .isom_minima();
+        let minima = MapFrame::at_scale(4_000.0).isom_minima();
         let (tick, class) = super::decorate_depression(&x, &y, 0.0, &minima).unwrap();
         assert!(class == Classification::SlopeLine);
         let len = ((tick[1].x - tick[0].x).powi(2) + (tick[1].y - tick[0].y).powi(2)).sqrt();
