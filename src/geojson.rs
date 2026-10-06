@@ -9,6 +9,7 @@ use std::path::Path;
 use log::{debug, info, warn};
 use serde_json::{Value, json};
 
+use crate::cliffs::CliffSet;
 use crate::config::Outputs;
 use crate::geometry::{BinaryDxf, Classification, Geometry, Point2, Point3, Points, Polylines};
 use crate::io::fs::FileSystem;
@@ -69,7 +70,7 @@ pub enum Source {
     FormLines,
     /// Knoll and small depression points (109.000, 111.000): the [`DotKnollSet`].
     Knolls,
-    /// Cliffs (201.000, 202.000), from `c2g.dxf.bin` and `c3g.dxf.bin`.
+    /// Cliffs (201.000, 202.000): the [`CliffSet`].
     Cliffs,
     /// Green shades, open land and undergrowth traced from the vegetation grids.
     Vegetation,
@@ -489,22 +490,41 @@ pub fn write_knoll_tables(
     write_tables(fs, folder, Source::Knolls, features, epsg)
 }
 
+/// Write the cliffs ([`Source::Cliffs`]) into the tables in `folder`, as
+/// [`bindxf_to_tables`] writes them from `c2g.dxf.bin` and `c3g.dxf.bin`: the passable
+/// cliffs, then the impassable ones.
+pub fn write_cliff_tables(
+    fs: &impl FileSystem,
+    folder: &Path,
+    cliffs: &CliffSet,
+    epsg: Option<u32>,
+) -> anyhow::Result<()> {
+    let features = line2_features(&cliffs.passable)
+        .chain(line2_features(&cliffs.impassable))
+        .collect();
+    write_tables(fs, folder, Source::Cliffs, features, epsg)
+}
+
 /// The features of one terrain geometry, in its order: polylines become LineStrings and
 /// points become Points, each with the properties of its classification (see
 /// [`terrain_properties`]; a 3D line keeps its level). Records the vector output leaves
 /// out are skipped.
 fn geometry_features(geom: &Geometry) -> Vec<geojson_types::Feature> {
     match geom {
-        Geometry::Polylines2(pl) => pl
-            .iter()
-            .filter_map(|(p, &c)| {
-                let coords = coords_line(p.iter().map(|pt| [pt.x, pt.y]));
-                terrain_feature(FeatureGeometryType::LineString, coords, c, None)
-            })
-            .collect(),
+        Geometry::Polylines2(pl) => line2_features(pl).collect(),
         Geometry::Polylines3(pl) => line3_features(pl).collect(),
         Geometry::Points(pts) => point_features(pts).collect(),
     }
+}
+
+/// [`geometry_features`] of 2D lines.
+fn line2_features(
+    lines: &Polylines<Point2, Classification>,
+) -> impl Iterator<Item = geojson_types::Feature> + '_ {
+    lines.iter().filter_map(|(p, &c)| {
+        let coords = coords_line(p.iter().map(|pt| [pt.x, pt.y]));
+        terrain_feature(FeatureGeometryType::LineString, coords, c, None)
+    })
 }
 
 /// [`geometry_features`] of 3D lines.
@@ -1605,9 +1625,9 @@ mod tests {
     }
 
     /// The typed writers write the same table bytes as `bindxf_to_tables` on the values'
-    /// `.dxf.bin` dumps (both build their features with `line3_features` and
-    /// `point_features`, so this checks the dump round trip and the table plumbing), and
-    /// the tables pass the schema.
+    /// `.dxf.bin` dumps (both build their features with `line2_features`,
+    /// `line3_features` and `point_features`, so this checks the dump round trip and the
+    /// table plumbing), and the tables pass the schema.
     #[test]
     fn the_typed_writers_match_bindxf_to_tables() {
         use crate::geometry::{Bounds, Point3, Points, Polylines};
@@ -1637,27 +1657,66 @@ mod tests {
         let mut points = Points::new();
         points.push(Point2::new(5.004, 6.0), Classification::Dotknoll);
         points.push(Point2::new(7.0, 8.0), Classification::UglyUdepression);
-        let dot_knolls = DotKnollSet { points, bounds };
+        let dot_knolls = DotKnollSet {
+            points,
+            bounds: bounds.clone(),
+        };
+        let dash = |x: f64, class| {
+            let mut lines = Polylines::new();
+            lines.push(vec![Point2::new(x, 1.0), Point2::new(x, 3.94)], class);
+            lines
+        };
+        let mut impassable = dash(20.0, Classification::Cliff3);
+        impassable.push(
+            vec![Point2::new(30.0, 1.0), Point2::new(30.0, 3.94)],
+            Classification::Cliff4,
+        );
+        let cliffs = CliffSet {
+            passable: dash(10.004, Classification::Cliff2),
+            impassable,
+            bounds,
+        };
 
         let from_values = crate::io::fs::memory::MemoryFileSystem::new();
         write_contour_tables(&from_values, Path::new(""), &contours, Some(25832)).unwrap();
         write_knoll_tables(&from_values, Path::new(""), &dot_knolls, Some(25832)).unwrap();
+        write_cliff_tables(&from_values, Path::new(""), &cliffs, Some(25832)).unwrap();
 
         let from_files = crate::io::fs::memory::MemoryFileSystem::new();
-        for (dump, dxf, source) in [
-            ("out2.dxf.bin", contours.to_bindxf(), Source::Contours),
-            ("dotknolls.dxf.bin", dot_knolls.to_bindxf(), Source::Knolls),
+        for (dumps, source) in [
+            (
+                vec![("out2.dxf.bin", contours.to_bindxf())],
+                Source::Contours,
+            ),
+            (
+                vec![("dotknolls.dxf.bin", dot_knolls.to_bindxf())],
+                Source::Knolls,
+            ),
+            (
+                vec![
+                    ("c2g.dxf.bin", cliffs.passable_bindxf()),
+                    ("c3g.dxf.bin", cliffs.impassable_bindxf()),
+                ],
+                Source::Cliffs,
+            ),
         ] {
-            dxf.to_writer(&mut from_files.create(dump).unwrap())
-                .unwrap();
-            let input = [PathBuf::from(dump)];
+            let mut input = Vec::new();
+            for (dump, dxf) in dumps {
+                dxf.to_writer(&mut from_files.create(dump).unwrap())
+                    .unwrap();
+                input.push(PathBuf::from(dump));
+            }
             bindxf_to_tables(&from_files, &input, Path::new(""), source, Some(25832)).unwrap();
         }
 
         let schema: Value =
             serde_json::from_str(include_str!("../schema/geojson.schema.json")).unwrap();
         let validator = jsonschema::validator_for(&schema).unwrap();
-        for table in [IsomTable::Contours, IsomTable::KnollsPoints] {
+        for table in [
+            IsomTable::Contours,
+            IsomTable::KnollsPoints,
+            IsomTable::Cliffs,
+        ] {
             let read = |fs: &crate::io::fs::memory::MemoryFileSystem| {
                 let mut bytes = Vec::new();
                 std::io::Read::read_to_end(&mut fs.open(file_name(table)).unwrap(), &mut bytes)
@@ -1675,6 +1734,11 @@ mod tests {
             read_features(&from_values, IsomTable::KnollsPoints).len(),
             2
         );
+        let codes: Vec<Value> = read_features(&from_values, IsomTable::Cliffs)
+            .iter()
+            .map(|f| f["properties"]["isom_code"].clone())
+            .collect();
+        assert_eq!(codes, ["202.000", "201.000", "201.000"]);
     }
 
     #[test]

@@ -1,8 +1,8 @@
+use crate::cliffs::CliffSet;
 use crate::config::Config;
 use crate::geometry::BinaryDxf;
 use crate::geometry::Classification;
 use crate::geometry::ContourKind;
-use crate::geometry::Geometry;
 use crate::geometry::Point2;
 use crate::geometry::Polylines;
 use crate::io::fs::FileSystem;
@@ -32,8 +32,8 @@ const RENDER_INPUTS: [&str; 8] = [
     GROUND_DUMP,
     crate::merge::CONTOURS_DUMP,
     crate::knolls::DOT_KNOLLS_DUMP,
-    "c2g.dxf.bin",
-    "c3g.dxf.bin",
+    crate::cliffs::PASSABLE_DUMP,
+    crate::cliffs::IMPASSABLE_DUMP,
 ];
 
 /// An error when `outputs` leaves out the raster family: the map is a raster product, so
@@ -75,6 +75,8 @@ pub struct MapInputs<'a> {
     pub contours: &'a ContourSet,
     /// The dot knolls (`dotknolls.dxf.bin` in the debug intermediates).
     pub dot_knolls: &'a DotKnollSet,
+    /// The cliffs (`c2g.dxf.bin` and `c3g.dxf.bin` in the debug intermediates).
+    pub cliffs: &'a CliffSet,
 }
 
 /// Draws the map from `inputs` and the stages' files in `tmpfolder`; a re-render first
@@ -265,10 +267,9 @@ pub fn render(
         image::imageops::overlay(&mut img, &imgbb_thumb, 0, 0);
     }
 
-    draw_cliffs(fs, config, tmpfolder, "c2g.dxf.bin", &mut img, x0, y0)
-        .expect("draw cliffs c2g.dxf.bin");
-    draw_cliffs(fs, config, tmpfolder, "c3g.dxf.bin", &mut img, x0, y0)
-        .expect("draw cliffs c3g.dxf.bin");
+    // the passable cliffs, then the impassable ones over them
+    draw_cliffs(config, &inputs.cliffs.passable, &mut img, x0, y0);
+    draw_cliffs(config, &inputs.cliffs.impassable, &mut img, x0, y0);
 
     // high -------------
     let high_file = tmpfolder.join("high.png");
@@ -312,25 +313,20 @@ pub fn render(
     Ok(())
 }
 
+/// Draws the cliff dashes `lines` on `img`, the sheet whose top left corner is at
+/// (`x0`, `y0`) in world coordinates.
 fn draw_cliffs(
-    fs: &impl FileSystem,
     config: &Config,
-    tmpfolder: &Path,
-    file: &str,
+    lines: &Polylines<Point2, Classification>,
     img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     x0: f64,
     y0: f64,
-) -> Result<(), Box<dyn Error>> {
+) {
     let frame = config.map_frame;
 
-    let input = tmpfolder.join(file);
-    let dxf = BinaryDxf::from_reader(&mut fs.open(input)?)?;
-
-    let Geometry::Polylines2(lines) = dxf.take_geometry().swap_remove(0) else {
-        return Err(anyhow::anyhow!("cliff data should contain polylines").into());
-    };
-
-    for (mut line, class) in lines.into_iter() {
+    // one buffer for every dash's points in pixel space
+    let mut line = Vec::new();
+    for (dash, &class) in lines.iter() {
         // based on the layer we select the cliffcolor
         let cliffcolor = if config.cliffdebug {
             match class {
@@ -344,10 +340,11 @@ fn draw_cliffs(
         };
 
         // scale and flip all points into pixel-space
-        for p in line.iter_mut() {
-            p.x = frame.to_px(p.x - x0);
-            p.y = frame.to_px(y0 - p.y);
-        }
+        line.clear();
+        line.extend(
+            dash.iter()
+                .map(|p| Point2::new(frame.to_px(p.x - x0), frame.to_px(y0 - p.y))),
+        );
 
         if line.first() != line.last() {
             // trick to borrow both first and last as mutable at the same time. If not possible (eg
@@ -387,7 +384,6 @@ fn draw_cliffs(
             }
         }
     }
-    Ok(())
 }
 
 /// Is a closed form line ring smaller than ISOM allows the symbol to be drawn?

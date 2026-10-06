@@ -340,9 +340,9 @@ impl Config {
         let depression_length: usize = parse_typed(gs, "depression_length", 181);
 
         // cliffs
-        let cliff4_limit = match gs.get("cliff4_limit") {
+        let ground_model_drop_m = match gs.get("cliff_ground_drop") {
             None => 7.15,
-            Some(v) => parse_positive_metres("cliff4_limit", v)?,
+            Some(v) => parse_positive_metres("cliff_ground_drop", v)?,
         };
         let cliff_thin: f64 = parse_typed(gs, "cliffthin", 1.0);
         if !(0.0..=1.0).contains(&cliff_thin) {
@@ -354,7 +354,7 @@ impl Config {
         let cliff = CliffParams {
             c1_limit: parse_typed(gs, "cliff1", 1.0),
             c2_limit: parse_typed(gs, "cliff2", 1.0),
-            cliff4_limit,
+            ground_model_drop_m,
             cliff_thin,
             steep_factor: parse_typed(gs, "cliffsteepfactor", 0.33),
             flat_place: parse_typed(gs, "cliffflatplace", 6.6),
@@ -673,7 +673,7 @@ impl<'a> Keys<'a> {
 
 /// Keys earlier versions read, with what to do instead: reported as removed rather than
 /// unknown. A key ending in `{i}` stands for that prefix and a number.
-const REMOVED_KEYS: [(&str, &str); 15] = [
+const REMOVED_KEYS: [(&str, &str); 16] = [
     ("groundboxsize", "it was never read; delete it"),
     ("vegemode", "only vegemode=0 was supported; delete it"),
     ("draw_slopelines", "renamed to decorate_depressions"),
@@ -702,6 +702,7 @@ const REMOVED_KEYS: [(&str, &str); 15] = [
         "cliffnosmallciffs",
         "renamed to `cliffnosmallcliffs`, same value",
     ),
+    ("cliff4_limit", "renamed to `cliff_ground_drop`, same value"),
     (
         "savetempfiles",
         "the tile rasters are written to the batch output folder with raster in `outputs`, \
@@ -930,6 +931,7 @@ mod test {
             "thresold1",
             "yellowthresold",
             "cliffnosmallciffs",
+            "cliff4_limit",
             "savetempfiles",
             "savetempfolders",
             "output_dxf",
@@ -1190,7 +1192,7 @@ mod test {
         let expected = CliffParams {
             c1_limit: 1.15,
             c2_limit: 2.0,
-            cliff4_limit: 7.15,
+            ground_model_drop_m: 7.15,
             cliff_thin: 1.0,
             steep_factor: 0.38,
             flat_place: 3.5,
@@ -1205,21 +1207,34 @@ mod test {
     }
 
     #[test]
-    fn cliff4_limit_parses_and_defaults_to_the_old_constant() {
+    fn cliff_ground_drop_parses_and_defaults_to_the_old_constant() {
         assert_eq!(
-            load_with(&[("cliff4_limit", "5.5")])
+            load_with(&[("cliff_ground_drop", "5.5")])
                 .unwrap()
                 .cliff
-                .cliff4_limit,
+                .ground_model_drop_m,
             5.5
         );
-        let absent = load_without("cliff4_limit").unwrap().cliff.cliff4_limit;
+        let absent = load_without("cliff_ground_drop")
+            .unwrap()
+            .cliff
+            .ground_model_drop_m;
         // the hidden constant it replaces, bit for bit
         assert_eq!(absent.to_bits(), (2.6_f64 * 2.75).to_bits());
         for bad in ["0", "-1", "inf", "high"] {
-            let err = load_with(&[("cliff4_limit", bad)]).err().unwrap();
-            assert!(err.contains("`cliff4_limit`"), "{bad}: {err}");
+            let err = load_with(&[("cliff_ground_drop", bad)]).err().unwrap();
+            assert!(err.contains("`cliff_ground_drop`"), "{bad}: {err}");
         }
+    }
+
+    /// `cliff4_limit` is removed in favour of `cliff_ground_drop`, the error naming it.
+    #[test]
+    fn cliff4_limit_is_removed_naming_cliff_ground_drop() {
+        let err = load_appended("cliff4_limit=7.15").err().unwrap();
+        assert!(
+            err.contains("`cliff4_limit` (removed: renamed to `cliff_ground_drop`, same value)"),
+            "{err}"
+        );
     }
 
     #[test]

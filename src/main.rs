@@ -1,6 +1,7 @@
 use log::debug;
 use log::error;
 use log::info;
+use pullauta::cliffs::CliffSet;
 use pullauta::config::Config;
 use pullauta::io::fs::FileSystem;
 use pullauta::io::fs::memory::MemoryFileSystem;
@@ -299,14 +300,16 @@ fn main() {
             let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
             let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
             // no tile name here: the `cliffthin` seed is the empty name
-            pullauta::cliffs::makecliffs(
+            let (cliffs, passable_raster) =
+                pullauta::cliffs::makecliffs(&ground, &returns, "", &config.cliff);
+            // the dumps a re-render reads, as the stage wrote them before
+            pullauta::cliffs::write_cliffs(
                 &fs,
-                &config.cliff,
-                config.outputs.dxf,
                 &tmpfolder,
-                "",
-                &ground,
-                &returns,
+                &cliffs,
+                &passable_raster,
+                true,
+                config.outputs.dxf,
             )
             .unwrap();
         }
@@ -699,6 +702,20 @@ fn read_dot_knolls(fs: &impl FileSystem, tmpfolder: &Path) -> Result<DotKnollSet
     })
 }
 
+/// The cliffs dumps (`c2g.dxf.bin`, `c3g.dxf.bin`), for a re-render.
+fn read_cliffs(fs: &impl FileSystem, tmpfolder: &Path) -> Result<CliffSet, String> {
+    let read = |name| {
+        let path = tmpfolder.join(name);
+        read_debug_dump(fs, &path, "cliffs", || {
+            pullauta::geometry::BinaryDxf::from_reader(&mut fs.open(&path)?)
+        })
+    };
+    let passable = read(pullauta::cliffs::PASSABLE_DUMP)?;
+    let impassable = read(pullauta::cliffs::IMPASSABLE_DUMP)?;
+    CliffSet::from_bindxf(passable, impassable)
+        .map_err(|e| format!("cannot read the cliffs from {}: {e}", tmpfolder.display()))
+}
+
 /// The knoll pins dump (`pins.bin`), for xyzknolls.
 fn read_pins(fs: &impl FileSystem, tmpfolder: &Path) -> Result<Vec<pullauta::knolls::Pin>, String> {
     let path = tmpfolder.join(pullauta::knolls::PINS_DUMP);
@@ -731,6 +748,7 @@ struct RenderInputs {
     ground: HeightMap,
     contours: ContourSet,
     dot_knolls: DotKnollSet,
+    cliffs: CliffSet,
 }
 
 impl RenderInputs {
@@ -739,6 +757,7 @@ impl RenderInputs {
             ground: &self.ground,
             contours: &self.contours,
             dot_knolls: &self.dot_knolls,
+            cliffs: &self.cliffs,
         }
     }
 }
@@ -756,6 +775,7 @@ fn read_render_inputs(
         ground: read_ground(fs, &tmpfolder.join(GROUND_DUMP))?,
         contours: read_contours(fs, tmpfolder)?,
         dot_knolls: read_dot_knolls(fs, tmpfolder)?,
+        cliffs: read_cliffs(fs, tmpfolder)?,
     })
 }
 

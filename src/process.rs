@@ -382,9 +382,19 @@ pub struct TileTerrain {
     pub dot_knolls: DotKnollSet,
 }
 
+/// What [`process_tile`] made of a tile that a batch draws the shape files' map on and
+/// crops.
+pub struct TileValues {
+    /// The ground model.
+    pub ground: HeightMap,
+    /// The terrain, unless vegeonly or cliffsonly.
+    pub terrain: Option<TileTerrain>,
+    /// The cliffs, unless vegeonly or contoursonly.
+    pub cliffs: Option<cliffs::CliffSet>,
+}
+
 /// Runs every stage on the returns of `input_file` and, unless `skip_rendering`, renders
-/// the map. Returns the tile's ground model and, unless vegeonly or cliffsonly, its
-/// terrain: what a batch draws the shape files' map on and crops.
+/// the map.
 pub fn process_tile(
     fs: &impl FileSystem,
     config: &Config,
@@ -393,7 +403,7 @@ pub fn process_tile(
     input_file: &Path,
     tile: &str,
     skip_rendering: bool,
-) -> Result<(HeightMap, Option<TileTerrain>), Box<dyn Error>> {
+) -> Result<TileValues, Box<dyn Error>> {
     let mut timing = Timing::start_now("process_tile");
     fs.create_dir_all(tmpfolder)
         .expect("Could not create tmp folder");
@@ -575,30 +585,24 @@ pub fn process_tile(
         )?;
     }
 
+    let mut cliff_set = None;
     if !vegeonly && !contoursonly {
         info!("Cliff generation");
         timing.start_section("cliff generation");
-        cliffs::makecliffs(
+        let (cliffs, passable_raster) = cliffs::makecliffs(&ground, &returns, tile, &config.cliff);
+        cliffs::write_cliffs(
             fs,
-            &config.cliff,
-            config.outputs.dxf,
             tmpfolder,
-            tile,
-            &ground,
-            &returns,
+            &cliffs,
+            &passable_raster,
+            config.debug_intermediates,
+            config.outputs.dxf,
         )
-        .unwrap();
-
+        .map_err(|e| format!("cliffs (makecliffs) in {}: {e}", tmpfolder.display()))?;
         if config.vector_tables() {
-            geojson::bindxf_to_tables(
-                fs,
-                &[tmpfolder.join("c2g.dxf.bin"), tmpfolder.join("c3g.dxf.bin")],
-                tmpfolder,
-                geojson::Source::Cliffs,
-                config.epsg,
-            )
-            .unwrap();
+            geojson::write_cliff_tables(fs, tmpfolder, &cliffs, config.epsg)?;
         }
+        cliff_set = Some(cliffs);
     }
     if !vegeonly && !contoursonly && !cliffsonly && config.detectbuildings {
         info!("Detecting buildings");
@@ -611,6 +615,7 @@ pub fn process_tile(
     // them) when a vector family takes them
     let full = !vegeonly && !contoursonly && !cliffsonly;
     if let Some(values) = &terrain
+        && let Some(cliffs) = &cliff_set
         && !skip_rendering
         && full
         && config.outputs.raster
@@ -619,6 +624,7 @@ pub fn process_tile(
             ground: &ground,
             contours: &values.contours,
             dot_knolls: &values.dot_knolls,
+            cliffs,
         };
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
@@ -673,7 +679,11 @@ pub fn process_tile(
         info!("Skipped rendering");
     }
     info!("All done!");
-    Ok((ground, terrain))
+    Ok(TileValues {
+        ground,
+        terrain,
+        cliffs: cliff_set,
+    })
 }
 
 /// The returns of `input_file` (`.xyz`, `.las`, `.laz` or `.xyz.bin`), in file order: the
@@ -849,7 +859,11 @@ pub fn batch_process(
         // Process the tile
         // the tile's returns, buffered from its neighbours, are staged by launch_threads
         let staged = &file_to_process.staging_path;
-        let (ground, terrain) = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
+        let TileValues {
+            ground,
+            terrain,
+            cliffs,
+        } = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
             .unwrap_or_else(|e| panic!("processing tile {laz} failed: {e}"));
         // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
         fs.remove_file(staged)
@@ -860,12 +874,14 @@ pub fn batch_process(
             && !cliffsonly
             && !contoursonly
             && let Some(terrain) = &terrain
+            && let Some(cliffs) = &cliffs
         {
             if outputs.raster {
                 let inputs = &render::MapInputs {
                     ground: &ground,
                     contours: &terrain.contours,
                     dot_knolls: &terrain.dot_knolls,
+                    cliffs,
                 };
                 process_zip(fs, conf, thread, &tmpfolder, inputs, &[], true).unwrap();
             } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
@@ -881,9 +897,10 @@ pub fn batch_process(
             }
         }
         // the crop below re-encodes the PNGs: free the ground model first, and the
-        // terrain unless the .dxf.bin crops take it
+        // terrain and the cliffs unless the .dxf.bin crops take them
         drop(ground);
         let terrain = terrain.filter(|_| outputs.dxf || debug_intermediates);
+        let cliffs = cliffs.filter(|_| outputs.dxf || debug_intermediates);
 
         // crop
         let tfw_in = PathBuf::from(format!("pullautus{thread}.pgw"));
@@ -1125,7 +1142,7 @@ pub fn batch_process(
         // which the merge does not read, and detected, the knoll rings, are debug
         // only.
         if outputs.dxf || debug_intermediates {
-            // the terrain is consumed here, without a copy
+            // the terrain and the cliffs are consumed here, without a copy
             if let Some(TileTerrain {
                 contours,
                 dot_knolls,
@@ -1140,17 +1157,18 @@ pub fn batch_process(
                 let output = format!("{batchoutfolder}/{laz}_dotknolls.dxf.bin");
                 crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
             }
+            if let Some(cliffs) = cliffs {
+                let (passable, impassable) = cliffs.into_bindxf();
+                for (name, dxf) in [("c2g", passable), ("c3g", impassable)] {
+                    let crop = crop::crop_polylines(dxf, minx, miny, maxx, maxy).unwrap();
+                    let output = format!("{batchoutfolder}/{laz}_{name}.dxf.bin");
+                    crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
+                }
+            }
             let dxf_files: &[&str] = if debug_intermediates {
-                &[
-                    "c2g",
-                    "c3g",
-                    "contours03",
-                    "detected",
-                    "formlines",
-                    "vegetation",
-                ]
+                &["contours03", "detected", "formlines", "vegetation"]
             } else {
-                &["c2g", "c3g", "formlines", "vegetation"]
+                &["formlines", "vegetation"]
             };
             for dxf_file in dxf_files {
                 let dxf_path = PathBuf::from(format!("temp{thread}/{dxf_file}.dxf.bin"));

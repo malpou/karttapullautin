@@ -39,7 +39,8 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Knoll pin**: A knoll that knoll detection kept, given as its ring and centre; the knoll lift raises the ground model inside the ring. _Avoid_: pin (alone), candidate
 **Lifted ground model**: The ground model after the knoll lift, smoothed where the local relief is small and raised under each knoll pin; smoothjoin and the dot knolls read it (`xyz_knolls.hmap` under `debug_intermediates`). _Avoid_: xyz_knolls
 **Ring**: A closed contour line, first vertex repeated last, tested for what it encloses. _Avoid_: polygon, closed polyline
-**Cliff**: An abrupt drop mapped as a line; passable or impassable by height (ISOM 201/202). _Avoid_: c2g, c3g, cliff2, cliff3
+**Cliff**: An abrupt drop mapped as a line; passable or impassable by height (ISOM 201/202). _Avoid_: c2g, c3g, cliff2, cliff3, cliff4
+**Cliff dash**: The short line the cliff stage makes across one drop, between two ground returns or two ground model cells; the renderer draws the dashes as they are, and the combined export chains them into cliff lines. _Avoid_: cliff segment
 
 ### Vegetation
 
