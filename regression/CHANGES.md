@@ -272,3 +272,33 @@ Baseline moves to 27d42bf (af1beae plus the CI-made expected.json).
   `temp/vegetation.dxf` (vegetation vectorisation now runs whenever dxf
   or geojson is selected).
 - Removed: none.
+
+### 2026-10-06: pr/vector-validity
+
+Every polygon written is OGC-valid and every ring follows RFC 7946. The
+vegetation tracer splits pinch vertices (a diagonal touch becomes an
+exterior and a hole meeting at one point) and falls back to the
+unsimplified chain for any ring simplification would make invalid. The
+combined export keeps a smoothed ring only if it stays valid, and is
+clipped to the merged tables' extent. Tile crops clip polygons with a
+Weiler-Atherton clip on the cm grid. `write_collection` drops repeated
+positions and zero-area rings and orients exteriors counter-clockwise,
+holes clockwise. pr/smoothjoin-values and the cards between it and 27d42bf
+were byte-identical. Baseline moves to 45716e5.
+
+- Pixels: 0 changed in the single job and the batch job.
+- Validity (checker over every GeoJSON): invalid vegetation polygons
+  70 (per tile, merged, single) / 95 (combined) -> 0; clockwise exterior
+  rings 24 water / 333 manmade per file -> 0; features outside the tile
+  23 vegetation / 6 contours (worst 6.32 m) -> 0; repeated positions 3 -> 0.
+- Per-tile and merged tables: identical per-code metrics except 408.000
+  in `test_file_`/`merged_vegetation_areas` (Hausdorff 0.01 m, area
+  unchanged: tile-edge crossings round to the cm).
+- Combined `out/contours.geojson`: 101.000 891 -> 894 and 103.000
+  648 -> 652 features (lines clipped at the tile edge split).
+- Combined `out/vegetation_areas.geojson` (counts unchanged): 403.000
+  precision 0.9874, recall 0.9834, Hausdorff 26.39 m (a ring whose old
+  curve crossed itself keeps its traced shape); 406.000, 408.000, 410.000
+  Hausdorff 1.7-3.4 m; 407.000 unchanged.
+- Bytes: `output.dxf` and both `vegetation.dxf` grow (split pinch rings);
+  every other file identical.
