@@ -21,6 +21,7 @@ impl FileSystem for LocalFileSystem {
             let entry = entry?;
             entries.push(path.join(entry.file_name()));
         }
+        entries.sort();
         Ok(entries)
     }
 
@@ -90,5 +91,33 @@ impl FileSystem for LocalFileSystem {
             .context("extracting zip archive")?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_list_is_sorted() {
+        let root = std::env::temp_dir().join(format!("pullauta-fs-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let names = [
+            "k.shp", "b.shp", "x.dbf", "a.shp", "c10.png", "m", "c2.png", "z.txt", "a.dbf",
+            "Q.shp", "e", "b.dbf",
+        ];
+        for name in names {
+            if name.contains('.') {
+                std::fs::write(root.join(name), b"").unwrap();
+            } else {
+                std::fs::create_dir(root.join(name)).unwrap();
+            }
+        }
+        let listed = LocalFileSystem.list(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        let mut expected: Vec<PathBuf> = names.iter().map(|n| root.join(n)).collect();
+        expected.sort();
+        assert_eq!(listed, expected);
     }
 }

@@ -246,6 +246,7 @@ impl FileSystem for MemoryFileSystem {
         for name in dir.files.keys() {
             entries.push(path.join(name));
         }
+        entries.sort();
         Ok(entries)
     }
 
@@ -773,5 +774,25 @@ mod test {
 
         let read = fs.read_to_string(path2).unwrap();
         assert_eq!(read, content);
+    }
+
+    #[test]
+    fn test_list_is_sorted() {
+        let fs = super::MemoryFileSystem::new();
+        let names = [
+            "m.shp", "b.shp", "z", "a.dbf", "c10.png", "c2.png", "k", "a.shp", "y.txt", "d",
+        ];
+        fs.create_dir_all("dir").unwrap();
+        for name in names {
+            if name.contains('.') {
+                fs.create(Path::new("dir").join(name)).unwrap();
+            } else {
+                fs.create_dir_all(Path::new("dir").join(name)).unwrap();
+            }
+        }
+        let listed = fs.list("dir").unwrap();
+        let mut expected: Vec<PathBuf> = names.iter().map(|n| Path::new("dir").join(n)).collect();
+        expected.sort();
+        assert_eq!(listed, expected);
     }
 }

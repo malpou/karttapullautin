@@ -11,7 +11,11 @@ pub trait FileSystem: std::fmt::Debug {
     /// Create a new directory.
     fn create_dir_all(&self, path: impl AsRef<Path>) -> Result<(), io::Error>;
 
-    /// List the contents of a directory.
+    /// List the contents of a directory, sorted by full path (lexicographic).
+    ///
+    /// The order is part of the contract: callers paint, merge, or pick the
+    /// "first" entry in listing order, so it must not depend on the
+    /// underlying filesystem or hash map iteration order.
     fn list(&self, path: impl AsRef<Path>) -> Result<Vec<PathBuf>, io::Error>;
 
     /// Check if a file exists.
