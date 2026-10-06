@@ -18,7 +18,7 @@ use crate::geometry::{BinaryDxf, Classification, Point2, Polylines, signed_area}
 use crate::io::fs::FileSystem;
 use crate::validity::{Cm, cm, ring_contacts, ring_is_simple};
 use crate::vec2d::Vec2D;
-use crate::vegetation::VegetationClasses;
+use crate::vegetation::VegetationModel;
 
 /// ISOM 2017-2 minimum footprint area (m²) of a vegetation area symbol, from the spec's
 /// "Minimum area" parameters (footprints at 1:15,000, 1 mm = 15 m).
@@ -661,7 +661,7 @@ fn area_features(
     })
 }
 
-/// Vectorize and write all vegetation vector outputs from the classes `makevege` drew
+/// Vectorize and write all vegetation vector outputs from the vegetation `model`
 /// (with a vector family in `outputs`): the `vegetation_areas` table when
 /// [`Config::vector_tables`], `vegetation.dxf` with the dxf family, and always
 /// `vegetation.dxf.bin`, the batch crop's input; with `vector_shade=1` the green areas
@@ -671,15 +671,16 @@ pub fn export_all(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
-    classes: &VegetationClasses,
+    model: &VegetationModel,
 ) -> Result<(), Box<dyn Error>> {
-    let VegetationClasses {
+    let VegetationModel {
         green,
         open_land,
-        undergrowth,
         bounds,
         block,
-    } = classes;
+        ..
+    } = model;
+    let undergrowth = &model.undergrowth_class();
     let block = *block;
     log::info!("Vectorizing vegetation...");
     let eps = config.vector_simplify;
@@ -692,7 +693,7 @@ pub fn export_all(
             0
         }
     };
-    let vege = &config.vegetation;
+    let vege = &model.drawing;
     let green_med = [radius(vege.med, block), radius(vege.med2, block)];
     let open_land_med = if vege.proceed_yellows {
         [radius(vege.med, 3.0), radius(vege.med2, 3.0)]

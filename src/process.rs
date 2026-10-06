@@ -292,6 +292,28 @@ pub fn launch_threads<F: FileSystem + Send + Clone + 'static>(
     Ok(())
 }
 
+/// Classify the returns into the vegetation model and write what `config` asks of it:
+/// the vegetation rasters with the raster family or `debug` (which also writes the
+/// helper rasters), and the vegetation vectors with a vector family.
+pub fn make_vegetation(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    ground: &HeightMap,
+    returns: &[XyzRecord],
+    debug: bool,
+) -> Result<(), Box<dyn Error>> {
+    let model = vegetation::makevege(ground, returns, &config.vegetation);
+    if config.outputs.raster || debug {
+        let rasters = vegetation::rasterise_vegetation(&model, &config.vegetation);
+        vegetation::write_vegetation(fs, tmpfolder, &rasters, debug)?;
+    }
+    if config.outputs.vectorizes_vegetation() {
+        vege_vector::export_all(fs, config, tmpfolder, &model)?;
+    }
+    Ok(())
+}
+
 /// Renders the shape files in `filenames` (or, in a batch, the ones already unzipped)
 /// and the map of the tile in `tmpfolder` from `inputs`.
 pub fn process_zip(
@@ -543,11 +565,14 @@ pub fn process_tile(
     if !cliffsonly && !contoursonly {
         info!("Vegetation generation");
         timing.start_section("vegetation generation");
-        let classes =
-            vegetation::makevege(fs, &config.vegetation, tmpfolder, &ground, &returns).unwrap();
-        if config.outputs.vectorizes_vegetation() {
-            vege_vector::export_all(fs, config, tmpfolder, &classes).unwrap();
-        }
+        make_vegetation(
+            fs,
+            config,
+            tmpfolder,
+            &ground,
+            &returns,
+            config.debug_intermediates,
+        )?;
     }
 
     if !vegeonly && !contoursonly {
@@ -846,7 +871,13 @@ pub fn batch_process(
             } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
                 // the vector mapping's tables, without drawing the shapes
                 #[cfg(feature = "shapefile")]
-                crate::shapefile::vector_tables(fs, conf, &tmpfolder).unwrap();
+                crate::shapefile::vector_tables(
+                    fs,
+                    conf,
+                    &tmpfolder,
+                    vegetation::VegetationFrame::of_ground(&ground, &conf.vegetation),
+                )
+                .unwrap();
             }
         }
         // the crop below re-encodes the PNGs: free the ground model first, and the

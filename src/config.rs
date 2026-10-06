@@ -194,7 +194,7 @@ impl Config {
         Self::from_file(path)
     }
 
-    fn from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) fn from_file(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let conf = Ini::load_from_file(path)?;
         if let Some(name) = conf.sections().flatten().next() {
             return Err(format!(

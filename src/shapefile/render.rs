@@ -16,6 +16,7 @@ use crate::{
         canvas::{Canvas, Color},
         mapping::{Mapping, Operator},
     },
+    vegetation::VegetationFrame,
 };
 use shapefile::dbase::{FieldValue, Record};
 use shapefile::{Polygon, PolygonRing, Polyline, Shape, ShapeType};
@@ -40,31 +41,64 @@ enum Image {
 
 /// Draw the shape files onto the map layers `low.png` and `high.png` in `tmpfolder`,
 /// and with a vector mapping write its features to the tables (when
-/// [`Config::vector_tables`]).
+/// [`Config::vector_tables`]). The map's frame is read from `vegetation.pgw` and
+/// `vegetation.png`; without them nothing is drawn.
 pub fn render(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
     batch: bool,
 ) -> Result<(), Box<dyn Error>> {
-    shapes(fs, config, tmpfolder, batch, true)
+    let frame = read_vegetation_frame(fs, tmpfolder)?;
+    shapes(fs, config, tmpfolder, frame, batch, true)
 }
 
 /// Write a batch tile's vector mapping features to the tables without drawing them: the
-/// shapes are matched as [`render`] matches them, on empty canvases.
+/// shapes are matched as [`render`] matches them in the vegetation raster's `frame`, on
+/// empty canvases.
 pub fn vector_tables(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
+    frame: VegetationFrame,
 ) -> Result<(), Box<dyn Error>> {
-    shapes(fs, config, tmpfolder, true, false)
+    shapes(fs, config, tmpfolder, Some(frame), true, false)
 }
 
-/// [`render`], drawing only with `draw`.
+/// The vegetation raster's frame from `vegetation.pgw` and the size of `vegetation.png`
+/// in `tmpfolder`; None without the world file.
+fn read_vegetation_frame(
+    fs: &impl FileSystem,
+    tmpfolder: &Path,
+) -> Result<Option<VegetationFrame>, Box<dyn Error>> {
+    let input = tmpfolder.join("vegetation.pgw");
+    if !fs.exists(&input) {
+        return Ok(None);
+    }
+    let w = WorldFile::read(fs, input).expect("Can not read input file");
+
+    let mut img_reader = image::ImageReader::new(
+        fs.open(tmpfolder.join("vegetation.png"))
+            .expect("Opening vegetation image failed"),
+    );
+    img_reader.set_format(image::ImageFormat::Png);
+    img_reader.no_limits();
+    let (width, height) = img_reader.into_dimensions()?;
+    Ok(Some(VegetationFrame {
+        x_origin: w.x_origin,
+        y_origin: w.y_origin,
+        width,
+        height,
+    }))
+}
+
+/// [`render`] in the vegetation raster's frame, drawing only with `draw`; nothing
+/// without the frame.
 fn shapes(
     fs: &impl FileSystem,
     config: &Config,
     tmpfolder: &Path,
+    vegetation: Option<VegetationFrame>,
     batch: bool,
     draw: bool,
 ) -> Result<(), Box<dyn Error>> {
@@ -97,24 +131,13 @@ fn shapes(
             .collect::<Result<Vec<_>, _>>()?;
     }
 
-    let input = tmpfolder.join("vegetation.pgw");
-    if !fs.exists(&input) {
+    let Some(vegetation) = vegetation else {
         info!("Could not find vegetation file");
         return Ok(());
-    }
-
-    let w = WorldFile::read(fs, input).expect("Can not read input file");
-    let x0 = w.x_origin;
-    let y0 = w.y_origin;
-
-    let mut img_reader = image::ImageReader::new(
-        fs.open(tmpfolder.join("vegetation.png"))
-            .expect("Opening vegetation image failed"),
-    );
-    img_reader.set_format(image::ImageFormat::Png);
-    img_reader.no_limits();
-    let (w, h) = img_reader.into_dimensions()?;
-    let (w, h) = (w as f64, h as f64);
+    };
+    let x0 = vegetation.x_origin;
+    let y0 = vegetation.y_origin;
+    let (w, h) = (vegetation.width as f64, vegetation.height as f64);
 
     let outw = frame.to_px(w);
     let outh = frame.to_px(h);

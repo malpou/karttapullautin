@@ -314,17 +314,10 @@ fn main() {
         Command::MakeVege => {
             let ground = or_exit(read_ground(&fs, &tmpfolder.join(GROUND_DUMP)));
             let returns = or_exit(read_dump(&fs, &tmpfolder.join("xyztemp.xyz.bin"), true));
-            let classes = pullauta::vegetation::makevege(
-                &fs,
-                &config.vegetation,
-                &tmpfolder,
-                &ground,
-                &returns,
-            )
-            .unwrap();
-            if config.outputs.vectorizes_vegetation() {
-                pullauta::vege_vector::export_all(&fs, &config, &tmpfolder, &classes).unwrap();
-            }
+            // a stage command writes the debug intermediates too, as the tile run does
+            // with debug_intermediates=1
+            pullauta::process::make_vegetation(&fs, &config, &tmpfolder, &ground, &returns, true)
+                .unwrap();
         }
 
         Command::PngMerge { depr } => {

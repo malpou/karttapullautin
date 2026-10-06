@@ -49,6 +49,8 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Green shade**: One of the ordered runnability classes drawn in green (ISOM 406, 408, 410), numbered from 1 by its position in `greenshades`; that number is its greenshade index, `shade` in GeoJSON. _Avoid_: vegeshade
 **Open land**: Ground with almost no returns above knee height (ISOM 401/403). _Avoid_: yellow
 **Undergrowth**: Dense low vegetation under otherwise runnable forest (ISOM 407/409). _Avoid_: ug, ugg
+**Undergrowth share**: The share of a cell's returns that are not ground returns and lie 0.25-1.2 m above ground. Every return counts in the denominator: ground-class returns and those at or below 0.25 m weigh 1, those higher than 1.2 m weigh 0.05; undergrowth is drawn where it is above the `undergrowth` limit, undergrowth walk where it is above `undergrowth2`. _Avoid_: ug ratio
+**Vegetation model**: The tile's vegetation classified per cell by makevege: the greenshade index per green cell, open land per 3 m cell, the undergrowth share per square of six by six green cells, and the water and building pixels; the vegetation rasters and the vegetation areas are both drawn from it (`VegetationModel`). _Avoid_: vegetation classes, vege
 
 ### Output
 
