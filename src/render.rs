@@ -180,20 +180,28 @@ pub fn write_map(
     Ok(())
 }
 
-/// Draws the map from `inputs`: north lines at `angle_deg`, `nwidth` pixels wide (none at
-/// 999), and the depression contours unless `nodepressions`.
-pub fn render(
-    config: &Config,
-    inputs: &MapInputs,
-    angle_deg: f64,
-    nwidth: usize,
-    nodepressions: bool,
-) -> MapOutput {
+/// Parameters of [`render`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderParams {
+    /// The contours' and form lines' parameters, with the sheet the map is drawn on.
+    pub curves: CurveRenderParams,
+    /// The north lines' angle in degrees (ini `northlinesangle`).
+    pub north_lines_angle_deg: f64,
+    /// The north lines' width in pixels (ini `northlineswidth`); none at 999.
+    pub north_lines_width: usize,
+    /// Colour the cliffs by the pass that found them (ini `cliffdebug`).
+    pub cliffdebug: bool,
+}
+
+/// Draws the map from `inputs` with `params`, the depression contours unless
+/// `nodepressions`.
+pub fn render(params: &RenderParams, inputs: &MapInputs, nodepressions: bool) -> MapOutput {
     info!("Rendering...");
 
-    let frame = config.map_frame;
+    let frame = params.curves.frame;
+    let nwidth = params.north_lines_width;
 
-    let angle = -angle_deg / 180.0 * PI;
+    let angle = -params.north_lines_angle_deg / 180.0 * PI;
 
     // Draw vegetation ----------
     let vege_frame = &inputs.vegetation.world;
@@ -260,7 +268,7 @@ pub fn render(
     }
 
     draw_curves(
-        &config.curves,
+        &params.curves,
         &mut img,
         inputs.ground,
         inputs.contours,
@@ -328,8 +336,8 @@ pub fn render(
     }
 
     // the passable cliffs, then the impassable ones over them
-    draw_cliffs(config, &inputs.cliffs.passable, &mut img, x0, y0);
-    draw_cliffs(config, &inputs.cliffs.impassable, &mut img, x0, y0);
+    draw_cliffs(params, &inputs.cliffs.passable, &mut img, x0, y0);
+    draw_cliffs(params, &inputs.cliffs.impassable, &mut img, x0, y0);
 
     // high -------------
     if let Some(shapes) = inputs.shapes {
@@ -352,19 +360,19 @@ pub fn render(
 /// Draws the cliff dashes `lines` on `img`, the sheet whose top left corner is at
 /// (`x0`, `y0`) in world coordinates.
 fn draw_cliffs(
-    config: &Config,
+    params: &RenderParams,
     lines: &Polylines<Point2, Classification>,
     img: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     x0: f64,
     y0: f64,
 ) {
-    let frame = config.map_frame;
+    let frame = params.curves.frame;
 
     // one buffer for every dash's points in pixel space
     let mut line = Vec::new();
     for (dash, &class) in lines.iter() {
         // based on the layer we select the cliffcolor
-        let cliffcolor = if config.cliffdebug {
+        let cliffcolor = if params.cliffdebug {
             match class {
                 Classification::Cliff2 => Rgba([100, 0, 100, 255]),
                 Classification::Cliff3 => Rgba([0, 100, 100, 255]),
@@ -752,7 +760,7 @@ mod tests {
             shapes: None,
         };
 
-        let map = render(&config, &inputs, 0.0, 0, true);
+        let map = render(&config.render, &inputs, true);
         assert_eq!(
             map.image.dimensions(),
             (frame.to_px(12.0) as u32, frame.to_px(10.0) as u32)

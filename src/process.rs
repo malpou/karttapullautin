@@ -313,7 +313,12 @@ pub fn make_vegetation(
         rasters = Some(drawn.into_map_rasters());
     }
     if config.outputs.vectorizes_vegetation() {
-        vege_vector::export_all(fs, config, tmpfolder, &model)?;
+        let areas = vege_vector::vectorise_vegetation(
+            &model,
+            &config.vector_greenshade_isom,
+            config.vector_simplify,
+        );
+        vege_vector::write_vegetation_areas(fs, config, tmpfolder, &areas)?;
     }
     Ok(rasters)
 }
@@ -327,13 +332,7 @@ pub fn render_map(
     inputs: &render::MapInputs,
     nodepressions: bool,
 ) -> Result<(), Box<dyn Error>> {
-    let map = render::render(
-        config,
-        inputs,
-        config.pnorthlinesangle,
-        config.pnorthlineswidth,
-        nodepressions,
-    );
+    let map = render::render(&config.render, inputs, nodepressions);
     render::write_map(
         fs,
         &render::map_stem(thread, nodepressions),

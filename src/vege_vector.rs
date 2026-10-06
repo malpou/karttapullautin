@@ -661,18 +661,62 @@ fn area_features(
     })
 }
 
-/// Vectorize and write all vegetation vector outputs from the vegetation `model`
-/// (with a vector family in `outputs`): the `vegetation_areas` table when
-/// [`Config::vector_tables`], `vegetation.dxf` with the dxf family, and always
-/// `vegetation.dxf.bin`, the batch crop's input; with `vector_shade=1` the green areas
-/// also carry their greenshade index. The open land grid's origin is shifted +1.5 m
-/// (makevege's 2x2 sum window).
-pub fn export_all(
-    fs: &impl FileSystem,
-    config: &Config,
-    tmpfolder: &Path,
+/// The vegetation areas [`vectorise_vegetation`] traces from a vegetation model: the
+/// green areas, the open land and the undergrowth, each in traced order.
+pub struct VegetationAreas {
+    green: Vec<VegPolygon>,
+    open_land: Vec<VegPolygon>,
+    undergrowth: Vec<VegPolygon>,
+    /// The vegetation model's bounds.
+    bounds: crate::geometry::Bounds,
+}
+
+impl VegetationAreas {
+    /// The `vegetation_areas` table's features, green areas first; with `shade`
+    /// (`vector_shade=1`) the green areas also carry their greenshade index.
+    pub fn features(&self, shade: bool) -> Vec<geojson::geojson_types::Feature> {
+        // only the green areas have shades; open land and undergrowth are 0/1 grids
+        area_features(&self.green, shade)
+            .chain(area_features(&self.open_land, false))
+            .chain(area_features(&self.undergrowth, false))
+            .collect()
+    }
+
+    /// The combined DXF (`vegetation.dxf.bin`, the batch crop's input, and
+    /// `vegetation.dxf`): every ring closed, the symbol code as layer, in draw order (a
+    /// stable sort keeps the traced order within a symbol).
+    pub fn to_bindxf(&self) -> BinaryDxf {
+        let mut all: Vec<&VegPolygon> = self
+            .green
+            .iter()
+            .chain(&self.open_land)
+            .chain(&self.undergrowth)
+            .collect();
+        all.sort_by_key(|p| draw_order(p.code));
+
+        let mut lines: Polylines<Point2, Classification> = Polylines::new();
+        for p in all {
+            let class = classification(p.code);
+            for ring in &p.rings {
+                let mut closed = ring.clone();
+                closed.push(ring[0]);
+                lines.push(closed, class);
+            }
+        }
+        BinaryDxf::new(self.bounds.clone(), vec![lines.into()])
+    }
+}
+
+/// Vectorize the vegetation `model` into its areas: the green areas coded by
+/// `greenshade_isom` (the symbol code per greenshade index, 1-based; a shorter list
+/// repeats its last code, ini `vector_greenshade_isom`), simplified within `simplify_m`
+/// metres (0 for none, ini `vector_simplify`). The open land grid's origin is shifted
+/// +1.5 m (makevege's 2x2 sum window).
+pub fn vectorise_vegetation(
     model: &VegetationModel,
-) -> Result<(), Box<dyn Error>> {
+    greenshade_isom: &[Code],
+    simplify_m: f64,
+) -> VegetationAreas {
     let VegetationModel {
         green,
         open_land,
@@ -683,7 +727,7 @@ pub fn export_all(
     let undergrowth = &model.undergrowth_class();
     let block = *block;
     log::info!("Vectorizing vegetation...");
-    let eps = config.vector_simplify;
+    let eps = simplify_m;
 
     // mirror the raster median filtering, radius converted from meters to cells
     let radius = |m: u32, cell: f64| -> u32 {
@@ -701,10 +745,10 @@ pub fn export_all(
         [radius(vege.medyellow, 3.0), 0]
     };
 
-    let map = &config.vector_greenshade_isom;
     let green_code = |c: u8| -> Code {
-        *map.get((c as usize).saturating_sub(1))
-            .or(map.last())
+        *greenshade_isom
+            .get((c as usize).saturating_sub(1))
+            .or(greenshade_isom.last())
             .expect("vector_greenshade_isom is validated non-empty at config load")
     };
 
@@ -732,46 +776,42 @@ pub fn export_all(
         [0, 0],
         eps,
     );
+    log::info!("Done");
+    VegetationAreas {
+        green: green_polys,
+        open_land: open_land_polys,
+        undergrowth: undergrowth_polys,
+        bounds: bounds.clone(),
+    }
+}
 
-    // only the green areas have shades; open land and undergrowth are 0/1 grids
+/// Write the vegetation `areas` to `tmpfolder`: the `vegetation_areas` table when
+/// [`Config::vector_tables`] (with `vector_shade=1` the green areas carry their
+/// greenshade index), `vegetation.dxf` with the dxf family, and always
+/// `vegetation.dxf.bin`.
+pub fn write_vegetation_areas(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    areas: &VegetationAreas,
+) -> Result<(), Box<dyn Error>> {
     if config.vector_tables() {
-        let features = area_features(&green_polys, config.vector_shade)
-            .chain(area_features(&open_land_polys, false))
-            .chain(area_features(&undergrowth_polys, false))
-            .collect();
         geojson::write_tables(
             fs,
             tmpfolder,
             geojson::Source::Vegetation,
-            features,
+            areas.features(config.vector_shade),
             config.epsg,
         )?;
     }
-
-    // combined DXF in draw order (stable sort keeps the traced order within a symbol)
-    let mut all: Vec<&VegPolygon> = green_polys
-        .iter()
-        .chain(&open_land_polys)
-        .chain(&undergrowth_polys)
-        .collect();
-    all.sort_by_key(|p| draw_order(p.code));
-
-    let mut lines: Polylines<Point2, Classification> = Polylines::new();
-    for p in all {
-        let class = classification(p.code);
-        for ring in &p.rings {
-            let mut closed = ring.clone();
-            closed.push(ring[0]);
-            lines.push(closed, class);
-        }
-    }
-    let dxf = BinaryDxf::new(bounds.clone(), vec![lines.into()]);
-    dxf.to_writer(&mut fs.create(tmpfolder.join("vegetation.dxf.bin"))?)?;
-    if config.outputs.dxf {
-        dxf.to_dxf(&mut fs.create(tmpfolder.join("vegetation.dxf"))?)?;
-    }
-    log::info!("Done");
-    Ok(())
+    crate::contours::write_dxf_files(
+        fs,
+        tmpfolder,
+        "vegetation.dxf.bin",
+        &areas.to_bindxf(),
+        true,
+        config.outputs.dxf,
+    )
 }
 
 #[cfg(test)]

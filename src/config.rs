@@ -10,7 +10,7 @@ use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
 use crate::mapframe::MapFrame;
 use crate::merge::{FormLineMode, SmoothJoinParams};
-use crate::render::CurveRenderParams;
+use crate::render::{CurveRenderParams, RenderParams};
 use crate::vegetation::{Stratum, VegetationParams};
 
 /// The config parsed from the .ini configuration file.
@@ -30,9 +30,6 @@ pub struct Config {
     pub vegeonly: bool,
     pub cliffsonly: bool,
     pub contoursonly: bool,
-
-    pub pnorthlinesangle: f64,
-    pub pnorthlineswidth: usize,
 
     pub lazfolder: String,
     pub batchoutfolder: String,
@@ -65,8 +62,8 @@ pub struct Config {
     /// The form-line selection's parameters, with the map frame, the trace interval and
     /// the ISOM minimum ring length at the map scale.
     pub form_lines: FormLineParams,
-    /// draw_curves' parameters, with the map frame.
-    pub curves: CurveRenderParams,
+    /// The renderer's parameters, with the map frame.
+    pub render: RenderParams,
 
     pub xfactor: f64,
     pub yfactor: f64,
@@ -108,7 +105,6 @@ pub struct Config {
     pub buildingcolor: (u8, u8, u8),
     pub vectorconf: String,
     pub mtkskiplayers: Vec<String>,
-    pub cliffdebug: bool,
 }
 
 /// The product families a run writes to disk (ini `outputs`, a comma-separated list
@@ -561,8 +557,6 @@ impl Config {
             vegeonly,
             cliffsonly,
             contoursonly,
-            pnorthlinesangle,
-            pnorthlineswidth,
             lazfolder,
             batchoutfolder,
             batchbuffer,
@@ -599,11 +593,16 @@ impl Config {
                 trace_interval_m: form_lines.trace_interval(contour_interval),
                 ring_length_m: map_frame.ground_minima().ring_length_m,
             },
-            curves: CurveRenderParams {
-                frame: map_frame,
-                dashlength,
-                gaplength,
-                depressions_color,
+            render: RenderParams {
+                curves: CurveRenderParams {
+                    frame: map_frame,
+                    dashlength,
+                    gaplength,
+                    depressions_color,
+                },
+                north_lines_angle_deg: pnorthlinesangle,
+                north_lines_width: pnorthlineswidth,
+                cliffdebug,
             },
             xfactor,
             yfactor,
@@ -620,7 +619,6 @@ impl Config {
             buildingcolor,
             vectorconf,
             mtkskiplayers,
-            cliffdebug,
         })
     }
 }
@@ -1150,7 +1148,7 @@ mod test {
         assert_eq!(default.map_frame, MapFrame::default());
         let config = load_with(&[("mapscale", "15000")]).unwrap();
         assert_eq!(config.map_frame.scale_denominator, 15_000.0);
-        assert_eq!(config.curves.frame, config.map_frame);
+        assert_eq!(config.render.curves.frame, config.map_frame);
         assert_eq!(config.vegetation.frame, config.map_frame);
         let px = config.map_frame.px_per_metre();
         assert!((px - default.map_frame.px_per_metre() * 2.0 / 3.0).abs() < 1e-15);

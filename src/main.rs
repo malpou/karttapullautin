@@ -347,13 +347,12 @@ fn main() {
                 .expect("expected second argument to be nwidth");
             let nodepressions: bool = args.len() > 2 && args[2] == "nodepressions";
             let loaded = or_exit(read_render_inputs(&fs, &config, &tmpfolder, true));
-            let map = pullauta::render::render(
-                &config,
-                &loaded.map_inputs(),
-                angle,
-                nwidth,
-                nodepressions,
-            );
+            let params = pullauta::render::RenderParams {
+                north_lines_angle_deg: angle,
+                north_lines_width: nwidth,
+                ..config.render.clone()
+            };
+            let map = pullauta::render::render(&params, &loaded.map_inputs(), nodepressions);
             or_exit(pullauta::render::write_map(
                 &fs,
                 &pullauta::render::map_stem(&thread, nodepressions),
