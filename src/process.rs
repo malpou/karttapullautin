@@ -1,6 +1,6 @@
 use anyhow::Context;
-
-use image::{GrayImage, Luma, Rgb, RgbImage, Rgba, RgbaImage};
+use image::buffer::ConvertBuffer;
+use image::{Luma, Rgb, RgbImage, Rgba};
 use itertools::izip;
 use las::{PointData, PointDataBuilder, Reader};
 use log::debug;
@@ -932,6 +932,42 @@ fn read_las(
     returns
 }
 
+/// `top` on a `width` x `height` sheet of `background`, its top left corner at (`x`,
+/// `y`): a raster cropped (or padded) to a batch tile.
+fn placed<I>(
+    top: &I,
+    width: u32,
+    height: u32,
+    background: I::Pixel,
+    x: i64,
+    y: i64,
+) -> image::ImageBuffer<I::Pixel, Vec<<I::Pixel as image::Pixel>::Subpixel>>
+where
+    I: image::GenericImageView,
+    I::Pixel: 'static,
+{
+    let mut sheet = image::ImageBuffer::from_pixel(width, height, background);
+    image::imageops::overlay(&mut sheet, top, x, y);
+    sheet
+}
+
+/// Writes `image` as the PNG `path` with `fs`.
+fn write_png<P>(
+    fs: &impl FileSystem,
+    path: impl AsRef<Path>,
+    image: &image::ImageBuffer<P, Vec<P::Subpixel>>,
+) where
+    P: image::PixelWithColorType,
+    [P::Subpixel]: image::EncodableLayout,
+{
+    image
+        .write_to(
+            &mut fs.create(path).expect("could not save output png"),
+            image::ImageFormat::Png,
+        )
+        .expect("could not save output png");
+}
+
 pub fn batch_process(
     conf: &Config,
     fs: &impl FileSystem,
@@ -941,9 +977,6 @@ pub fn batch_process(
     rx: Consumer<InputFileIndex>,
 ) {
     let &Config {
-        vegeonly,
-        cliffsonly,
-        contoursonly,
         debug_intermediates,
         outputs,
         map_frame: frame,
@@ -975,156 +1008,147 @@ pub fn batch_process(
         let tmpfolder = PathBuf::from(format!("temp{thread}"));
         clear_tile_folder(fs, &tmpfolder).expect("Could not clear the tile's temp folder");
 
-        // Process the tile
+        // Process the tile; the map is rendered here, with the shape files and cropped
+        // to the tile
         // the tile's returns, buffered from its neighbours, are staged by launch_threads
         let staged = &file_to_process.staging_path;
-        let values = process_tile(fs, conf, thread, &tmpfolder, staged, laz, has_zip)
+        let mut values = process_tile(fs, conf, thread, &tmpfolder, staged, laz, true)
             .unwrap_or_else(|e| panic!("processing tile {laz} failed: {e}"));
         // debug_intermediates=1 keeps them in the tile folder as xyztemp.xyz.bin
         fs.remove_file(staged)
             .expect("Could not remove the staged point file");
 
-        if has_zip && !vegeonly && !cliffsonly && !contoursonly {
-            let layers = values
-                .rasters()
-                .filter(|_| outputs.raster)
-                .map(|rasters| rasters.layers());
-            if let Some(layers) = &layers
-                && let Some(inputs) = values.map_inputs(layers)
-            {
-                let frame = layers.frame();
-                let shapes = shape_layers(fs, conf, &tmpfolder, frame, &[], debug_intermediates);
-                let inputs = &render::MapInputs {
-                    shapes: shapes.as_ref(),
-                    ..inputs
-                };
-                render_map(fs, conf, thread, inputs, false).unwrap();
-                render_map(fs, conf, thread, inputs, true).unwrap();
-            } else if values.terrain.is_some()
-                && values.cliffs.is_some()
-                && conf.vector_tables()
-                && !conf.vectorconf.is_empty()
-            {
-                // the vector mapping's tables, without drawing the shapes
-                #[cfg(feature = "shapefile")]
-                crate::shapefile::vector_tables(
-                    fs,
-                    conf,
-                    &tmpfolder,
-                    vegetation::VegetationFrame::of_ground(&values.ground, &conf.vegetation),
-                )
-                .unwrap();
+        // the .dxf.bin crops: the batch merge's input for the merged DXF, and with the
+        // dxf family each tile's DXF crop. The .dxf.bin crops are removed after the
+        // batch unless debug_intermediates=1 (remove_batch_intermediates); contours03,
+        // the knoll candidates, and detected, the knoll rings, are debug only.
+        let dxf_crops = outputs.dxf || debug_intermediates;
+        let write = |name: &str, crop: anyhow::Result<BinaryDxf>| {
+            let output = format!("{batchoutfolder}/{laz}_{name}.dxf.bin");
+            crop::write_crop(fs, &crop.unwrap(), Path::new(&output), outputs.dxf).unwrap();
+        };
+        let lines = |name: &str, dxf: BinaryDxf| {
+            write(name, crop::crop_polylines(dxf, minx, miny, maxx, maxy));
+        };
+        // what the map does not draw is cropped (or dropped) before the maps are
+        // rendered
+        let dumps = values.dumps.take();
+        let areas = values.vegetation.as_mut().and_then(|v| v.areas.take());
+        let basemap = values.basemap.take();
+        if dxf_crops {
+            if let Some(dumps) = dumps {
+                if let Some(candidates) = dumps.knoll_candidates {
+                    lines("contours03", candidates);
+                }
+                if let Some((detected, _)) = dumps.detected {
+                    lines("detected", detected.to_bindxf());
+                }
+            }
+            if let Some(areas) = areas {
+                lines("vegetation", areas.to_bindxf());
+            }
+            if let Some(basemap) = basemap {
+                lines("basemap", basemap);
             }
         }
-        // the crop below re-encodes the PNGs: free the ground model and the map's rasters
-        // first, and the terrain and the cliffs unless the .dxf.bin crops take them
-        let TileValues {
-            terrain, cliffs, ..
-        } = values;
-        let terrain = terrain.filter(|_| outputs.dxf || debug_intermediates);
-        let cliffs = cliffs.filter(|_| outputs.dxf || debug_intermediates);
 
-        // crop
-        let tfw_in = PathBuf::from(format!("pullautus{thread}.pgw"));
-        if outputs.raster && fs.exists(&tfw_in) {
-            let tfw = WorldFile::read(fs, &tfw_in).expect("PGW file does not exist");
-
-            let dx = minx - tfw.x_origin;
-            let dy = -maxy + tfw.y_origin;
-
-            let mut pgw_file_out = fs.create(&tfw_in).expect("Unable to create file");
-            WorldFile {
-                x_origin: minx + tfw.pixel_size_x / 2.0,
-                y_origin: maxy - tfw.pixel_size_x / 2.0,
-                ..tfw
-            }
-            .write(&mut pgw_file_out)
-            .expect("Unable to write to file");
-
-            drop(pgw_file_out);
-            fs.copy(
-                Path::new(&format!("pullautus{thread}.pgw")),
-                Path::new(&format!("pullautus_depr{thread}.pgw")),
-            )
-            .expect("Could not copy file");
-
-            let orig_img = fs
-                .read_image_png(format!("pullautus{thread}.png"))
-                .expect("Opening image failed");
-            let mut img = RgbImage::from_pixel(
-                (frame.to_px(maxx - minx) + 2.0) as u32,
-                (frame.to_px(maxy - miny) + 2.0) as u32,
-                Rgb([255, 255, 255]),
-            );
-            image::imageops::overlay(
-                &mut img,
-                &orig_img.to_rgb8(),
-                frame.to_px(-dx) as i64,
-                frame.to_px(-dy) as i64,
-            );
-
-            img.write_to(
-                &mut fs
-                    .create(format!("pullautus{thread}.png"))
-                    .expect("could not save output png"),
-                image::ImageFormat::Png,
-            )
-            .expect("could not save output png");
-
-            let orig_img = fs
-                .read_image_png(format!("pullautus_depr{thread}.png"))
-                .expect("Opening image failed");
-            let mut img = RgbImage::from_pixel(
-                (frame.to_px(maxx - minx) + 2.0) as u32,
-                (frame.to_px(maxy - miny) + 2.0) as u32,
-                Rgb([255, 255, 255]),
-            );
-            image::imageops::overlay(
-                &mut img,
-                &orig_img.to_rgb8(),
-                frame.to_px(-dx) as i64,
-                frame.to_px(-dy) as i64,
-            );
-
-            img.write_to(
-                &mut fs
-                    .create(format!("pullautus_depr{thread}.png"))
-                    .expect("could not save output png"),
-                image::ImageFormat::Png,
-            )
-            .expect("could not save output png");
-
-            fs.copy(format!("pullautus{thread}.png"), outfile)
-                .expect("Could not copy file to output folder");
-            fs.copy(
-                format!("pullautus{thread}.pgw"),
-                format!("{batchoutfolder}/{laz}.pgw"),
-            )
-            .expect("Could not copy file to output folder");
-            fs.copy(
-                format!("pullautus_depr{thread}.png"),
-                format!("{batchoutfolder}/{laz}_depr.png"),
-            )
-            .expect("Could not copy file to output folder");
-            fs.copy(
-                format!("pullautus_depr{thread}.pgw"),
-                format!("{batchoutfolder}/{laz}_depr.pgw"),
-            )
-            .expect("Could not copy file to output folder");
-            for png in [
-                outfile.to_path_buf(),
-                PathBuf::from(format!("{batchoutfolder}/{laz}_depr.png")),
-            ] {
+        // the vegetation layers the map is drawn on, and cropped below
+        let layers = values
+            .rasters()
+            .filter(|_| outputs.raster)
+            .map(|rasters| rasters.layers());
+        if let Some(layers) = &layers
+            && let Some(inputs) = values.map_inputs(layers)
+        {
+            let shapes = has_zip
+                .then(|| {
+                    let frame = layers.frame();
+                    shape_layers(fs, conf, &tmpfolder, frame, &[], debug_intermediates)
+                })
+                .flatten();
+            let inputs = &render::MapInputs {
+                shapes: shapes.as_ref(),
+                ..inputs
+            };
+            // the map without the depressions first: its world file is both maps' crop
+            let mut cropped_world = None;
+            for nodepressions in [true, false] {
+                info!("Rendering png map");
+                let map = render::render(&conf.render, inputs, nodepressions);
+                let tfw = cropped_world.get_or_insert_with(|| {
+                    let tfw = &map.world;
+                    (
+                        minx - tfw.x_origin,
+                        -maxy + tfw.y_origin,
+                        WorldFile {
+                            x_origin: minx + tfw.pixel_size_x / 2.0,
+                            y_origin: maxy - tfw.pixel_size_x / 2.0,
+                            ..tfw.clone()
+                        },
+                    )
+                });
+                let (dx, dy, world) = &*tfw;
+                let rgb: RgbImage = map.image.convert();
+                drop(map);
+                let img = placed(
+                    &rgb,
+                    (frame.to_px(maxx - minx) + 2.0) as u32,
+                    (frame.to_px(maxy - miny) + 2.0) as u32,
+                    Rgb([255, 255, 255]),
+                    frame.to_px(-dx) as i64,
+                    frame.to_px(-dy) as i64,
+                );
+                drop(rgb);
+                // the working copies (kept with debug_intermediates=1), then the tile's
+                // map in the output folder
+                let stem = render::map_stem(thread, nodepressions);
+                write_png(fs, format!("{stem}.png"), &img);
+                world
+                    .write(
+                        &mut fs
+                            .create(format!("{stem}.pgw"))
+                            .expect("Unable to create file"),
+                    )
+                    .expect("Unable to write to file");
+                crate::crs::write_raster_crs(fs, format!("{stem}.png"), conf.epsg)
+                    .expect("Could not write raster CRS sidecar");
+                let (png, pgw) = if nodepressions {
+                    (outfile.to_path_buf(), format!("{batchoutfolder}/{laz}.pgw"))
+                } else {
+                    (
+                        PathBuf::from(format!("{batchoutfolder}/{laz}_depr.png")),
+                        format!("{batchoutfolder}/{laz}_depr.pgw"),
+                    )
+                };
+                fs.copy(format!("{stem}.png"), &png)
+                    .expect("Could not copy file to output folder");
+                fs.copy(format!("{stem}.pgw"), pgw)
+                    .expect("Could not copy file to output folder");
                 crate::crs::write_raster_crs(fs, png, conf.epsg)
                     .expect("Could not write raster CRS sidecar");
             }
+        } else if has_zip
+            && values.terrain.is_some()
+            && values.cliffs.is_some()
+            && conf.vector_tables()
+            && !conf.vectorconf.is_empty()
+        {
+            // the vector mapping's tables, without drawing the shapes
+            #[cfg(feature = "shapefile")]
+            crate::shapefile::vector_tables(
+                fs,
+                conf,
+                &tmpfolder,
+                vegetation::VegetationFrame::of_ground(&values.ground, &conf.vegetation),
+            )
+            .unwrap();
         }
 
         // the vegetation rasters, cropped to the tile like the map
-        if outputs.raster && !contoursonly && !cliffsonly {
-            let path = format!("temp{thread}/undergrowth.pgw");
-            let tfw_in = Path::new(&path);
-            let tfw = WorldFile::read(fs, tfw_in).expect("PGW file does not exist");
+        if let Some(layers) = layers
+            && let Some(rasters) = values.rasters()
+        {
+            let tfw = &rasters.undergrowth_world;
 
             let dx = minx - tfw.x_origin;
             let dy = -maxy + tfw.y_origin;
@@ -1137,60 +1161,35 @@ pub fn batch_process(
             WorldFile {
                 x_origin: minx + tfw.pixel_size_x / 2.0,
                 y_origin: maxy - tfw.pixel_size_x / 2.0,
-                ..tfw
+                ..tfw.clone()
             }
             .write(&mut pgw_file_out)
             .expect("Unable to write to file");
             drop(pgw_file_out);
 
-            let mut orig_img_reader = image::ImageReader::new(
-                fs.open(format!("temp{thread}/undergrowth.png"))
-                    .expect("Opening undergrowth image failed"),
-            );
-            orig_img_reader.set_format(image::ImageFormat::Png);
-            orig_img_reader.no_limits();
-            let orig_img = orig_img_reader.decode().unwrap();
-            let mut img = RgbaImage::from_pixel(
+            let img = placed(
+                &layers.undergrowth,
                 (frame.to_px(maxx - minx) + 2.0) as u32,
                 (frame.to_px(maxy - miny) + 2.0) as u32,
                 Rgba([255, 255, 255, 0]),
-            );
-            image::imageops::overlay(
-                &mut img,
-                &orig_img,
                 frame.to_px(-dx) as i64,
                 frame.to_px(-dy) as i64,
             );
+            write_png(fs, format!("{batchoutfolder}/{laz}_undergrowth.png"), &img);
 
-            img.write_to(
-                &mut fs
-                    .create(format!("{batchoutfolder}/{laz}_undergrowth.png"))
-                    .expect("could not save output png"),
-                image::ImageFormat::Png,
-            )
-            .expect("could not save output png");
-
-            let mut orig_img_reader = image::ImageReader::new(
-                fs.open(format!("temp{thread}/vegetation.png"))
-                    .expect("Opening vegetation image failed"),
-            );
-            orig_img_reader.set_format(image::ImageFormat::Png);
-            orig_img_reader.no_limits();
-            let orig_img = orig_img_reader.decode().unwrap();
-            let mut img = RgbImage::from_pixel(
-                ((maxx - minx) + 1.0) as u32,
-                ((maxy - miny) + 1.0) as u32,
+            // one pixel per metre from here
+            let width = ((maxx - minx) + 1.0) as u32;
+            let height = ((maxy - miny) + 1.0) as u32;
+            let vegetation: RgbImage = layers.vegetation.convert();
+            let img = placed(
+                &vegetation,
+                width,
+                height,
                 Rgb([255, 255, 255]),
+                -dx as i64,
+                -dy as i64,
             );
-            image::imageops::overlay(&mut img, &orig_img.to_rgb8(), -dx as i64, -dy as i64);
-
-            img.write_to(
-                &mut fs
-                    .create(format!("{batchoutfolder}/{laz}_vege.png"))
-                    .expect("could not save output png"),
-                image::ImageFormat::Png,
-            )
-            .expect("could not save output png");
+            write_png(fs, format!("{batchoutfolder}/{laz}_vege.png"), &img);
 
             let mut pgw_file_out = fs
                 .create(format!("{batchoutfolder}/{laz}_vege.pgw"))
@@ -1202,68 +1201,30 @@ pub fn batch_process(
             drop(pgw_file_out);
 
             if vege_bitmode {
-                let mut orig_img_reader = image::ImageReader::new(
-                    fs.open(format!("temp{thread}/vegetation_bit.png"))
-                        .expect("Opening vegetation bit bit image failed"),
-                );
-                orig_img_reader.set_format(image::ImageFormat::Png);
-                orig_img_reader.no_limits();
-                let orig_img = orig_img_reader.decode().unwrap();
-                let mut img = GrayImage::from_pixel(
-                    ((maxx - minx) + 1.0) as u32,
-                    ((maxy - miny) + 1.0) as u32,
-                    Luma([0]),
-                );
-                image::imageops::overlay(&mut img, &orig_img.to_luma8(), -dx as i64, -dy as i64);
-                img.write_to(
-                    &mut fs
-                        .create(format!("{batchoutfolder}/{laz}_vege_bit.png"))
-                        .expect("could not save output png"),
-                    image::ImageFormat::Png,
-                )
-                .expect("could not save output png");
-
-                let mut orig_img_reader = image::ImageReader::new(
-                    fs.open(format!("temp{thread}/undergrowth_bit.png"))
-                        .expect("Opening undergrowth bit image failed"),
-                );
-                orig_img_reader.set_format(image::ImageFormat::Png);
-                orig_img_reader.no_limits();
-                let orig_img = orig_img_reader.decode().unwrap();
-                let mut img = GrayImage::from_pixel(
-                    ((maxx - minx) + 1.0) as u32,
-                    ((maxy - miny) + 1.0) as u32,
-                    Luma([0]),
-                );
-                image::imageops::overlay(&mut img, &orig_img.to_luma8(), -dx as i64, -dy as i64);
-                img.write_to(
-                    &mut fs
-                        .create(format!("{batchoutfolder}/{laz}_undergrowth_bit.png"))
-                        .expect("could not save output png"),
-                    image::ImageFormat::Png,
-                )
-                .expect("could not save output png");
-
-                fs.copy(
-                    format!("{batchoutfolder}/{laz}_vege.pgw"),
-                    format!("{batchoutfolder}/{laz}_vege_bit.pgw"),
-                )
-                .expect("Could not copy file");
-
-                fs.copy(
-                    format!("{batchoutfolder}/{laz}_vege.pgw"),
-                    format!("{batchoutfolder}/{laz}_undergrowth_bit.pgw"),
-                )
-                .expect("Could not copy file");
+                let bits = rasters
+                    .bits
+                    .as_ref()
+                    .expect("vege_bitmode draws the one-channel rasters");
+                for (name, bit) in [
+                    ("vege_bit", &bits.vegetation.to_luma8()),
+                    ("undergrowth_bit", &rasters.undergrowth_bit),
+                ] {
+                    let img = placed(bit, width, height, Luma([0]), -dx as i64, -dy as i64);
+                    write_png(fs, format!("{batchoutfolder}/{laz}_{name}.png"), &img);
+                    fs.copy(
+                        format!("{batchoutfolder}/{laz}_vege.pgw"),
+                        format!("{batchoutfolder}/{laz}_{name}.pgw"),
+                    )
+                    .expect("Could not copy file");
+                }
             }
         }
 
-        // the .dxf.bin crops: the batch merge's input for the merged DXF, and with the
-        // dxf family each tile's DXF crop. The .dxf.bin crops are removed after the
-        // batch unless debug_intermediates=1 (remove_batch_intermediates); contours03,
-        // which the merge does not read, and detected, the knoll rings, are debug
-        // only.
-        if outputs.dxf || debug_intermediates {
+        // the terrain's and the cliffs' crops, after the map that draws them
+        if dxf_crops {
+            let TileValues {
+                terrain, cliffs, ..
+            } = values;
             // the terrain and the cliffs are consumed here, without a copy
             if let Some(Terrain {
                 contours,
@@ -1271,63 +1232,17 @@ pub fn batch_process(
                 form_lines,
             }) = terrain
             {
-                let crop =
-                    crop::crop_polylines(contours.into_bindxf(), minx, miny, maxx, maxy).unwrap();
-                let output = format!("{batchoutfolder}/{laz}_contours.dxf.bin");
-                crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
-                let crop =
-                    crop::crop_points(dot_knolls.into_bindxf(), minx, miny, maxx, maxy).unwrap();
-                let output = format!("{batchoutfolder}/{laz}_dotknolls.dxf.bin");
-                crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
+                lines("contours", contours.into_bindxf());
+                let points = crop::crop_points(dot_knolls.into_bindxf(), minx, miny, maxx, maxy);
+                write("dotknolls", points);
                 if let Some(form_lines) = form_lines {
-                    let crop = crop::crop_polylines(form_lines.to_bindxf(), minx, miny, maxx, maxy)
-                        .unwrap();
-                    let output = format!("{batchoutfolder}/{laz}_formlines.dxf.bin");
-                    crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
+                    lines("formlines", form_lines.to_bindxf());
                 }
             }
             if let Some(cliffs) = cliffs {
                 let (passable, impassable) = cliffs.into_bindxf();
-                for (name, dxf) in [("c2g", passable), ("c3g", impassable)] {
-                    let crop = crop::crop_polylines(dxf, minx, miny, maxx, maxy).unwrap();
-                    let output = format!("{batchoutfolder}/{laz}_{name}.dxf.bin");
-                    crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
-                }
-            }
-            let dxf_files: &[&str] = if debug_intermediates {
-                &["contours03", "detected", "vegetation"]
-            } else {
-                &["vegetation"]
-            };
-            for dxf_file in dxf_files {
-                let dxf_path = PathBuf::from(format!("temp{thread}/{dxf_file}.dxf.bin"));
-                if fs.exists(&dxf_path) {
-                    crop::polylinebindxfcrop(
-                        fs,
-                        &dxf_path,
-                        Path::new(&format!("{batchoutfolder}/{laz}_{dxf_file}.dxf.bin")),
-                        outputs.dxf,
-                        minx,
-                        miny,
-                        maxx,
-                        maxy,
-                    )
-                    .unwrap();
-                }
-            }
-            let basemap_file = PathBuf::from(format!("temp{thread}/basemap.dxf.bin"));
-            if fs.exists(&basemap_file) {
-                crop::polylinebindxfcrop(
-                    fs,
-                    &basemap_file,
-                    Path::new(&format!("{batchoutfolder}/{laz}_basemap.dxf.bin")),
-                    outputs.dxf,
-                    minx,
-                    miny,
-                    maxx,
-                    maxy,
-                )
-                .unwrap();
+                lines("c2g", passable);
+                lines("c3g", impassable);
             }
         }
         // the tables (Config::vector_tables, the vector mapping's with shapefiles), cropped
@@ -1667,6 +1582,34 @@ mod test {
         write_tile_products(&again, &config, temp, &values).unwrap();
         prune_tile_folder(&again, temp, false, config.outputs, false, None).unwrap();
         assert_eq!(contents(&again, "temp"), contents(&fs, "temp"));
+    }
+
+    /// The batch crops the rendered map in memory: the same pixels as the PNG it used to
+    /// write, read back, convert to RGB and overlay, also where the map is translucent.
+    #[test]
+    fn the_map_crop_from_the_value_is_the_crop_of_the_written_png() {
+        let map = image::RgbaImage::from_fn(13, 9, |x, y| {
+            Rgba([
+                (x * 19) as u8,
+                (y * 27) as u8,
+                200,
+                ((x + y) * 23 % 256) as u8,
+            ])
+        });
+        let (width, height, x, y) = (10, 11, -4, 3);
+
+        let mut png = Vec::new();
+        map.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+            .unwrap()
+            .to_rgb8();
+        let mut old = RgbImage::from_pixel(width, height, Rgb([255, 255, 255]));
+        image::imageops::overlay(&mut old, &decoded, x, y);
+
+        let rgb: RgbImage = map.convert();
+        let new = placed(&rgb, width, height, Rgb([255, 255, 255]), x, y);
+        assert_eq!(new, old);
     }
 
     #[test]
