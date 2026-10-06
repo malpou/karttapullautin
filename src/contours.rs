@@ -678,6 +678,244 @@ fn check_obj_in(
     }
 }
 
+/// [`grid2contours`] in one scan of the grid: each cell emits its segments for every
+/// level between its lowest and highest corner, into one list per level, and each
+/// level's list is then joined into lines as before. A level's segments come in the same
+/// cell order as in the level-by-level scan, so the result is the same `Vec<Contour>`,
+/// bit for bit and in the same order.
+///
+/// Each cell is split into two triangles along its diagonal from (i + 1, j) to (i, j + 1),
+/// so a saddle cell never has the four-crossing ambiguity of plain marching squares.
+pub fn grid2contours_single_pass(heightmap: &Vec2D<f64>, cinterval: f64) -> Vec<Contour> {
+    let v = cinterval;
+
+    // move heights within 2 cm of a level off it (see grid2contours)
+    let mut avg_alt = heightmap.clone();
+    for (_, _, ele) in avg_alt.iter_mut() {
+        *ele = nudge_off_level(*ele, v, 0.02);
+    }
+
+    let mut hmin: f64 = f64::MAX;
+    let mut hmax: f64 = f64::MIN;
+    for (_, _, h) in avg_alt.iter() {
+        if h < hmin {
+            hmin = h;
+        }
+        if h > hmax {
+            hmax = h;
+        }
+    }
+
+    // the levels grid2contours steps through, drift included: the segments are
+    // computed at these values, and each line is labelled with its snapped level
+    let mut levels = Vec::new();
+    let mut level: f64 = (hmin / v).ceil() * v;
+    while level < hmax {
+        levels.push(level);
+        level += v;
+    }
+
+    // the segments of each level, in cell order
+    let mut segments: Vec<Vec<[f64; 4]>> = vec![Vec::new(); levels.len()];
+    for i in 0..(avg_alt.width() - 1) {
+        for j in 0..(avg_alt.height() - 1) {
+            let a = avg_alt[(i, j)];
+            let b = avg_alt[(i, j + 1)];
+            let c = avg_alt[(i + 1, j)];
+            let d = avg_alt[(i + 1, j + 1)];
+
+            // the levels grid2contours does not skip at this cell: those not above all
+            // corners nor below all of them. A NaN corner is neither, so no level is
+            // skipped, though only levels between two other corners give segments.
+            let range = if a.is_nan() || b.is_nan() || c.is_nan() || d.is_nan() {
+                0..levels.len()
+            } else {
+                let lo = a.min(b).min(c).min(d);
+                let hi = a.max(b).max(c).max(d);
+                levels.partition_point(|&l| l < lo)..levels.partition_point(|&l| l <= hi)
+            };
+            if range.is_empty() {
+                continue;
+            }
+
+            // the 5 cm nudge grid2contours makes per level does not depend on the level
+            let a = nudge_off_level(a, v, 0.05);
+            let b = nudge_off_level(b, v, 0.05);
+            let c = nudge_off_level(c, v, 0.05);
+            let d = nudge_off_level(d, v, 0.05);
+            for k in range {
+                let out = &mut segments[k];
+                cell_segments(
+                    i as f64,
+                    j as f64,
+                    [a, b, c, d],
+                    levels[k],
+                    |x1, x2, y1, y2| out.push([x1, x2, y1, y2]),
+                );
+            }
+        }
+    }
+
+    let mut contours = Vec::<Contour>::new();
+    let mut obj = Vec::<(i64, i64, u8)>::new();
+    let mut curves: HashMap<(i64, i64, u8), (i64, i64)> = HashMap::default();
+    for (level, segments) in levels.into_iter().zip(segments) {
+        obj.clear();
+        curves.clear();
+        for [x1, x2, y1, y2] in segments {
+            check_obj_in(&mut obj, &mut curves, x1, x2, y1, y2);
+        }
+        join_segments(&obj, &mut curves, |line| {
+            contours.push(Contour {
+                level_m: snap_level(level, v),
+                line,
+            })
+        });
+    }
+    contours
+}
+
+/// `h` moved to `eps` from the nearest multiple of `interval` when it is closer, keeping
+/// its side (exactly on it counts as above). NaN stays NaN.
+fn nudge_off_level(h: f64, interval: f64, eps: f64) -> f64 {
+    let temp: f64 = (h / interval + 0.5).floor() * interval;
+    if (h - temp).abs() < eps {
+        if h - temp < 0.0 {
+            temp - eps
+        } else {
+            temp + eps
+        }
+    } else {
+        h
+    }
+}
+
+/// The segments of `level` in the cell at (`i`, `j`) with (nudged) corner heights
+/// `[a, b, c, d]` at (i, j), (i, j + 1), (i + 1, j), (i + 1, j + 1), passed to `emit` as
+/// `(x1, x2, y1, y2)` in grid2contours' order: the segments leaving the edges a-b, a-c,
+/// c-d and d-b in turn, each ending on the other side of its triangle (a-b-c or b-c-d).
+fn cell_segments(
+    i: f64,
+    j: f64,
+    [a, b, c, d]: [f64; 4],
+    level: f64,
+    mut emit: impl FnMut(f64, f64, f64, f64),
+) {
+    if a < b {
+        if level < b && level > a {
+            let x1: f64 = i;
+            let y1: f64 = j + (level - a) / (b - a);
+            if level > c {
+                emit(x1, i + (b - level) / (b - c), y1, j + (level - c) / (b - c));
+            } else if level < c {
+                emit(x1, i + (level - a) / (c - a), y1, j);
+            }
+        }
+    } else if b < a && level < a && level > b {
+        let x1: f64 = i;
+        let y1: f64 = j + (a - level) / (a - b);
+        if level < c {
+            emit(x1, i + (level - b) / (c - b), y1, j + (c - level) / (c - b));
+        } else if level > c {
+            emit(x1, i + (a - level) / (a - c), y1, j);
+        }
+    }
+
+    if a < c {
+        if level < c && level > a {
+            let x1: f64 = i + (level - a) / (c - a);
+            let y1: f64 = j;
+            if level > b {
+                emit(x1, i + (level - b) / (c - b), y1, j + (c - level) / (c - b));
+            }
+        }
+    } else if a > c && level < a && level > c {
+        let x1: f64 = i + (a - level) / (a - c);
+        let y1: f64 = j;
+        if level < b {
+            emit(x1, i + (b - level) / (b - c), y1, j + (level - c) / (b - c));
+        }
+    }
+
+    if c < d {
+        if level < d && level > c {
+            let x1: f64 = i + 1.0;
+            let y1: f64 = j + (level - c) / (d - c);
+            if level < b {
+                emit(x1, i + (b - level) / (b - c), y1, j + (level - c) / (b - c));
+            } else if level > b {
+                emit(x1, i + (level - b) / (d - b), y1, j + 1.0);
+            }
+        }
+    } else if c > d && level < c && level > d {
+        let x1: f64 = i + 1.0;
+        let y1: f64 = j + (c - level) / (c - d);
+        if level > b {
+            emit(x1, i + (level - b) / (c - b), y1, j + (c - level) / (c - b));
+        } else if level < b {
+            emit(x1, i + (b - level) / (b - d), y1, j + 1.0);
+        }
+    }
+
+    if d < b {
+        if level < b && level > d {
+            let x1: f64 = i + (b - level) / (b - d);
+            let y1: f64 = j + 1.0;
+            if level > c {
+                emit(x1, i + (b - level) / (b - c), y1, j + (level - c) / (b - c));
+            }
+        }
+    } else if b < d && level < d && level > b {
+        let x1: f64 = i + (level - b) / (d - b);
+        let y1: f64 = j + 1.0;
+        if level < c {
+            emit(x1, i + (level - b) / (c - b), y1, j + (c - level) / (c - b));
+        }
+    }
+}
+
+/// Join one level's segments, keyed by [`check_obj_in`] (`obj` in insertion order), into
+/// lines, passing each to `emit` in grid coordinates. Consumes `curves`.
+fn join_segments(
+    obj: &[(i64, i64, u8)],
+    curves: &mut HashMap<(i64, i64, u8), (i64, i64)>,
+    mut emit: impl FnMut(Vec<Point2>),
+) {
+    let point = |(x, y): (i64, i64)| Point2::new(x as f64 / 100.0, y as f64 / 100.0);
+    // drop the edge from `head` back to `res`, under either slot
+    let drop_back = |curves: &mut HashMap<_, (i64, i64)>, head: (i64, i64), res: (i64, i64)| {
+        for slot in [1, 2] {
+            if curves.get(&(head.0, head.1, slot)) == Some(&res) {
+                curves.remove(&(head.0, head.1, slot));
+            }
+        }
+    };
+    for k in obj {
+        let Some(&next) = curves.get(k) else {
+            continue;
+        };
+        let mut res = (k.0, k.1);
+        let mut polyline = vec![point(res), point(next)];
+        curves.remove(k);
+        let mut head = next;
+        drop_back(curves, head, res);
+        loop {
+            let slot = [1, 2]
+                .into_iter()
+                .find(|&s| curves.get(&(head.0, head.1, s)).is_some_and(|v| *v != res));
+            let Some(slot) = slot else {
+                emit(polyline);
+                break;
+            };
+            res = head;
+            let next = curves.remove(&(head.0, head.1, slot)).unwrap();
+            polyline.push(point(next));
+            head = next;
+            drop_back(curves, head, res);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::contours;
@@ -1125,5 +1363,159 @@ mod tests {
             }
         }
         assert!(zero > 0, "the old lookup found every level");
+    }
+
+    /// The single-pass tracer gives what the level-by-level one gives, bit for bit and in
+    /// the same order.
+    fn assert_same_trace(g: &Vec2D<f64>, interval: f64) -> Vec<Contour> {
+        let old = grid2contours(g, interval);
+        let new = grid2contours_single_pass(g, interval);
+        assert_eq!(new.len(), old.len(), "line count at interval {interval}");
+        for (k, (n, o)) in new.iter().zip(&old).enumerate() {
+            assert_eq!(n, o, "line {k} at interval {interval}");
+        }
+        new
+    }
+
+    #[test]
+    fn single_pass_traces_a_cone_as_closed_rings_like_the_level_scan() {
+        let g = grid(21, 21, cone(10.0, 9.5));
+        let contours = assert_same_trace(&g, 1.0);
+        for level in 0..=9 {
+            let rings: Vec<_> = contours
+                .iter()
+                .filter(|c| c.level_m == level as f64)
+                .collect();
+            assert_eq!(rings.len(), 1, "one ring at level {level}");
+            assert!(
+                closed(&rings[0].line),
+                "the ring at level {level} is closed"
+            );
+        }
+        // stepping by 0.3 drifts; the lines carry the snapped levels all the same
+        for interval in [0.3, 0.7, 2.5, 5.0] {
+            assert_same_trace(&g, interval);
+        }
+    }
+
+    #[test]
+    fn single_pass_traces_a_plane_as_straight_lines_like_the_level_scan() {
+        let contours = assert_same_trace(&grid(12, 6, |x, y| 0.5 * x + 0.2 * y + 0.1), 1.0);
+        // the walk from a line's first segment only goes one way, so a line can come in
+        // pieces (joined later); every piece is open and on the plane
+        let mut levels: Vec<f64> = contours.iter().map(|c| c.level_m).collect();
+        levels.dedup();
+        assert_eq!(levels, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        for c in &contours {
+            assert!(!closed(&c.line));
+            for p in &c.line {
+                assert!((0.5 * p.x + 0.2 * p.y + 0.1 - c.level_m).abs() < 0.06);
+            }
+        }
+    }
+
+    /// At the saddle level the saddle point is a grid value; it is moved 2 cm above the
+    /// level, so the two low wedges stay apart: the level's lines (in pieces, see the
+    /// plane) do not cross, each stays on one side of the saddle, and both sides have one.
+    #[test]
+    fn single_pass_keeps_the_saddle_topology_of_the_level_scan() {
+        let g = grid(21, 21, |x, y| {
+            ((x - 10.0).powi(2) - (y - 10.0).powi(2)) / 10.0
+        });
+        let contours = assert_same_trace(&g, 1.0);
+        let at_saddle: Vec<_> = contours.iter().filter(|c| c.level_m == 0.0).collect();
+        let below = |c: &&Contour| c.line.iter().all(|p| p.y < 10.0);
+        let above = |c: &&Contour| c.line.iter().all(|p| p.y > 10.0);
+        assert!(
+            at_saddle
+                .iter()
+                .all(|c| !closed(&c.line) && (below(c) || above(c)))
+        );
+        assert!(at_saddle.iter().any(below) && at_saddle.iter().any(above));
+        assert_same_trace(&g, 0.25);
+    }
+
+    /// A NaN cell has no segments of its own, but the cells around it still trace
+    /// between their other corners.
+    #[test]
+    fn single_pass_traces_around_nan_holes_like_the_level_scan() {
+        let mut g = grid(25, 25, cone(12.0, 11.0));
+        for (i, j) in [
+            (3, 3),
+            (12, 12),
+            (12, 13),
+            (13, 12),
+            (20, 5),
+            (0, 24),
+            (24, 0),
+        ] {
+            g[(i, j)] = f64::NAN;
+        }
+        for i in 5..9 {
+            g[(i, 17)] = f64::NAN;
+        }
+        for interval in [0.3, 1.0, 2.5] {
+            assert!(!assert_same_trace(&g, interval).is_empty());
+        }
+        assert!(assert_same_trace(&Vec2D::new(4, 4, f64::NAN), 1.0).is_empty());
+    }
+
+    /// Grid values exactly on a level are moved off it (2 cm, then 5 cm per cell) before
+    /// tracing, in both tracers.
+    #[test]
+    fn single_pass_matches_the_level_scan_on_levels_at_grid_values() {
+        let g = grid(15, 15, |x, y| ((x * 7.0 + y * 3.0) % 11.0).floor());
+        for interval in [0.5, 1.0, 2.0] {
+            let contours = assert_same_trace(&g, interval);
+            assert!(!contours.is_empty());
+            assert!(
+                contours
+                    .iter()
+                    .all(|c| c.level_m == (c.level_m / interval).round() * interval)
+            );
+        }
+        assert!(assert_same_trace(&Vec2D::new(5, 5, 0.0), 1.0).is_empty());
+        let mut g = Vec2D::new(5, 5, 0.0);
+        g[(2, 2)] = 1.1;
+        assert_eq!(assert_same_trace(&g, 1.0).len(), 1);
+    }
+
+    /// Random smooth surfaces (a few sine waves), some heights rounded onto a level and
+    /// some NaN: the two tracers agree on every one. Seeded, so the run is deterministic.
+    #[test]
+    fn single_pass_matches_the_level_scan_on_random_smooth_grids() {
+        use rand::prelude::*;
+        let mut rng = StdRng::seed_from_u64(282);
+        for _ in 0..40 {
+            let (w, h) = (rng.random_range(2..60), rng.random_range(2..60));
+            let interval = [0.3, 0.5, 1.0, 1.25, 2.5, 5.0][rng.random_range(0..6)];
+            let waves: Vec<[f64; 4]> = (0..3)
+                .map(|_| {
+                    [
+                        rng.random_range(0.5..15.0),
+                        rng.random_range(0.02..0.5),
+                        rng.random_range(0.02..0.5),
+                        rng.random_range(0.0..6.3),
+                    ]
+                })
+                .collect();
+            let base = rng.random_range(-50.0..300.0);
+            let mut g = grid(w, h, |x, y| {
+                base + waves
+                    .iter()
+                    .map(|[amp, fx, fy, phase]| amp * (fx * x + fy * y + phase).sin())
+                    .sum::<f64>()
+            });
+            for _ in 0..(w * h / 10) {
+                let p = (rng.random_range(0..w), rng.random_range(0..h));
+                g[p] = (g[p] / interval).round() * interval;
+            }
+            if rng.random_bool(0.3) {
+                for _ in 0..rng.random_range(1..5) {
+                    g[(rng.random_range(0..w), rng.random_range(0..h))] = f64::NAN;
+                }
+            }
+            assert_same_trace(&g, interval);
+        }
     }
 }

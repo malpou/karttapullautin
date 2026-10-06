@@ -1002,3 +1002,80 @@ fn assert_batch_merge(out: &Path) {
         assert!(dxf.contains(&format!("  8\r\n{code}\r\n")), "{code}");
     }
 }
+
+/// Best of three wall-clock runs of `f`, in milliseconds, and its result.
+fn best_of_three<T>(mut f: impl FnMut() -> T) -> (f64, T) {
+    let mut best = f64::MAX;
+    let mut out = None;
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        let r = f();
+        best = best.min(t.elapsed().as_secs_f64() * 1e3);
+        out = Some(r);
+    }
+    (best, out.unwrap())
+}
+
+/// Trace `grid` at `interval` with the level-by-level and the single-pass tracer: the
+/// same contours, bit for bit and in order. Prints both timings (run with --release and
+/// --nocapture for meaningful numbers).
+fn assert_tracers_agree(name: &str, grid: &pullauta::vec2d::Vec2D<f64>, interval: f64) {
+    use pullauta::contours::{grid2contours, grid2contours_single_pass};
+    let (old_ms, old) = best_of_three(|| grid2contours(grid, interval));
+    let (new_ms, new) = best_of_three(|| grid2contours_single_pass(grid, interval));
+    assert!(!old.is_empty(), "{name} at {interval} m traced nothing");
+    assert!(old == new, "{name} at {interval} m: the tracers differ");
+    let vertices: usize = old.iter().map(|c| c.line.len()).sum();
+    eprintln!(
+        "{name} {}x{} at {interval} m: {} lines, {vertices} vertices; \
+         level scan {old_ms:.1} ms, single pass {new_ms:.1} ms ({:.1}x)",
+        grid.width(),
+        grid.height(),
+        old.len(),
+        old_ms / new_ms
+    );
+}
+
+/// The single-pass tracer gives the level-by-level tracer's contours on the regression
+/// tile's ground model (xyz2.hmap, the knoll candidates' 0.3 m) and lifted ground model
+/// (xyz_knolls.hmap, the 2.5 m trace interval of the default 5 m map with form lines).
+#[test]
+#[ignore]
+fn single_pass_tracer_matches_on_the_regression_ground_model() {
+    use pullauta::io::heightmap::HeightMap;
+    let dir = run_single_job("e2e-tracer", &[("debug_intermediates", "1")]);
+    let ground = HeightMap::from_file(
+        &pullauta::io::fs::local::LocalFileSystem,
+        dir.join("temp/xyz2.hmap"),
+    )
+    .unwrap();
+    let lifted = HeightMap::from_file(
+        &pullauta::io::fs::local::LocalFileSystem,
+        dir.join("temp/xyz_knolls.hmap"),
+    )
+    .unwrap();
+    for interval in [0.3, 1.25, 2.5, 5.0] {
+        assert_tracers_agree("xyz2.hmap", &ground.grid, interval);
+    }
+    assert_tracers_agree("xyz_knolls.hmap", &lifted.grid, 2.5);
+}
+
+/// The two tracers on a synthetic 1000 x 1000 grid (rolling hills over a slope, 0 to
+/// about 130 m), at the 2.5 m trace interval and the 0.3 m knoll candidate interval.
+#[test]
+#[ignore]
+fn single_pass_tracer_matches_on_a_large_synthetic_grid() {
+    let mut grid = pullauta::vec2d::Vec2D::new(1000, 1000, 0.0);
+    for i in 0..1000 {
+        for j in 0..1000 {
+            let (x, y) = (i as f64, j as f64);
+            grid[(i, j)] = 0.05 * x
+                + 0.03 * y
+                + 20.0 * (x / 70.0).sin() * (y / 90.0).cos()
+                + 3.0 * (x / 13.0 + y / 17.0).sin();
+        }
+    }
+    for interval in [2.5, 0.3] {
+        assert_tracers_agree("synthetic", &grid, interval);
+    }
+}
