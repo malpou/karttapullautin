@@ -909,20 +909,210 @@ const EPSG: &str = "3067";
 
 /// Check the GeoJSON `crs` member names [`EPSG`].
 fn assert_crs(path: &Path) {
+    assert_crs_is(path, Some(EPSG));
+}
+
+/// Check the GeoJSON `crs` member names `epsg`, or that there is none.
+fn assert_crs_is(path: &Path, epsg: Option<&str>) {
     let val: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(
-        val["crs"]["properties"]["name"],
-        format!("urn:ogc:def:crs:EPSG::{EPSG}"),
-        "{}",
-        path.display()
-    );
+    match epsg {
+        Some(epsg) => assert_eq!(
+            val["crs"]["properties"]["name"],
+            format!("urn:ogc:def:crs:EPSG::{epsg}"),
+            "{}",
+            path.display()
+        ),
+        None => assert!(val.get("crs").is_none(), "{}", path.display()),
+    }
 }
 
 /// Check the GDAL sidecar `<raster>.aux.xml` names [`EPSG`].
 fn assert_raster_crs(raster: &Path) {
-    let path = PathBuf::from(format!("{}.aux.xml", raster.display()));
-    let xml = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    assert!(xml.contains(&format!("<SRS>EPSG:{EPSG}</SRS>")), "{xml}");
+    assert_sidecar_names(
+        &PathBuf::from(format!("{}.aux.xml", raster.display())),
+        EPSG,
+    );
+}
+
+/// Check the GDAL sidecar at `path` names `epsg`.
+fn assert_sidecar_names(path: &Path, epsg: &str) {
+    let xml = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(xml.contains(&format!("<SRS>EPSG:{epsg}</SRS>")), "{xml}");
+}
+
+/// ETRS89 / UTM zone 35N as OGC WKT1. On ETRS89 the regression tile's TM35FIN
+/// coordinates are UTM 35N ones (same projection, TM35FIN only extends the zone), so the
+/// declaration is true; the code differs from the GeoTIFF keys' 3067, so an output naming
+/// it was read from the WKT record.
+const WKT_25835: &str = r#"PROJCS["ETRS89 / UTM zone 35N",GEOGCS["ETRS89",DATUM["European_Terrestrial_Reference_System_1989",SPHEROID["GRS 1980",6378137,298.257222101,AUTHORITY["EPSG","7019"]],AUTHORITY["EPSG","6258"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4258"]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",27],PARAMETER["scale_factor",0.9996],PARAMETER["false_easting",500000],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["EPSG","25835"]]"#;
+
+/// Side of the square, centred on the regression tile, that [`write_las14_tile`] keeps.
+const LAS14_SIDE: f64 = 500.0;
+
+/// Write to `dest` a LAS 1.4 tile (point format 6) of the regression tile's points within
+/// a [`LAS14_SIDE`] square at its centre, whose only VLR is the WKT CRS record (2112)
+/// holding `wkt`, or with no VLR at all: no GeoTIFF keys either way. Built at test time
+/// from the downloaded tile, so no fixture is committed.
+fn write_las14_tile(dest: &Path, wkt: Option<&str>) {
+    let mut reader = las::Reader::from_path(input("test_file.laz")).unwrap();
+    let source = reader.header().clone();
+    let b = source.bounds();
+    let (cx, cy) = ((b.min.x + b.max.x) / 2.0, (b.min.y + b.max.y) / 2.0);
+    let half = LAS14_SIDE / 2.0;
+
+    let mut builder = las::Builder::from((1, 4));
+    builder.point_format = las::point::Format::new(6).unwrap();
+    builder.transforms = *source.transforms();
+    builder.has_wkt_crs = true;
+    builder.vlrs = wkt
+        .map(|wkt| las::Vlr {
+            user_id: "LASF_Projection".into(),
+            record_id: 2112,
+            description: "OGC coordinate system WKT".into(),
+            data: [wkt.as_bytes(), b"\0"].concat(),
+        })
+        .into_iter()
+        .collect();
+    let mut writer = las::Writer::from_path(dest, builder.into_header().unwrap()).unwrap();
+    let mut chunk = las::PointDataBuilder::new().for_header(&source).build();
+    while reader.fill_points(1 << 20, &mut chunk).unwrap() > 0 {
+        for point in chunk.points() {
+            let mut point = point.unwrap();
+            if (point.x - cx).abs() > half || (point.y - cy).abs() > half {
+                continue;
+            }
+            point.gps_time = Some(point.gps_time.unwrap_or_default());
+            point.color = None;
+            writer.write_point(point).unwrap();
+        }
+    }
+    writer.close().unwrap();
+}
+
+/// Every `.geojson` and every `.aux.xml` file under `dir`.
+fn crs_carriers(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let all = files(dir);
+    let with = |suffix: &str| -> Vec<PathBuf> {
+        all.iter()
+            .filter(|p| p.to_string_lossy().ends_with(suffix))
+            .cloned()
+            .collect()
+    };
+    (with(".geojson"), with(".aux.xml"))
+}
+
+/// `paths` relative to `dir`.
+fn relative_names(dir: &Path, paths: &[PathBuf]) -> BTreeSet<String> {
+    paths
+        .iter()
+        .map(|p| p.strip_prefix(dir).unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Single job on a LAS 1.4 tile whose CRS is only the WKT record naming EPSG:25835:
+/// every GeoJSON table and both map sidecars declare 25835.
+#[test]
+#[ignore]
+fn single_job_declares_the_las14_wkt_crs() {
+    let dir = run_dir("e2e-las14-wkt-single");
+    write_las14_tile(&dir.join("tile.las"), Some(WKT_25835));
+    write_ini(&dir, &[]);
+    run_pullauta(&dir, &["tile.las"]);
+
+    // the crop is real terrain
+    feature_collection(&table_path(&dir.join("temp"), IsomTable::Contours));
+    let (tables, sidecars) = crs_carriers(&dir);
+    assert_eq!(tables.len(), 4, "{tables:?}");
+    for path in &tables {
+        assert_crs_is(path, Some("25835"));
+    }
+    assert_eq!(
+        relative_names(&dir, &sidecars),
+        ["pullautus.png.aux.xml", "pullautus_depr.png.aux.xml"]
+            .map(String::from)
+            .into()
+    );
+    for path in &sidecars {
+        assert_sidecar_names(path, "25835");
+    }
+}
+
+/// Single job on a LAS 1.4 tile with no CRS record and `epsg` unset: no GeoJSON table
+/// has a `crs` member and no sidecar is written.
+#[test]
+#[ignore]
+fn single_job_without_a_crs_declares_none() {
+    let dir = run_dir("e2e-las14-none-single");
+    write_las14_tile(&dir.join("tile.las"), None);
+    write_ini(&dir, &[]);
+    run_pullauta(&dir, &["tile.las"]);
+
+    let (tables, sidecars) = crs_carriers(&dir);
+    assert_eq!(tables.len(), 4, "{tables:?}");
+    for path in &tables {
+        assert_crs_is(path, None);
+    }
+    assert!(sidecars.is_empty(), "{sidecars:?}");
+}
+
+/// Batch with `batchmerge=1` on the LAS 1.4 WKT tile: every GeoJSON file (per tile,
+/// merged, combined) and every map sidecar (tile and merged rasters) declares 25835.
+#[test]
+#[ignore]
+fn batch_declares_the_las14_wkt_crs() {
+    let dir = run_dir("e2e-las14-wkt-batch");
+    for sub in ["in", "out"] {
+        std::fs::create_dir(dir.join(sub)).unwrap();
+    }
+    write_las14_tile(&dir.join("in/tile.las"), Some(WKT_25835));
+    write_ini(&dir, &[("batch", "1"), ("batchmerge", "1")]);
+    run_pullauta(&dir, &[]);
+
+    // the terrain and vegetation tables per tile and merged; every table combined (the
+    // OSM ones empty without a vectorconf)
+    let (tables, sidecars) = crs_carriers(&dir);
+    assert_eq!(tables.len(), 4 + 4 + IsomTable::ALL.len(), "{tables:?}");
+    for path in &tables {
+        assert_crs_is(path, Some("25835"));
+    }
+    let names = relative_names(&dir, &sidecars);
+    for name in [
+        "out/tile.png.aux.xml",
+        "out/tile_depr.png.aux.xml",
+        "out/merged.png.aux.xml",
+        "out/merged.jpg.aux.xml",
+        "out/merged_depr.png.aux.xml",
+    ] {
+        assert!(names.contains(name), "no {name} in {names:?}");
+    }
+    for path in &sidecars {
+        assert_sidecar_names(path, "25835");
+    }
+}
+
+/// A batch whose tiles name different EPSG codes (the LAS 1.4 tile's WKT 25835, the
+/// regression tile's GeoTIFF 3067) is refused before any tile is processed.
+#[test]
+#[ignore]
+fn batch_refuses_tiles_declaring_different_crs() {
+    let dir = run_dir("e2e-las14-disagree-batch");
+    for sub in ["in", "out"] {
+        std::fs::create_dir(dir.join(sub)).unwrap();
+    }
+    write_las14_tile(&dir.join("in/a.las"), Some(WKT_25835));
+    std::fs::copy(input("test_file.laz"), dir.join("in/b.laz")).unwrap();
+    write_ini(&dir, &[("batch", "1"), ("batchmerge", "1")]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pullauta"))
+        .current_dir(&dir)
+        .env("RUST_LOG", "warn")
+        .output()
+        .expect("failed to execute pullauta");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("b.laz declares EPSG:3067"), "{stderr}");
+    assert!(stderr.contains("do not all declare EPSG:25835"), "{stderr}");
+    assert!(files(&dir.join("out")).is_empty());
 }
 
 /// Check the batch output folder after `batchmerge=1`: every table cropped per tile,
