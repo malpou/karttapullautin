@@ -11,11 +11,12 @@ use serde_json::{Value, json};
 
 use crate::cliffs::CliffSet;
 use crate::config::Outputs;
+use crate::formlines::FormLineSelection;
 use crate::geometry::{BinaryDxf, Classification, Geometry, Point2, Point3, Points, Polylines};
 use crate::io::fs::FileSystem;
 use crate::isom::{IsomCode, IsomTable, SymbolGeometry};
 use crate::knolls::DotKnollSet;
-use crate::mapframe::{IsomMinima, MapFrame};
+use crate::mapframe::{GroundMinima, MapFrame};
 use crate::merge::ContourSet;
 use crate::plan::Rect;
 use crate::validity;
@@ -66,7 +67,7 @@ pub const COMBINED_CRT: &str = "output.ocdCrt";
 pub enum Source {
     /// Contours, index contours and slope lines: smoothjoin's [`ContourSet`].
     Contours,
-    /// The renderer's form lines (103.000), from `formlines.dxf.bin`.
+    /// The form lines (103.000): the [`FormLineSelection`].
     FormLines,
     /// Knoll and small depression points (109.000, 111.000): the [`DotKnollSet`].
     Knolls,
@@ -124,7 +125,7 @@ fn coords_line<I: IntoIterator<Item = [f64; 2]>>(pts: I) -> Vec<Value> {
 /// line's z (the level a contour was traced at), is kept only in the contours table.
 /// None for a classification the vector output leaves out: the knoll-detector
 /// artifact, which has no symbol code, and the half-interval lines, which the style
-/// would draw as form lines; the form lines are the renderer's selection of them
+/// would draw as form lines; the form lines are the form-line selection of them
 /// ([`Source::FormLines`]).
 fn terrain_properties(
     c: Classification,
@@ -505,6 +506,18 @@ pub fn write_cliff_tables(
     write_tables(fs, folder, Source::Cliffs, features, epsg)
 }
 
+/// Write the form lines ([`Source::FormLines`]) into the tables in `folder`, as
+/// [`bindxf_to_tables`] writes them from `formlines.dxf.bin`.
+pub fn write_form_line_tables(
+    fs: &impl FileSystem,
+    folder: &Path,
+    form_lines: &FormLineSelection,
+    epsg: Option<u32>,
+) -> anyhow::Result<()> {
+    let features = line2_features(&form_lines.lines).collect();
+    write_tables(fs, folder, Source::FormLines, features, epsg)
+}
+
 /// The features of one terrain geometry, in its order: polylines become LineStrings and
 /// points become Points, each with the properties of its classification (see
 /// [`terrain_properties`]; a 3D line keeps its level). Records the vector output leaves
@@ -557,7 +570,7 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 // export, after the per-tile outputs are merged: the knolls that survive spacing are
 // only known then, across tile edges.
 
-// ISOM 2017-2 minimum dimensions for contours ([`IsomMinima`], in ground metres). The
+// ISOM 2017-2 minimum dimensions for contours ([`GroundMinima`]). The
 // standard specifies them on the 1:15,000 original, ground metres = mm x 15 there: the
 // smallest bend that can be drawn is 0.25 mm centre to centre (3.75 m) and the mouth of
 // a re-entrant or spur must be wider than 0.5 mm (7.5 m). The wider bound subsumes the
@@ -581,8 +594,8 @@ fn seg_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 /// neck along its length; together they guarantee nothing is removed that reaches beyond
 /// what the symbol's own minimum dimension can carry. A closed ring is protected from
 /// being consumed whole by requiring the kept remainder to stay above the same bound.
-fn generalise_contour(pts: &[[f64; 2]], minima: &IsomMinima) -> Vec<[f64; 2]> {
-    let mouth = minima.contour_mouth;
+fn generalise_contour(pts: &[[f64; 2]], minima: &GroundMinima) -> Vec<[f64; 2]> {
+    let mouth = minima.contour_mouth_m;
     if pts.len() < 4 {
         return pts.to_vec();
     }
@@ -599,7 +612,7 @@ fn generalise_contour(pts: &[[f64; 2]], minima: &IsomMinima) -> Vec<[f64; 2]> {
         // the furthest vertex that comes back within the minimum mouth on a short detour
         let mut jump = None;
         let mut j = i + 1;
-        while j < pts.len() && cum[j] - cum[i] <= minima.contour_max_detour {
+        while j < pts.len() && cum[j] - cum[i] <= minima.contour_max_detour_m {
             let along = cum[j] - cum[i];
             if along > mouth
                 && along < total - mouth
@@ -621,7 +634,7 @@ fn generalise_contour(pts: &[[f64; 2]], minima: &IsomMinima) -> Vec<[f64; 2]> {
 /// that "contours shall be adapted or broken in order not to touch" them. The knoll's
 /// position is the whole information the symbol carries, so the contour is the side that
 /// gives way. 109 is a 0.4 mm dot on the 1:15,000 original (a 6 m footprint, 3 m radius)
-/// plus half a contour width of air: `clearance`, [`IsomMinima::knoll_clearance`] (3.5 m).
+/// plus half a contour width of air: `clearance`, [`GroundMinima::knoll_clearance_m`] (3.5 m).
 ///
 /// Break a contour into the pieces that stay clear of the knoll symbols, dropping any
 /// piece too short to be a line.
@@ -665,7 +678,7 @@ fn conform_contour(
     code: IsomCode,
     pts: &[[f64; 2]],
     knolls: &[[f64; 2]],
-    minima: &IsomMinima,
+    minima: &GroundMinima,
 ) -> Vec<Vec<[f64; 2]>> {
     if !is_contour_family(code) {
         return vec![pts.to_vec()];
@@ -673,21 +686,20 @@ fn conform_contour(
     break_at_knolls(
         &generalise_contour(pts, minima),
         knolls,
-        minima.knoll_clearance,
+        minima.knoll_clearance_m,
     )
 }
-
-/// ISOM 109/110/111 point symbols must not touch or overlap each other either (12 m
-/// footprint length).
-const POINT_MIN_SPACING_M: f64 = 12.0;
 
 /// The knoll and small depression point symbols that survive to the map: the Point
 /// features of a `knolls_points` table through a greedy spacing
 /// filter ranked by certainty, so the detector's definite symbols win over the `ugly`
-/// ones when two candidates are closer than the minimum. A missing file has none.
+/// ones when two candidates are closer than `spacing_m`. ISOM 109/110/111 point symbols
+/// must not touch or overlap each other either: [`GroundMinima::point_spacing_m`], their
+/// footprint (12 m at 1:10 000 and 1:15 000). A missing file has none.
 pub(crate) fn published_knolls(
     fs: &impl FileSystem,
     path: &std::path::Path,
+    spacing_m: f64,
 ) -> anyhow::Result<Vec<([f64; 2], geojson_types::KnollProperties)>> {
     if !fs.exists(path) {
         return Ok(Vec::new());
@@ -707,18 +719,19 @@ pub(crate) fn published_knolls(
             }
         })
         .collect();
-    Ok(space_knolls(candidates))
+    Ok(space_knolls(candidates, spacing_m))
 }
 
 /// The greedy spacing filter of [`published_knolls`], definite before `ugly`.
 fn space_knolls(
     mut candidates: Vec<([f64; 2], geojson_types::KnollProperties)>,
+    spacing_m: f64,
 ) -> Vec<([f64; 2], geojson_types::KnollProperties)> {
     // stable: definite first, each group in input order
     candidates.sort_by_key(|(_, props)| props.ugly == Some(true));
     let mut kept: Vec<([f64; 2], geojson_types::KnollProperties)> = Vec::new();
     for (p, props) in candidates {
-        if kept.iter().all(|(k, _)| dist(*k, p) >= POINT_MIN_SPACING_M) {
+        if kept.iter().all(|(k, _)| dist(*k, p) >= spacing_m) {
             kept.push((p, props));
         }
     }
@@ -1020,7 +1033,7 @@ fn published_pieces(
     pts: &[[f64; 2]],
     closed: bool,
     knolls: &[[f64; 2]],
-    minima: &IsomMinima,
+    minima: &GroundMinima,
 ) -> Vec<Vec<[f64; 2]>> {
     conform_contour(code, pts, knolls, minima)
         .into_iter()
@@ -1028,7 +1041,7 @@ fn published_pieces(
             let still_closed = closed && piece.first() == piece.last();
             let sampled = curve_points(code, &piece, still_closed);
             if is_contour_family(code) {
-                break_at_knolls(&sampled, knolls, minima.knoll_clearance)
+                break_at_knolls(&sampled, knolls, minima.knoll_clearance_m)
             } else {
                 vec![sampled]
             }
@@ -1055,9 +1068,6 @@ fn smoothed(code: IsomCode, pts: &[[f64; 2]]) -> Vec<[f64; 2]> {
     sm.iter().map(|q| [q.x, q.y]).collect()
 }
 
-/// ISOM 202: minimum cliff length 0.6 mm => 9 m footprint at 1:15,000 (applied to 201
-/// as well). Shorter detector fragments are noise, not mappable cliffs.
-const CLIFF_MIN_LEN_M: f64 = 9.0;
 /// KP emits one ~3 m dash per detected steep cell; dashes within this distance belong
 /// to the same cliff face.
 const CLIFF_CLUSTER_DIST: f64 = 3.0;
@@ -1065,9 +1075,13 @@ const CLIFF_CLUSTER_DIST: f64 = 3.0;
 /// Chain KP's per-cell cliff dashes into cliff lines: cluster dash midpoints within
 /// CLIFF_CLUSTER_DIST, order each cluster as a greedy nearest-neighbour path from an
 /// extreme point refined with 2-opt (untangles the crossings greedy ordering leaves on
-/// sharply curved faces), and drop chains shorter than the ISOM minimum. Chains come
+/// sharply curved faces), and drop chains shorter than `min_length_m`. Chains come
 /// out in a fixed order (by cluster root), so the export is deterministic.
-fn chain_cliff_dashes(mids: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
+///
+/// ISOM 202's minimum cliff length is 0.6 mm, [`GroundMinima::cliff_length_m`] (9 m at
+/// 1:10 000 and 1:15 000), applied to 201 as well: shorter detector fragments are noise,
+/// not mappable cliffs.
+fn chain_cliff_dashes(mids: &[[f64; 2]], min_length_m: f64) -> Vec<Vec<[f64; 2]>> {
     // union-find over a coarse grid
     let mut parent: Vec<usize> = (0..mids.len()).collect();
     fn find(parent: &mut Vec<usize>, i: usize) -> usize {
@@ -1156,7 +1170,7 @@ fn chain_cliff_dashes(mids: &[[f64; 2]]) -> Vec<Vec<[f64; 2]>> {
         }
         let len: f64 = path.windows(2).map(|w| dist(w[0], w[1])).sum();
         // single-dash clusters have zero path length; use the dash length itself
-        if len.max(2.9) >= CLIFF_MIN_LEN_M {
+        if len.max(2.9) >= min_length_m {
             chains.push(path);
         }
     }
@@ -1218,7 +1232,7 @@ fn dxf_polyline(out: &mut String, layer: &str, pts: &[[f64; 2]], closed: bool, e
 /// `minima`, and the GeoJSON features are clipped to `bounds`, the extent of the merged
 /// tables, which the curves can overshoot.
 struct Combined {
-    minima: IsomMinima,
+    minima: GroundMinima,
     bounds: Rect,
     dxf: String,
     tables: HashMap<IsomTable, Vec<geojson_types::Feature>>,
@@ -1228,7 +1242,7 @@ struct Combined {
 }
 
 impl Combined {
-    fn new(minima: IsomMinima, bounds: Rect) -> Self {
+    fn new(minima: GroundMinima, bounds: Rect) -> Self {
         Self {
             minima,
             bounds,
@@ -1417,10 +1431,11 @@ pub fn export_combined(
 ) -> anyhow::Result<()> {
     use geojson_types::FeatureProperties as P;
 
+    let minima = frame.ground_minima();
     // The point symbols are settled first: ISOM makes the contours give way to them.
     let knolls_table = batchoutfolder.join(merged_file_name(IsomTable::KnollsPoints));
     let knolls = if fs.exists(&knolls_table) {
-        published_knolls(fs, &knolls_table)?
+        published_knolls(fs, &knolls_table, minima.point_spacing_m)?
     } else {
         Vec::new()
     };
@@ -1452,7 +1467,7 @@ pub fn export_combined(
         }
     }
 
-    let mut out = Combined::new(frame.isom_minima(), bounds);
+    let mut out = Combined::new(minima, bounds);
     // cliff dash midpoints per cliff symbol, chained into cliff lines below
     let mut cliffs: BTreeMap<_, (geojson_types::CliffProperties, Vec<[f64; 2]>)> = BTreeMap::new();
     let mut add_dash = |props: geojson_types::CliffProperties, pts: &[[f64; 2]]| {
@@ -1486,7 +1501,7 @@ pub fn export_combined(
     }
 
     for (props, mids) in cliffs.into_values() {
-        for chain in chain_cliff_dashes(&mids) {
+        for chain in chain_cliff_dashes(&mids, minima.cliff_length_m) {
             out.cliff(&chain, props.clone().into());
         }
     }
@@ -1536,8 +1551,8 @@ mod tests {
     const CONTOUR: Classification = Classification::Contour(ContourKind::CONTOUR);
 
     /// The ISOM minima at the default map scale.
-    fn minima() -> IsomMinima {
-        MapFrame::default().isom_minima()
+    fn minima() -> GroundMinima {
+        MapFrame::default().ground_minima()
     }
 
     #[test]
@@ -1674,6 +1689,20 @@ mod tests {
         let cliffs = CliffSet {
             passable: dash(10.004, Classification::Cliff2),
             impassable,
+            bounds: bounds.clone(),
+        };
+        let mut form_line_lines = Polylines::new();
+        form_line_lines.push(
+            vec![Point2::new(1.0, 2.0), Point2::new(3.456, 7.891)],
+            Classification::Formline,
+        );
+        form_line_lines.push(
+            vec![Point2::new(4.0, 2.0), Point2::new(5.0, 2.5)],
+            Classification::FormlineDepression,
+        );
+        let form_lines = FormLineSelection {
+            keep: Vec::new(),
+            lines: form_line_lines,
             bounds,
         };
 
@@ -1681,6 +1710,7 @@ mod tests {
         write_contour_tables(&from_values, Path::new(""), &contours, Some(25832)).unwrap();
         write_knoll_tables(&from_values, Path::new(""), &dot_knolls, Some(25832)).unwrap();
         write_cliff_tables(&from_values, Path::new(""), &cliffs, Some(25832)).unwrap();
+        write_form_line_tables(&from_values, Path::new(""), &form_lines, Some(25832)).unwrap();
 
         let from_files = crate::io::fs::memory::MemoryFileSystem::new();
         for (dumps, source) in [
@@ -1698,6 +1728,10 @@ mod tests {
                     ("c3g.dxf.bin", cliffs.impassable_bindxf()),
                 ],
                 Source::Cliffs,
+            ),
+            (
+                vec![("formlines.dxf.bin", form_lines.to_bindxf())],
+                Source::FormLines,
             ),
         ] {
             let mut input = Vec::new();
@@ -1728,8 +1762,9 @@ mod tests {
             let collection: Value = serde_json::from_slice(&bytes).unwrap();
             assert!(validator.is_valid(&collection), "{table:?}");
         }
-        // the half-interval line is left out, as bindxf_to_tables leaves it out
-        assert_eq!(read_features(&from_values, IsomTable::Contours).len(), 3);
+        // the half-interval line is left out, as bindxf_to_tables leaves it out; the two
+        // form lines follow the contours
+        assert_eq!(read_features(&from_values, IsomTable::Contours).len(), 5);
         assert_eq!(
             read_features(&from_values, IsomTable::KnollsPoints).len(),
             2
@@ -1888,7 +1923,7 @@ mod tests {
         let out = generalise_contour(&pts, &minima());
         let depth = out.iter().fold(0.0f64, |d, p| d.min(p[1]));
         assert!(
-            depth <= -29.0 + minima().contour_mouth,
+            depth <= -29.0 + minima().contour_mouth_m,
             "a 29 m re-entrant lost more than the ISOM minimum: kept only {depth} m"
         );
     }
@@ -1936,7 +1971,11 @@ mod tests {
         let fs = crate::io::fs::memory::MemoryFileSystem::new();
         let name = file_name(IsomTable::KnollsPoints);
         let path = Path::new(&name);
-        assert!(published_knolls(&fs, path).unwrap().is_empty());
+        assert!(
+            published_knolls(&fs, path, minima().point_spacing_m)
+                .unwrap()
+                .is_empty()
+        );
 
         // an ugly knoll listed first, a definite one 5 m away, a far ugly one, and a
         // contour that is not a point symbol at all
@@ -1963,7 +2002,7 @@ mod tests {
         ];
         write_feature_collection(&fs, path, features, None).unwrap();
 
-        let kept = published_knolls(&fs, path).unwrap();
+        let kept = published_knolls(&fs, path, minima().point_spacing_m).unwrap();
         let kept: Vec<([f64; 2], Option<bool>)> =
             kept.into_iter().map(|(p, props)| (p, props.ugly)).collect();
         assert_eq!(kept, [([5.0, 0.0], None), ([50.0, 0.0], Some(true))]);
@@ -2466,7 +2505,7 @@ mod tests {
                 [30.0 * t.cos(), 30.0 * t.sin()]
             })
             .collect();
-        let chains = chain_cliff_dashes(&mids);
+        let chains = chain_cliff_dashes(&mids, minima().cliff_length_m);
         assert_eq!(chains.len(), 1, "one face, one chain");
         assert_eq!(chains[0].len(), 40, "all dashes chained");
         // correct ordering walks the arc: every step is one dash spacing, no jumps
@@ -2474,7 +2513,7 @@ mod tests {
             assert!(dist(w[0], w[1]) < 3.0, "chain jumps across the face");
         }
         // a lone dash is shorter than the ISOM minimum
-        assert!(chain_cliff_dashes(&[[100.0, 100.0]]).is_empty());
+        assert!(chain_cliff_dashes(&[[100.0, 100.0]], minima().cliff_length_m).is_empty());
     }
 
     /// A batch output folder holding the merged tables: a straight 101 contour along y=0
@@ -2580,7 +2619,7 @@ mod tests {
             let pts = line_points(&f.geometry.coordinates);
             assert!(
                 pts.iter()
-                    .all(|p| dist(*p, [50.0, 0.0]) >= minima().knoll_clearance)
+                    .all(|p| dist(*p, [50.0, 0.0]) >= minima().knoll_clearance_m)
             );
         }
         assert_eq!(

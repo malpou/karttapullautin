@@ -1,6 +1,6 @@
 use crate::cliffs::CliffSet;
 use crate::config::Config;
-use crate::geometry::BinaryDxf;
+use crate::formlines::FormLineSelection;
 use crate::geometry::Classification;
 use crate::geometry::ContourKind;
 use crate::geometry::Point2;
@@ -9,8 +9,7 @@ use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::knolls::DotKnollSet;
 use crate::mapframe::{MapFrame, WorldFile};
-use crate::merge::{ContourSet, FormLineMode};
-use crate::vec2d::Vec2D;
+use crate::merge::ContourSet;
 use image::ImageBuffer;
 use image::Rgba;
 use imageproc::drawing::{draw_filled_circle_mut, draw_line_segment_mut};
@@ -77,6 +76,8 @@ pub struct MapInputs<'a> {
     pub dot_knolls: &'a DotKnollSet,
     /// The cliffs (`c2g.dxf.bin` and `c3g.dxf.bin` in the debug intermediates).
     pub cliffs: &'a CliffSet,
+    /// The form lines, None without them.
+    pub form_lines: Option<&'a FormLineSelection>,
 }
 
 /// Draws the map from `inputs` and the stages' files in `tmpfolder`; a re-render first
@@ -183,16 +184,14 @@ pub fn render(
         }
     }
 
-    if let Some(formlines) = draw_curves(
+    draw_curves(
         &config.curves,
         &mut img,
         inputs.ground,
         inputs.contours,
+        inputs.form_lines,
         nodepressions,
-        true,
-    )? {
-        write_formlines(fs, config, tmpfolder, &formlines)?;
-    }
+    );
 
     // dotknolls----------
     for (point, layer) in inputs.dot_knolls.points.iter() {
@@ -388,203 +387,42 @@ fn draw_cliffs(
 
 /// Is a closed form line ring smaller than ISOM allows the symbol to be drawn?
 ///
-/// ISOM 2017-2 sets the minimum closed form line (knoll or depression) at 1.1 mm on the
-/// 1:15,000 original ([`MapFrame::isom_minima`]: 16.5 m on the ground at 1:15 000 and,
-/// symbols enlarged, at 1:10 000). Measured on the ring's longer bounding-box side, so an
-/// elongated ring is judged by its length: this drops specks, not real knolls.
-///
-/// `x`/`y` arrive in sheet pixels of `frame`, so its metres per pixel convert back to
-/// ground metres.
-fn closed_ring_below_isom_minimum(x: &[f64], y: &[f64], frame: &MapFrame) -> bool {
-    let (mut xmin, mut xmax) = (f64::MAX, f64::MIN);
-    let (mut ymin, mut ymax) = (f64::MAX, f64::MIN);
-    for (&px, &py) in x.iter().zip(y.iter()) {
-        xmin = xmin.min(px);
-        xmax = xmax.max(px);
-        ymin = ymin.min(py);
-        ymax = ymax.max(py);
-    }
-    (xmax - xmin).max(ymax - ymin) * frame.metres_per_px() < frame.isom_minima().ring_length
-}
-
-/// Parameters of [`draw_curves`], which draws the contours and selects and dashes the
-/// form lines.
+/// Parameters of [`draw_curves`], which draws the contours and dashes the form lines.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CurveRenderParams {
     /// The sheet the lines are drawn on (ini `mapscale`).
     pub frame: MapFrame,
-    /// Whether the half-interval lines are selected into form lines (ini `form_lines`).
-    pub form_lines: FormLineMode,
-    /// Local relief threshold of the form-line selection; greater gives more form lines
-    /// (ini `formlinesteepness`).
-    pub formlinesteepness: f64,
-    /// Vertices added to each end of a selected form line stretch (ini
-    /// `formlineaddition`).
-    pub formlineaddition: f64,
     /// Form line dash length in pixels (ini `dashlength`).
     pub dashlength: f64,
     /// Form line gap length in pixels (ini `gaplength`).
     pub gaplength: f64,
-    /// Gaps between form line stretches shorter than this many vertices are closed (ini
-    /// `minimumgap`).
-    pub minimumgap: u32,
-    /// Give the form lines of depressions their own class in the form line output (ini
-    /// `label_formlines_depressions`).
-    pub label_depressions: bool,
-    /// Drop form lines where the ground is too steep to draw them apart from the contours
-    /// (ini `remove_touching_contours`).
-    pub remove_touching_contours: bool,
     /// Colour of depression contours (ini `depressions_color`).
     pub depressions_color: (u8, u8, u8),
 }
 
-/// Draw `contours` onto `canvas` (when `draw_image`), and return the selected form
-/// lines, None without form lines or with `nodepressions`. The `ground` model places the
-/// map and, with selective form lines, gives the local relief they are selected by.
+/// Draw `contours` onto `canvas`, the half-interval lines as the dashed form lines
+/// `form_lines` selected (none without form lines). The `ground` model places the map;
+/// with `nodepressions` the depressions are left out.
 pub fn draw_curves(
     params: &CurveRenderParams,
     canvas: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
     ground: &HeightMap,
     contours: &ContourSet,
+    form_lines: Option<&FormLineSelection>,
     nodepressions: bool,
-    draw_image: bool,
-) -> Result<Option<BinaryDxf>, Box<dyn Error>> {
+) {
     // Drawing curves --------------
     let &CurveRenderParams {
         frame,
-        formlinesteepness,
-        form_lines,
-        formlineaddition,
         dashlength,
         gaplength,
-        minimumgap,
-        label_depressions,
-        remove_touching_contours,
         depressions_color,
     } = params;
-    let selective = form_lines == FormLineMode::Selective;
+    let selective = form_lines.is_some();
 
-    let mut size: f64 = 0.0;
-    let mut xstart: f64 = 0.0;
-    let mut ystart: f64 = 0.0;
-
-    let xyz = &ground.grid;
     let x0 = ground.minx();
     let y0 = ground.maxy();
-
-    let mut steepness = Vec2D::new(xyz.width(), xyz.height(), 0f64);
-
-    if selective {
-        xstart = ground.xoffset;
-        ystart = ground.yoffset;
-        size = ground.scale;
-
-        let sxmax = ground.grid.width() - 1;
-        let symax = ground.grid.height() - 1;
-
-        for i in 6..(sxmax - 7) {
-            for j in 6..(symax - 7) {
-                let mut det: f64 = 0.0;
-                let mut high: f64 = f64::MIN;
-
-                let mut temp = (xyz[(i - 4, j)] - xyz[(i, j)]).abs() / 4.0;
-                let temp2 = (xyz[(i, j)] - xyz[(i + 4, j)]).abs() / 4.0;
-                let det2 = (xyz[(i, j)] - 0.5 * (xyz[(i - 4, j)] + xyz[(i + 4, j)])).abs()
-                    - 0.05 * (xyz[(i - 4, j)] - xyz[(i + 4, j)]).abs();
-                let mut porr = (((xyz[(i - 6, j)] - xyz[(i + 6, j)]) / 12.0).abs()
-                    - ((xyz[(i - 3, j)] - xyz[(i + 3, j)]) / 6.0).abs())
-                .abs();
-
-                if det2 > det {
-                    det = det2;
-                }
-                if temp2 < temp {
-                    temp = temp2;
-                }
-                if temp > high {
-                    high = temp;
-                }
-
-                let mut temp = (xyz[(i, j - 4)] - xyz[(i, j)]).abs() / 4.0;
-                let temp2 = (xyz[(i, j)] - xyz[(i, j - 4)]).abs() / 4.0;
-                let det2 = (xyz[(i, j)] - 0.5 * (xyz[(i, j - 4)] + xyz[(i, j + 4)])).abs()
-                    - 0.05 * (xyz[(i, j - 4)] - xyz[(i, j + 4)]).abs();
-                let porr2 = (((xyz[(i, j - 6)] - xyz[(i, j + 6)]) / 12.0).abs()
-                    - ((xyz[(i, j - 3)] - xyz[(i, j + 3)]) / 6.0).abs())
-                .abs();
-
-                if porr2 > porr {
-                    porr = porr2;
-                }
-                if det2 > det {
-                    det = det2;
-                }
-                if temp2 < temp {
-                    temp = temp2;
-                }
-                if temp > high {
-                    high = temp;
-                }
-
-                let mut temp = (xyz[(i - 4, j - 4)] - xyz[(i, j)]).abs() / 5.6;
-                let temp2 = (xyz[(i, j)] - xyz[(i + 4, j + 4)]).abs() / 5.6;
-                let det2 = (xyz[(i, j)] - 0.5 * (xyz[(i - 4, j - 4)] + xyz[(i + 4, j + 4)])).abs()
-                    - 0.05 * (xyz[(i - 4, j - 4)] - xyz[(i + 4, j + 4)]).abs();
-                let porr2 = (((xyz[(i - 6, j - 6)] - xyz[(i + 6, j + 6)]) / 17.0).abs()
-                    - ((xyz[(i - 3, j - 3)] - xyz[(i + 3, j + 3)]) / 8.5).abs())
-                .abs();
-
-                if porr2 > porr {
-                    porr = porr2;
-                }
-                if det2 > det {
-                    det = det2;
-                }
-                if temp2 < temp {
-                    temp = temp2;
-                }
-                if temp > high {
-                    high = temp;
-                }
-
-                let mut temp = (xyz[(i - 4, j + 4)] - xyz[(i, j)]).abs() / 5.6;
-                let temp2 = (xyz[(i, j)] - xyz[(i + 4, j - 4)]).abs() / 5.6;
-                let det2 = (xyz[(i, j)] - 0.5 * (xyz[(i + 4, j - 4)] + xyz[(i - 4, j + 4)])).abs()
-                    - 0.05 * (xyz[(i + 4, j - 4)] - xyz[(i - 4, j + 4)]).abs();
-                let porr2 = (((xyz[(i + 6, j - 6)] - xyz[(i - 6, j + 6)]) / 17.0).abs()
-                    - ((xyz[(i + 3, j - 3)] - xyz[(i - 3, j + 3)]) / 8.5).abs())
-                .abs();
-
-                if porr2 > porr {
-                    porr = porr2;
-                }
-                if det2 > det {
-                    det = det2;
-                }
-                if temp2 < temp {
-                    temp = temp2;
-                }
-                if temp > high {
-                    high = temp;
-                }
-
-                let mut val = 12.0 * high / (1.0 + 8.0 * det);
-                if porr > 0.25 * 0.67 / (0.3 + formlinesteepness) {
-                    val = 0.01;
-                }
-                if high > val {
-                    val = high;
-                }
-                steepness[(i, j)] = val;
-            }
-        }
-    }
-
-    let bounds = contours.bounds.clone();
     let input_lines = &contours.lines;
-
-    let should_generate_formlines = selective && !nodepressions;
-    let mut formlines = Polylines::<Point2, Classification>::new();
 
     let mut last_curve_drawn = false;
     let mut should_draw_next_slope_line = true;
@@ -649,203 +487,18 @@ pub fn draw_curves(
                 }
             }
 
-            let mut smallringtest = false;
-            let mut help = vec![false; x.len()];
-            let mut help2 = vec![false; x.len()];
-            let mut help3 = vec![false; x.len()];
-            if curvew == 1.5 {
-                for i in 0..x.len() {
-                    help[i] = false;
-                    help2[i] = true;
-                    help3[i] = false;
-                    let world = pixel_to_ground(x[i], y[i], x0, y0, &frame);
-                    let xx = ((world.x - xstart) / size).floor() as usize;
-                    let yy = ((world.y - ystart) / size).floor() as usize;
-
-                    // make sure indices are within bounds for the grid lookups
-                    if xx >= xyz.width() - 1 || yy >= xyz.height() - 1 || xx < 1 || yy < 1 {
-                        continue;
-                    }
-
-                    if steepness[(xx, yy)] < formlinesteepness
-                        || steepness[(xx, yy + 1)] < formlinesteepness
-                        || steepness[(xx + 1, yy)] < formlinesteepness
-                        || steepness[(xx + 1, yy + 1)] < formlinesteepness
-                    {
-                        help[i] = true;
-                    }
-                    if (xyz[(xx - 1, yy)] - xyz[(xx + 1, yy)]).abs() < 2.5
-                        && (xyz[(xx, yy - 1)] - xyz[(xx, yy + 1)]).abs() < 2.5
-                        && (xyz[(xx, yy)] - xyz[(xx + 1, yy + 1)]).abs() < 3.5
-                        && (xyz[(xx - 1, yy - 1)] - xyz[(xx + 1, yy + 1)]).abs() < 3.5
-                        && (xyz[(xx + 1, yy - 1)] - xyz[(xx - 1, yy + 1)]).abs() < 3.5
-                    {
-                        help3[i] = true;
-                    }
-                }
-                for i in 5..(x.len() - 6) {
-                    let mut apu = 0;
-                    for j in (i - 5)..(i + 4) {
-                        if help[j] {
-                            apu += 1;
-                        }
-                    }
-                    if apu < 5 {
-                        help2[i] = false;
-                    }
-                }
-                for i in 0..6 {
-                    help2[i] = help2[6]
-                }
-                for i in (x.len() - 6)..x.len() {
-                    help2[i] = help2[x.len() - 7]
-                }
-                let mut on = 0.0;
-                for i in 0..x.len() {
-                    if help2[i] {
-                        on = formlineaddition
-                    }
-                    if on > 0.0 {
-                        help2[i] = true;
-                        on -= 1.0;
-                    }
-                }
-                if x.first() == x.last() && y.first() == y.last() && on > 0.0 {
-                    let mut i = 0;
-                    while i < x.len() && on > 0.0 {
-                        help2[i] = true;
-                        on -= 1.0;
-                        i += 1;
-                    }
-                }
-                let mut on = 0.0;
-                for i in 0..x.len() {
-                    let ii = x.len() - i - 1;
-                    if help2[ii] {
-                        on = formlineaddition
-                    }
-                    if on > 0.0 {
-                        help2[ii] = true;
-                        on -= 1.0;
-                    }
-                }
-                if x.first() == x.last() && y.first() == y.last() && on > 0.0 {
-                    let mut i = (x.len() - 1) as i32;
-                    while i > -1 && on > 0.0 {
-                        help2[i as usize] = true;
-                        on -= 1.0;
-                        i -= 1;
-                    }
-                }
-                // Let's not break small form line rings
-                //
-                // ...but only down to the size ISOM allows one to be drawn at. A closed
-                // form line is legitimate for a knoll or depression (ISOM 2017-2 symbol
-                // 103) and dashing it would not read as a ring, which is why this rule
-                // promotes a qualifying small ring to a solid loop. The rule had no
-                // minimum size though, so a ring of a handful of vertices was promoted
-                // exactly like a real knoll. On flat hummocky ground with form lines at
-                // a 1.25 m interval that is most of the rings on the map, and the result
-                // is a render covered in closed loops that carry no information and are
-                // below the size the symbol may legally be drawn at anyway.
-                //
-                // Rings under the ISOM minimum are therefore dropped rather than filled
-                // in. Both the raster and the form line vector output are gated on
-                // help2/smallringtest below, so the two stay consistent.
-                for max_length in [122usize, 60].iter() {
-                    smallringtest = false;
-                    if x.first() == x.last() && y.first() == y.last() && x.len() < *max_length {
-                        smallringtest = help2.iter().any(|v| *v);
-                        if smallringtest && closed_ring_below_isom_minimum(&x, &y, &frame) {
-                            smallringtest = false;
-                            help2.iter_mut().for_each(|h| *h = false);
-                        }
-                        if smallringtest {
-                            help2.iter_mut().for_each(|h| *h = true);
-                        }
-                    }
-                }
-
-                // Let's draw short gaps together
-                if !smallringtest {
-                    let mut tester = 1;
-                    for i in 1..x.len() {
-                        if help2[i] {
-                            if tester < i && ((i - tester) as u32) < minimumgap {
-                                for j in tester..(i + 1) {
-                                    help2[j] = true;
-                                }
-                            }
-                            tester = i;
-                        }
-                    }
-                    // Ring handling
-                    if x.first() == x.last() && y.first() == y.last() && x.len() < 2 {
-                        let mut i = 1;
-                        while i < x.len() && !help2[i] {
-                            i += 1
-                        }
-                        let mut j = x.len() - 1;
-                        while j > 1 && !help2[i] {
-                            j -= 1
-                        }
-                        if ((x.len() - j + i - 1) as u32) < minimumgap && j > i {
-                            for k in 0..(i + 1) {
-                                help2[k] = true
-                            }
-                            for k in j..x.len() {
-                                help2[k] = true
-                            }
-                        }
-                    }
-                }
-                if remove_touching_contours {
-                    // remove formlines when it is really steep
-                    let mut touched = false;
-                    for i in 0..x.len() {
-                        if !help3[i] {
-                            for k in 0..5 {
-                                if i + k < x.len() {
-                                    help2[i + k] = false;
-                                    touched = true;
-                                }
-                                if i - k + 1 > 0 && i - k < x.len() {
-                                    help2[i - k] = false;
-                                    touched = true;
-                                }
-                            }
-                        }
-                    }
-                    if touched {
-                        let mut k = 0;
-                        for i in 0..x.len() {
-                            if help2[i] {
-                                k += 1;
-                            }
-                            if k > 0 && !help2[i] && k < 15 {
-                                for l in (i - k)..i {
-                                    help2[l] = false;
-                                }
-                            }
-                            if !help2[i] {
-                                k = 0;
-                            }
-                        }
-                    }
-                }
-            }
+            // what the form-line selection keeps of a half-interval line
+            let keep = (curvew == 1.5).then(|| {
+                form_lines
+                    .and_then(|f| f.keep[ii].as_ref())
+                    .expect("the form-line selection covers every half-interval line")
+            });
+            let kept = keep.map_or(&[][..], |k| k.vertices.as_slice());
+            let drawn = |i: usize| keep.is_none_or(|k| k.keeps(i));
 
             let mut linedist = 0.0;
             let mut onegapdone = false;
             let mut gap = 0.0;
-
-            let f_label = if layer.is_depression() && label_depressions {
-                Classification::FormlineDepression
-            } else {
-                Classification::Formline
-            };
-
-            let mut formiline_points = Vec::new();
 
             if layer == Classification::SmallDepression {
                 curvew = 3.0;
@@ -859,7 +512,7 @@ pub fn draw_curves(
             };
 
             for i in 1..x.len() {
-                if !(curvew != 1.5 || help2[i] || smallringtest)
+                if !drawn(i)
                     && should_draw_next_slope_line
                     && let Some((next_x, next_y)) = next_slopeline_start
                     && x[i] == next_x
@@ -867,99 +520,73 @@ pub fn draw_curves(
                 {
                     should_draw_next_slope_line = false;
                 }
-                if curvew != 1.5 || help2[i] || smallringtest {
-                    if should_generate_formlines && curvew == 1.5 {
-                        formiline_points.push(pixel_to_ground(x[i], y[i], x0, y0, &frame));
-                    }
-
-                    if draw_image {
-                        if curvew == 1.5 {
-                            let step =
-                                ((x[i - 1] - x[i]).powi(2) + (y[i - 1] - y[i]).powi(2)).sqrt();
-                            if i < 4 {
-                                linedist = 0.0
+                if drawn(i) {
+                    if curvew == 1.5 {
+                        let step = ((x[i - 1] - x[i]).powi(2) + (y[i - 1] - y[i]).powi(2)).sqrt();
+                        if i < 4 {
+                            linedist = 0.0
+                        }
+                        linedist += step;
+                        if linedist > dashlength && i > 10 && i < x.len() - 11 {
+                            let mut sum = 0.0;
+                            for k in (i - 4)..(i + 6) {
+                                sum +=
+                                    ((x[k - 1] - x[k]).powi(2) + (y[k - 1] - y[k]).powi(2)).sqrt()
                             }
-                            linedist += step;
-                            if linedist > dashlength && i > 10 && i < x.len() - 11 {
-                                let mut sum = 0.0;
-                                for k in (i - 4)..(i + 6) {
-                                    sum += ((x[k - 1] - x[k]).powi(2) + (y[k - 1] - y[k]).powi(2))
-                                        .sqrt()
+                            let mut toonearend = false;
+                            for k in (i - 10)..(i + 10) {
+                                if !kept[k] {
+                                    toonearend = true;
+                                    break;
                                 }
-                                let mut toonearend = false;
-                                for k in (i - 10)..(i + 10) {
-                                    if !help2[k] {
-                                        toonearend = true;
-                                        break;
-                                    }
-                                }
-                                if !toonearend
-                                    && ((x[i - 5] - x[i + 5]).powi(2)
-                                        + (y[i - 5] - y[i + 5]).powi(2))
+                            }
+                            if !toonearend
+                                && ((x[i - 5] - x[i + 5]).powi(2) + (y[i - 5] - y[i + 5]).powi(2))
                                     .sqrt()
-                                        * 1.138
-                                        > sum
-                                {
-                                    linedist = 0.0;
-                                    gap = gaplength;
-                                    onegapdone = true;
-                                }
-                            }
-                            if !onegapdone && (i < x.len() - 9) && i > 6 {
-                                gap = gaplength * 0.82;
+                                    * 1.138
+                                    > sum
+                            {
+                                linedist = 0.0;
+                                gap = gaplength;
                                 onegapdone = true;
-                                linedist = 0.0
                             }
-                            if gap > 0.0 {
-                                gap -= step;
-                                if gap < 0.0 && onegapdone && step > 0.0 {
-                                    let mut n = -curvew - 0.5;
-                                    while n < curvew + 0.5 {
-                                        let mut m = -curvew - 0.5;
-                                        while m < curvew + 0.5 {
-                                            draw_line_segment_mut(
-                                                canvas,
-                                                (
-                                                    ((-x[i - 1] * gap + (step + gap) * x[i]) / step
-                                                        + n)
-                                                        as f32,
-                                                    ((-y[i - 1] * gap + (step + gap) * y[i]) / step
-                                                        + m)
-                                                        as f32,
-                                                ),
-                                                ((x[i] + n) as f32, (y[i] + m) as f32),
-                                                color,
-                                            );
-
-                                            m += 1.0;
-                                        }
-                                        n += 1.0;
-                                        last_curve_drawn = true;
-                                    }
-                                    gap = 0.0;
-                                }
-                            } else {
+                        }
+                        if !onegapdone && (i < x.len() - 9) && i > 6 {
+                            gap = gaplength * 0.82;
+                            onegapdone = true;
+                            linedist = 0.0
+                        }
+                        if gap > 0.0 {
+                            gap -= step;
+                            if gap < 0.0 && onegapdone && step > 0.0 {
                                 let mut n = -curvew - 0.5;
                                 while n < curvew + 0.5 {
                                     let mut m = -curvew - 0.5;
                                     while m < curvew + 0.5 {
                                         draw_line_segment_mut(
                                             canvas,
-                                            ((x[i - 1] + n) as f32, (y[i - 1] + m) as f32),
+                                            (
+                                                ((-x[i - 1] * gap + (step + gap) * x[i]) / step + n)
+                                                    as f32,
+                                                ((-y[i - 1] * gap + (step + gap) * y[i]) / step + m)
+                                                    as f32,
+                                            ),
                                             ((x[i] + n) as f32, (y[i] + m) as f32),
                                             color,
                                         );
+
                                         m += 1.0;
-                                        last_curve_drawn = true;
                                     }
                                     n += 1.0;
+                                    last_curve_drawn = true;
                                 }
+                                gap = 0.0;
                             }
                         } else {
-                            let mut n = -curvew;
-                            while n < curvew {
-                                let mut m = -curvew;
-                                while m < curvew {
+                            let mut n = -curvew - 0.5;
+                            while n < curvew + 0.5 {
+                                let mut m = -curvew - 0.5;
+                                while m < curvew + 0.5 {
                                     draw_line_segment_mut(
                                         canvas,
                                         ((x[i - 1] + n) as f32, (y[i - 1] + m) as f32),
@@ -972,51 +599,27 @@ pub fn draw_curves(
                                 n += 1.0;
                             }
                         }
+                    } else {
+                        let mut n = -curvew;
+                        while n < curvew {
+                            let mut m = -curvew;
+                            while m < curvew {
+                                draw_line_segment_mut(
+                                    canvas,
+                                    ((x[i - 1] + n) as f32, (y[i - 1] + m) as f32),
+                                    ((x[i] + n) as f32, (y[i] + m) as f32),
+                                    color,
+                                );
+                                m += 1.0;
+                                last_curve_drawn = true;
+                            }
+                            n += 1.0;
+                        }
                     }
-                } else if !formiline_points.is_empty() {
-                    // line ended, append and start new one
-                    formlines.push(formiline_points, f_label);
-                    formiline_points = Vec::new();
                 }
-            }
-
-            if !formiline_points.is_empty() {
-                formlines.push(formiline_points, f_label);
             }
         }
     }
-
-    Ok(should_generate_formlines.then(|| BinaryDxf::new(bounds, vec![formlines.into()])))
-}
-
-/// Write the form lines [`draw_curves`] selected: `formlines.dxf.bin`, and the DXF and
-/// GeoJSON when those outputs are on.
-pub fn write_formlines(
-    fs: &impl FileSystem,
-    config: &Config,
-    tmpfolder: &Path,
-    formlines: &BinaryDxf,
-) -> Result<(), Box<dyn Error>> {
-    formlines
-        .to_writer(&mut fs.create(tmpfolder.join("formlines.dxf.bin"))?)
-        .expect("Could not write formlines.dxf.bin");
-
-    if config.outputs.dxf {
-        formlines.to_dxf(&mut fs.create(tmpfolder.join("formlines.dxf"))?)?;
-    }
-
-    // As for contours (process_tile): 103.000 in the contours table is this
-    // selected set, not the half-interval contours.
-    if config.vector_tables() {
-        crate::geojson::bindxf_to_tables(
-            fs,
-            &[tmpfolder.join("formlines.dxf.bin")],
-            tmpfolder,
-            crate::geojson::Source::FormLines,
-            config.epsg,
-        )?;
-    }
-    Ok(())
 }
 
 /// The rendered map's world file: `vegetation.pgw`'s frame (one pixel per ground metre) with
@@ -1029,22 +632,9 @@ fn map_world_file(vege_frame: &WorldFile, frame: &MapFrame) -> WorldFile {
     }
 }
 
-/// Inverse of the draw transform `frame.to_px((x - x0), (y0 - y))`: a map-pixel position
-/// back to ground coordinates, one operator order for both axes.
-fn pixel_to_ground(x: f64, y: f64, x0: f64, y0: f64, frame: &MapFrame) -> Point2 {
-    Point2::new(frame.to_metres(x) + x0, frame.to_metres(-y) + y0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::closed_ring_below_isom_minimum;
     use crate::mapframe::MapFrame;
-
-    /// A square ring of the given ground size, as the renderer would see it at `frame`.
-    fn ring(metres: f64, frame: &MapFrame) -> (Vec<f64>, Vec<f64>) {
-        let s = metres * frame.px_per_metre();
-        (vec![0.0, s, s, 0.0, 0.0], vec![0.0, 0.0, s, s, 0.0])
-    }
 
     #[test]
     fn rendering_a_pruned_folder_asks_for_the_debug_intermediates() {
@@ -1074,43 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn rings_below_the_isom_minimum_are_rejected() {
-        // ISOM 2017-2 symbol 103: minimum closed form line 1.1 mm at 1:15,000 = 16.5 m.
-        let frame = MapFrame::default();
-        let (x, y) = ring(10.0, &frame);
-        assert!(closed_ring_below_isom_minimum(&x, &y, &frame));
-        let (x, y) = ring(20.0, &frame);
-        assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
-    }
-
-    #[test]
-    fn an_elongated_ring_is_judged_by_its_longer_side() {
-        // 5 m across but 40 m long: a real feature, not a speck.
-        let frame = MapFrame::default();
-        let s = frame.px_per_metre();
-        let x = vec![0.0, 40.0 * s, 40.0 * s, 0.0, 0.0];
-        let y = vec![0.0, 0.0, 5.0 * s, 5.0 * s, 0.0];
-        assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
-    }
-
-    #[test]
-    fn the_bound_is_ground_distance_not_pixels() {
-        // Same 20 m ring at 1:15 000 => 2/3 of the pixels, and the verdict must not change;
-        // the bound is the same 16.5 m there.
-        for scale in [10_000.0, 15_000.0] {
-            let frame = MapFrame::at_scale(scale);
-            let (x, y) = ring(20.0, &frame);
-            assert!(!closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
-            let (x, y) = ring(16.0, &frame);
-            assert!(closed_ring_below_isom_minimum(&x, &y, &frame), "{scale}");
-        }
-        // 1:5 000 draws symbols at 100 %: the minimum is 5.5 m.
-        let frame = MapFrame::at_scale(5_000.0);
-        let (x, y) = ring(6.0, &frame);
-        assert!(!closed_ring_below_isom_minimum(&x, &y, &frame));
-    }
-
-    #[test]
     fn map_world_file_scales_pixel_sizes_and_keeps_the_origin() {
         use super::map_world_file;
         use crate::mapframe::WorldFile;
@@ -1124,27 +677,5 @@ mod tests {
             map_world_file(&vege, &MapFrame::at_scale(20_000.0)).pixel_size_x,
             2.0 * map.pixel_size_x
         );
-    }
-
-    #[test]
-    fn pixel_to_ground_inverts_the_draw_transform_on_both_axes() {
-        use super::pixel_to_ground;
-        let (x0, y0) = (500000.0, 6700000.0);
-        for scale in [5_000.0, 7_000.0, 10_000.0, 13_000.0, 20_000.0] {
-            let frame = MapFrame::at_scale(scale);
-            for (gx, gy) in [
-                (500123.4, 6699876.6),
-                (500001.1, 6699999.3),
-                (500777.7, 6699321.9),
-            ] {
-                let px = frame.to_px(gx - x0);
-                let py = frame.to_px(y0 - gy);
-                let p = pixel_to_ground(px, py, x0, y0, &frame);
-                assert!((p.x - gx).abs() < 1e-6 && (p.y - gy).abs() < 1e-6, "{p:?}");
-                // one operator order: the same pixel offset gives the same ground offset
-                let q = pixel_to_ground(px, px, 0.0, 0.0, &frame);
-                assert_eq!(q.y.to_bits(), (-q.x).to_bits());
-            }
-        }
     }
 }

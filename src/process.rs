@@ -18,6 +18,7 @@ use crate::cliffs;
 use crate::config::{Config, Outputs};
 use crate::contours;
 use crate::crop;
+use crate::formlines::{self, FormLineSelection};
 use crate::geojson;
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
@@ -314,6 +315,29 @@ pub fn make_vegetation(
     Ok(())
 }
 
+/// Selects the form lines of `contours` on `ground` and writes them to `tmpfolder`: the
+/// dump with `debug`, the DXF and the GeoJSON with their families. None without form
+/// lines.
+pub fn make_form_lines(
+    fs: &impl FileSystem,
+    config: &Config,
+    tmpfolder: &Path,
+    ground: &HeightMap,
+    contours: &ContourSet,
+    debug: bool,
+) -> Result<Option<FormLineSelection>, Box<dyn Error>> {
+    let Some(selection) = formlines::select_form_lines(contours, ground, &config.form_lines) else {
+        return Ok(None);
+    };
+    formlines::write_form_lines(fs, tmpfolder, &selection, debug, config.outputs.dxf)?;
+    // As for contours: 103.000 in the contours table is this selected set, not the
+    // half-interval lines.
+    if config.vector_tables() {
+        geojson::write_form_line_tables(fs, tmpfolder, &selection, config.epsg)?;
+    }
+    Ok(Some(selection))
+}
+
 /// Renders the shape files in `filenames` (or, in a batch, the ones already unzipped)
 /// and the map of the tile in `tmpfolder` from `inputs`.
 pub fn process_zip(
@@ -380,6 +404,8 @@ pub struct TileTerrain {
     pub contours: ContourSet,
     /// The dot knolls.
     pub dot_knolls: DotKnollSet,
+    /// The form lines, None without them.
+    pub form_lines: Option<FormLineSelection>,
 }
 
 /// What [`process_tile`] made of a tile that a batch draws the shape files' map on and
@@ -569,6 +595,7 @@ pub fn process_tile(
         terrain = Some(TileTerrain {
             contours,
             dot_knolls,
+            form_lines: None,
         });
     }
 
@@ -611,8 +638,20 @@ pub fn process_tile(
     }
     // rendering reads the stages' outputs, not the returns
     drop(returns);
-    // the map, or without the raster family the form lines alone (the renderer selects
-    // them) when a vector family takes them
+    // the form lines, selected once for both renders and the vector output
+    if let Some(values) = &mut terrain {
+        info!("Selecting formlines");
+        timing.start_section("selecting formlines");
+        values.form_lines = make_form_lines(
+            fs,
+            config,
+            tmpfolder,
+            &ground,
+            &values.contours,
+            config.debug_intermediates,
+        )
+        .map_err(|e| format!("form lines in {}: {e}", tmpfolder.display()))?;
+    }
     let full = !vegeonly && !contoursonly && !cliffsonly;
     if let Some(values) = &terrain
         && let Some(cliffs) = &cliff_set
@@ -625,6 +664,7 @@ pub fn process_tile(
             contours: &values.contours,
             dot_knolls: &values.dot_knolls,
             cliffs,
+            form_lines: values.form_lines.as_ref(),
         };
         info!("Rendering png map with depressions");
         timing.start_section("rendering png map with depressions");
@@ -653,29 +693,10 @@ pub fn process_tile(
             true,
         )
         .unwrap();
-    } else if let Some(values) = &terrain
-        && (contoursonly || (full && !config.outputs.raster))
-    {
-        // outputs is never empty: without raster a vector family takes the form lines
-        info!("Selecting formlines");
-        timing.start_section("selecting formlines");
-        let mut img = RgbaImage::from_pixel(1, 1, Rgba([0, 0, 0, 0]));
-        if let Some(formlines) = render::draw_curves(
-            &config.curves,
-            &mut img,
-            &ground,
-            &values.contours,
-            false,
-            false,
-        )
-        .unwrap()
-        {
-            render::write_formlines(fs, config, tmpfolder, &formlines).unwrap();
-        }
     } else if contoursonly && (vegeonly || cliffsonly) {
         let other = if vegeonly { "vegeonly" } else { "cliffsonly" };
         warn!("contoursonly=1 with {other}=1: no contours are made, so no form lines are selected");
-    } else {
+    } else if config.outputs.raster {
         info!("Skipped rendering");
     }
     info!("All done!");
@@ -882,6 +903,7 @@ pub fn batch_process(
                     contours: &terrain.contours,
                     dot_knolls: &terrain.dot_knolls,
                     cliffs,
+                    form_lines: terrain.form_lines.as_ref(),
                 };
                 process_zip(fs, conf, thread, &tmpfolder, inputs, &[], true).unwrap();
             } else if conf.vector_tables() && !conf.vectorconf.is_empty() {
@@ -1146,6 +1168,7 @@ pub fn batch_process(
             if let Some(TileTerrain {
                 contours,
                 dot_knolls,
+                form_lines,
             }) = terrain
             {
                 let crop =
@@ -1156,6 +1179,12 @@ pub fn batch_process(
                     crop::crop_points(dot_knolls.into_bindxf(), minx, miny, maxx, maxy).unwrap();
                 let output = format!("{batchoutfolder}/{laz}_dotknolls.dxf.bin");
                 crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
+                if let Some(form_lines) = form_lines {
+                    let crop = crop::crop_polylines(form_lines.to_bindxf(), minx, miny, maxx, maxy)
+                        .unwrap();
+                    let output = format!("{batchoutfolder}/{laz}_formlines.dxf.bin");
+                    crop::write_crop(fs, &crop, Path::new(&output), outputs.dxf).unwrap();
+                }
             }
             if let Some(cliffs) = cliffs {
                 let (passable, impassable) = cliffs.into_bindxf();
@@ -1166,9 +1195,9 @@ pub fn batch_process(
                 }
             }
             let dxf_files: &[&str] = if debug_intermediates {
-                &["contours03", "detected", "formlines", "vegetation"]
+                &["contours03", "detected", "vegetation"]
             } else {
-                &["formlines", "vegetation"]
+                &["vegetation"]
             };
             for dxf_file in dxf_files {
                 let dxf_path = PathBuf::from(format!("temp{thread}/{dxf_file}.dxf.bin"));

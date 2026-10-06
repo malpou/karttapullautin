@@ -13,7 +13,7 @@ use crate::geometry::{
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::knolls::DotKnollCandidate;
-use crate::mapframe::{IsomMinima, WorldFile};
+use crate::mapframe::{GroundMinima, WorldFile};
 use crate::vec2d::Vec2D;
 use image::buffer::ConvertBuffer;
 
@@ -378,9 +378,9 @@ pub fn bindxfmerge(fs: &impl FileSystem, config: &Config) -> anyhow::Result<()> 
 ///
 /// ISOM 2017-2 (symbol 101) requires at least one slope line on a depression, drawn
 /// perpendicular to the contour and pointing downslope — i.e. into the ring. Its length
-/// is 0.4 mm on the 1:15,000 original, `minima.slope_line` on the ground (6 m at 1:15 000
+/// is 0.4 mm on the 1:15,000 original, `minima.slope_line_m` on the ground (6 m at 1:15 000
 /// and 1:10 000); coordinates here are ground metres. A depression below ISOM's minimum
-/// size (1.1 x 0.7 mm, `minima.ring_length` x `minima.ring_width`, 16.5 x 10.5 m) is not
+/// size (1.1 x 0.7 mm, `minima.ring_length_m` x `minima.ring_width_m`, 16.5 x 10.5 m) is not
 /// drawable as a contour depression at all — those are the small-depression symbol's
 /// job — so it gets no tick.
 ///
@@ -397,9 +397,9 @@ fn decorate_depression(
     el_x: &[f64],
     el_y: &[f64],
     h: f64,
-    minima: &IsomMinima,
+    minima: &GroundMinima,
 ) -> Option<(Vec<Point3>, Classification)> {
-    let length_m = minima.slope_line;
+    let length_m = minima.slope_line_m;
     /// Positions tried around the ring; the best-clearance one wins.
     const CANDIDATES: usize = 12;
 
@@ -416,7 +416,7 @@ fn decorate_depression(
         ymax = ymax.max(y);
     }
     let (w, hgt) = (xmax - xmin, ymax - ymin);
-    if w.max(hgt) < minima.ring_length || w.min(hgt) < minima.ring_width {
+    if w.max(hgt) < minima.ring_length_m || w.min(hgt) < minima.ring_width_m {
         // draw a small depression
         let center = ((xmax + xmin) / 2.0, (ymax + ymin + length_m) / 2.0);
         let steps = 8;
@@ -506,8 +506,8 @@ pub struct SmoothJoinParams {
     /// its relief (ini `knolls`).
     pub inidotknolls: f64,
     /// The ISOM minimum depression size and slope line length, in ground metres
-    /// ([`crate::mapframe::MapFrame::isom_minima`], ini `mapscale`).
-    pub isom_minima: IsomMinima,
+    /// ([`crate::mapframe::MapFrame::ground_minima`], ini `mapscale`).
+    pub ground_minima: GroundMinima,
 }
 
 impl SmoothJoinParams {
@@ -952,7 +952,7 @@ pub fn smoothjoin(
                 if decorate_depressions
                     && layer.is_depression()
                     && let Some((form, class)) =
-                        decorate_depression(&el_x[l], &el_y[l], h, &params.isom_minima)
+                        decorate_depression(&el_x[l], &el_y[l], h, &params.ground_minima)
                 {
                     if class == Classification::SmallDepression {
                         out2_lines.pop();
@@ -992,7 +992,7 @@ mod tests {
             depression_length: 181,
             decorate_depressions: false,
             inidotknolls: 0.6,
-            isom_minima: MapFrame::default().isom_minima(),
+            ground_minima: MapFrame::default().ground_minima(),
         }
     }
 
@@ -1055,7 +1055,7 @@ mod tests {
 
     /// decorate_depression at the default map scale.
     fn decorate_depression(x: &[f64], y: &[f64], h: f64) -> Option<(Vec<Point3>, Classification)> {
-        super::decorate_depression(x, y, h, &MapFrame::default().isom_minima())
+        super::decorate_depression(x, y, h, &MapFrame::default().ground_minima())
     }
     // A closed ring approximating a circle of the given ground radius, in metres.
     fn ring(radius: f64) -> (Vec<f64>, Vec<f64>) {
@@ -1106,7 +1106,7 @@ mod tests {
     #[test]
     fn the_isom_sizes_follow_the_map_scale() {
         let (x, y) = ring(4.0);
-        let minima = MapFrame::at_scale(4_000.0).isom_minima();
+        let minima = MapFrame::at_scale(4_000.0).ground_minima();
         let (tick, class) = super::decorate_depression(&x, &y, 0.0, &minima).unwrap();
         assert!(class == Classification::SlopeLine);
         let len = ((tick[1].x - tick[0].x).powi(2) + (tick[1].y - tick[0].y).powi(2)).sqrt();

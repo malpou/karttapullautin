@@ -30,6 +30,7 @@ Turns classified airborne LiDAR into a draft orienteering map that follows ISOM 
 **Index contour**: Every fifth contour, drawn heavier (ISOM 102).
 **Half-interval line**: A traced line halfway between two contours, the candidate form line (`ContourKind::half_interval`). _Avoid_: intermed, intermediate contour
 **Form line**: A half-interval line the form-line selection keeps, where contours alone under-describe the ground (ISOM 103); a map has them with `form_lines=selective`. _Avoid_: intermed, formline (as a mode number)
+**Form-line selection**: The contour operation that decides which stretches of the half-interval lines become form lines, from the local relief of the ground model under them (`formlines::select_form_lines`, a `FormLineSelection`); the renderer draws it and the form-line DXF and GeoJSON are written from it.
 **Depression**: A closed contour whose inside is lower than the line.
 **Slope line**: The tick that marks the downhill side of a contour. _Avoid_: tick, decoration
 **Knoll**: A closed high point large enough to be drawn as a contour.

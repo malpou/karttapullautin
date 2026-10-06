@@ -5,6 +5,7 @@ use log::warn;
 
 use crate::cliffs::CliffParams;
 use crate::contours::GroundParams;
+use crate::formlines::FormLineParams;
 use crate::geojson::geojson_types::VegetationPropertiesIsomCode;
 use crate::knolls::KnollParams;
 use crate::mapframe::MapFrame;
@@ -61,7 +62,10 @@ pub struct Config {
     /// smoothjoin's parameters, with `contour_interval`, `form_lines` and the ISOM minima
     /// at the map scale.
     pub smoothjoin: SmoothJoinParams,
-    /// draw_curves' parameters, with the map frame and `form_lines`.
+    /// The form-line selection's parameters, with the map frame, the trace interval and
+    /// the ISOM minimum ring length at the map scale.
+    pub form_lines: FormLineParams,
+    /// draw_curves' parameters, with the map frame.
     pub curves: CurveRenderParams,
 
     pub xfactor: f64,
@@ -578,18 +582,22 @@ impl Config {
                 depression_length,
                 decorate_depressions,
                 inidotknolls,
-                isom_minima: map_frame.isom_minima(),
+                ground_minima: map_frame.ground_minima(),
+            },
+            form_lines: FormLineParams {
+                form_lines,
+                frame: map_frame,
+                relief_threshold: formlinesteepness,
+                addition_vertices: formlineaddition,
+                minimum_gap_vertices: minimumgap,
+                label_depressions,
+                remove_touching_contours,
+                ring_length_m: map_frame.ground_minima().ring_length_m,
             },
             curves: CurveRenderParams {
                 frame: map_frame,
-                form_lines,
-                formlinesteepness,
-                formlineaddition,
                 dashlength,
                 gaplength,
-                minimumgap,
-                label_depressions,
-                remove_touching_contours,
                 depressions_color,
             },
             xfactor,
@@ -848,7 +856,7 @@ fn parse_greenshade_isom(
 mod test {
     use std::path::Path;
 
-    use super::{Config, Outputs};
+    use super::{Config, FormLineMode, FormLineParams, Outputs};
     use crate::mapframe::MapFrame;
 
     #[test]
@@ -1145,14 +1153,39 @@ mod test {
         assert_eq!(config.ground.cell_size_m, 2.0);
         assert_eq!(config.knoll, default.knoll);
         assert_eq!(config.smoothjoin, default.smoothjoin);
+        // the form-line selection works on the sheet, at the same ground minima
+        assert_eq!(config.form_lines.frame, config.map_frame);
         assert_eq!(
-            config.curves.formlinesteepness,
-            default.curves.formlinesteepness
+            FormLineParams {
+                frame: default.map_frame,
+                ..config.form_lines.clone()
+            },
+            default.form_lines
         );
         // 1:5 000 is no ISOM scale: symbols at 100 %, so 1/3 of the 1:15 000 sizes
         let sprint = load_with(&[("mapscale", "5000")]).unwrap();
-        assert_eq!(sprint.smoothjoin.isom_minima.slope_line, 2.0);
-        assert_eq!(sprint.smoothjoin.isom_minima.ring_length, 5.5);
+        assert_eq!(sprint.smoothjoin.ground_minima.slope_line_m, 2.0);
+        assert_eq!(sprint.smoothjoin.ground_minima.ring_length_m, 5.5);
+        assert_eq!(sprint.form_lines.ring_length_m, 5.5);
+    }
+
+    /// The template's form-line selection.
+    #[test]
+    fn form_line_params_take_the_template_values() {
+        let config = load_with(&[]).unwrap();
+        assert_eq!(
+            config.form_lines,
+            FormLineParams {
+                form_lines: FormLineMode::Selective,
+                frame: MapFrame::default(),
+                relief_threshold: 0.37,
+                addition_vertices: 17.0,
+                minimum_gap_vertices: 30,
+                label_depressions: false,
+                remove_touching_contours: false,
+                ring_length_m: 16.5,
+            }
+        );
     }
 
     #[test]
@@ -1272,7 +1305,7 @@ mod test {
             let config =
                 load_with(&[("form_lines", value), ("contour_interval", interval)]).unwrap();
             assert_eq!(config.smoothjoin.form_lines, mode);
-            assert_eq!(config.curves.form_lines, mode);
+            assert_eq!(config.form_lines.form_lines, mode);
             let levels = config.smoothjoin.levels();
             assert_eq!(levels.trace_interval, trace, "{value} {interval}");
             assert_eq!(levels.half_interval_lines, half);

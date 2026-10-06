@@ -10,6 +10,7 @@ pub mod contours;
 pub mod crop;
 pub mod crs;
 pub mod eval;
+pub mod formlines;
 pub mod geojson;
 pub mod geometry;
 pub mod io;

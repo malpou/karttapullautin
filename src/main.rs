@@ -3,6 +3,7 @@ use log::error;
 use log::info;
 use pullauta::cliffs::CliffSet;
 use pullauta::config::Config;
+use pullauta::formlines::FormLineSelection;
 use pullauta::io::fs::FileSystem;
 use pullauta::io::fs::memory::MemoryFileSystem;
 use pullauta::io::heightmap::HeightMap;
@@ -749,6 +750,7 @@ struct RenderInputs {
     contours: ContourSet,
     dot_knolls: DotKnollSet,
     cliffs: CliffSet,
+    form_lines: Option<FormLineSelection>,
 }
 
 impl RenderInputs {
@@ -758,12 +760,15 @@ impl RenderInputs {
             contours: &self.contours,
             dot_knolls: &self.dot_knolls,
             cliffs: &self.cliffs,
+            form_lines: self.form_lines.as_ref(),
         }
     }
 }
 
 /// The inputs of a re-render (`render`, a shape-file zip, `pullauta` in a debug run's
-/// folder), once the raster family and every file it reads are there.
+/// folder), once the raster family and every file it reads are there. The form lines
+/// are selected again from the ground model and the contours, and written as a tile run
+/// writes them (the dump too: a re-render works on the debug intermediates).
 fn read_render_inputs(
     fs: &impl FileSystem,
     config: &Config,
@@ -771,11 +776,17 @@ fn read_render_inputs(
 ) -> Result<RenderInputs, String> {
     pullauta::render::check_raster(config).map_err(|e| e.to_string())?;
     pullauta::render::check_inputs(fs, tmpfolder).map_err(|e| e.to_string())?;
+    let ground = read_ground(fs, &tmpfolder.join(GROUND_DUMP))?;
+    let contours = read_contours(fs, tmpfolder)?;
+    let form_lines =
+        pullauta::process::make_form_lines(fs, config, tmpfolder, &ground, &contours, true)
+            .map_err(|e| format!("form lines in {}: {e}", tmpfolder.display()))?;
     Ok(RenderInputs {
-        ground: read_ground(fs, &tmpfolder.join(GROUND_DUMP))?,
-        contours: read_contours(fs, tmpfolder)?,
+        ground,
+        contours,
         dot_knolls: read_dot_knolls(fs, tmpfolder)?,
         cliffs: read_cliffs(fs, tmpfolder)?,
+        form_lines,
     })
 }
 
