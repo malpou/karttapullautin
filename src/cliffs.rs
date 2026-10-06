@@ -1,7 +1,7 @@
 use image::{Rgb, RgbImage};
 use log::info;
-use rand::prelude::*;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 use std::error::Error;
 use std::path::Path;
 
@@ -11,7 +11,6 @@ use crate::geometry::{BinaryDxf, Bounds, Classification, Geometry, Point2, Polyl
 use crate::io::fs::FileSystem;
 use crate::io::heightmap::HeightMap;
 use crate::io::xyz::{LasClass, XyzRecord};
-use crate::util::cliff_thinning_rng;
 use crate::vec2d::Vec2D;
 
 /// Parameters of [`makecliffs`].
@@ -32,7 +31,8 @@ pub struct CliffParams {
     /// the local relief (ini `cliff_ground_drop`, default 7.15). Metres. Was the hidden
     /// constant `2.6 * 2.75`, the same f64.
     pub ground_model_drop_m: f64,
-    /// Share of the returns and cells sampled, 0 to 1 (ini `cliffthin`).
+    /// Share of the returns and cells sampled, 0 to 1 (ini `cliffthin`). Each is kept by
+    /// its own position (see [`sampled`]), so the same ones in every tile.
     pub cliff_thin: f64,
     /// Raises the impassable cliff limit by this times `c2_limit` per metre of local
     /// relief above `no_small_cliffs` (ini `cliffsteepfactor`).
@@ -45,8 +45,9 @@ pub struct CliffParams {
     pub no_small_cliffs: Option<f64>,
     /// Side of the square bins the returns and cells are grouped in. Metres.
     pub bin_m: f64,
-    /// A bin of more points than this keeps every n-th, n = floor((len - 1) /
-    /// (`bin_max_points` - 1)) + 1, before it is compared.
+    /// A bin of more points than this keeps floor(len / n) of them, n = floor((len - 1) /
+    /// (`bin_max_points` - 1)) + 1, before it is compared: as many as keeping every n-th,
+    /// chosen by position (see [`thin`]).
     pub bin_max_points: usize,
     /// The same for the points of a bin and its eight neighbours together.
     pub neighbourhood_max_points: usize,
@@ -145,14 +146,15 @@ pub fn write_cliffs(
 }
 
 /// Finds the cliff dashes in `returns`, against the local relief of the `ground` model,
-/// and between the `ground` model's cells. `tile` (the tile name) seeds the `cliffthin`
-/// sampling, which draws once per return in `returns` order and then once per cell.
+/// and between the `ground` model's cells. The `cliffthin` sampling and the thinning of
+/// crowded bins choose returns by position, not by `returns` order or tile, so the same
+/// returns give the same cliff dashes in any order and in every tile that holds a bin
+/// and its neighbours whole.
 /// Returns the cliffs and the raster of the pixels the first pass marked with a passable
 /// cliff dash, 1 m per pixel from the bounds' minimum (the [`PASSABLE_RASTER_DUMP`]).
 pub fn makecliffs(
     ground: &HeightMap,
     returns: &[XyzRecord],
-    tile: &str,
     params: &CliffParams,
 ) -> (CliffSet, RgbImage) {
     info!("Identifying cliffs...");
@@ -221,23 +223,24 @@ pub fn makecliffs(
     let mut list_alt = Vec2D::new(
         (((xmax - xmin) / bin_m).ceil() + 1.0) as usize,
         (((ymax - ymin) / bin_m).ceil() + 1.0) as usize,
-        Vec::<(f64, f64, f64)>::new(),
+        Vec::<Point>::new(),
     );
 
-    let mut rng = cliff_thinning_rng(tile);
-    let randdist = rand::distr::Bernoulli::new(cliff_thin).unwrap();
-
     for r in returns {
-        if cliff_thin == 1.0 || rng.sample(randdist) {
-            let (x, y, h) = (r.x, r.y, r.z as f64);
-            if r.class() == LasClass::Ground {
+        if r.class() == LasClass::Ground {
+            let p = point(r.x, r.y, r.z as f64);
+            if sampled(cliff_thin, p.3) {
                 list_alt[(
-                    ((x - xmin).floor() / bin_m) as usize,
-                    ((y - ymin).floor() / bin_m) as usize,
+                    ((p.0 - xmin).floor() / bin_m) as usize,
+                    ((p.1 - ymin).floor() / bin_m) as usize,
                 )]
-                    .push((x, y, h));
+                    .push(p);
             }
         }
+    }
+    // the bins in a fixed order, whatever the order of the returns
+    for (_, _, bin) in list_alt.iter_mut() {
+        bin.sort_unstable_by(by_key);
     }
 
     let w = ((xmax - xmin).floor() / bin_m) as usize;
@@ -247,7 +250,7 @@ pub fn makecliffs(
     let mut f3_lines = Polylines::new();
 
     // temporary vector to reuse memory allocations
-    let mut t = Vec::<(f64, f64, f64)>::new();
+    let mut t = Vec::<Point>::new();
     for x in 0..w + 1 {
         for y in 0..h + 1 {
             if !list_alt[(x, y)].is_empty() {
@@ -283,26 +286,9 @@ pub fn makecliffs(
                 if d.len() > bin_max_points {
                     // since we need to modify it, we need to convert it to mutable
                     // this will actually mutate the outer `d`
-                    let d = d.to_mut();
-
-                    // if d has too many points, thin it by keeping every b point
-                    let b = ((d.len() - 1) as f64 / (bin_max_points - 1) as f64) as usize + 1;
-                    let mut idx = 0;
-                    d.retain(|_| {
-                        idx += 1;
-                        idx % b == 0
-                    });
+                    thin(d.to_mut(), bin_max_points);
                 }
-                if t.len() > neighbourhood_max_points {
-                    // if t has too many points, thin it by keeping every b point
-                    let b =
-                        ((t.len() - 1) as f64 / (neighbourhood_max_points - 1) as f64) as usize + 1;
-                    let mut idx = 0;
-                    t.retain(|_| {
-                        idx += 1;
-                        idx % b == 0
-                    })
-                }
+                thin(&mut t, neighbourhood_max_points);
                 let mut temp_max: f64 = f64::MIN;
                 let mut temp_min: f64 = f64::MAX;
                 for rec in t.iter() {
@@ -319,7 +305,7 @@ pub fn makecliffs(
                     continue;
                 }
 
-                for &(x0, y0, h0) in d.iter() {
+                for &(x0, y0, h0, _) in d.iter() {
                     let mut steep = steepness[(
                         ((x0 - xstart) / size) as usize,
                         ((y0 - ystart) / size) as usize,
@@ -338,7 +324,7 @@ pub fn makecliffs(
                         bonus = 0.0;
                     }
                     let limit2 = c2_limit + bonus;
-                    for &(xt, yt, ht) in t.iter() {
+                    for &(xt, yt, ht, _) in t.iter() {
                         let temp = h0 - ht;
                         let dist = ((x0 - xt).powi(2) + (y0 - yt).powi(2)).sqrt();
                         if dist > 0.0 {
@@ -398,21 +384,23 @@ pub fn makecliffs(
     let mut list_alt = Vec2D::new(
         (((xmax - xmin) / bin_m).ceil() + 1.0) as usize,
         (((ymax - ymin) / bin_m).ceil() + 1.0) as usize,
-        Vec::<(f64, f64, f64)>::new(),
+        Vec::<Point>::new(),
     );
 
+    // the cells come in grid order, so the bins need no sorting
     for (x, y, h) in ground.iter() {
-        if cliff_thin == 1.0 || rng.sample(randdist) {
+        let p = point(x, y, h);
+        if sampled(cliff_thin, p.3) {
             list_alt[(
                 ((x - xmin).floor() / bin_m) as usize,
                 ((y - ymin).floor() / bin_m) as usize,
             )]
-                .push((x, y, h));
+                .push(p);
         }
     }
 
     // temporary vector to reuse memory allocations
-    let mut t = Vec::<(f64, f64, f64)>::new();
+    let mut t = Vec::<Point>::new();
     for x in 0..w + 1 {
         for y in 0..h + 1 {
             let d = &list_alt[(x, y)];
@@ -444,9 +432,9 @@ pub fn makecliffs(
                     }
                 }
 
-                for &(x0, y0, h0) in d.iter() {
+                for &(x0, y0, h0, _) in d.iter() {
                     let limit = ground_model_drop_m;
-                    for &(xt, yt, ht) in t.iter() {
+                    for &(xt, yt, ht, _) in t.iter() {
                         let temp = h0 - ht;
                         let dist = ((x0 - xt).powi(2) + (y0 - yt).powi(2)).sqrt();
                         if dist > 0.0
@@ -482,11 +470,62 @@ pub fn makecliffs(
     (cliffs, img)
 }
 
+/// A ground return or ground model cell in a bin: x, y, height and its [`thinning_key`].
+type Point = (f64, f64, f64, u64);
+
+fn point(x: f64, y: f64, h: f64) -> Point {
+    (x, y, h, thinning_key(x, y, h))
+}
+
+/// The thinning order: by [`thinning_key`], points in the same centimetre by position.
+fn by_key(a: &Point, b: &Point) -> Ordering {
+    (a.3.cmp(&b.3))
+        .then(a.0.total_cmp(&b.0))
+        .then(a.1.total_cmp(&b.1))
+        .then(a.2.total_cmp(&b.2))
+}
+
+/// A hash of the position rounded to the centimetre: the same for a return in every tile
+/// and every read order, and spread evenly over u64 so that the points with the lowest keys
+/// are a uniform random sample of a bin. Fixed arithmetic (splitmix64's finaliser), not
+/// std's hashers, which change between Rust versions.
+fn thinning_key(x: f64, y: f64, h: f64) -> u64 {
+    let cm = |v: f64| (v * 100.0).round() as i64 as u64;
+    mix(mix(mix(cm(x)) ^ cm(y)) ^ cm(h))
+}
+
+fn mix(z: u64) -> u64 {
+    let z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    let z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Whether `cliffthin` samples the point of thinning key `key`: when a second hash of the
+/// key, as a fraction of u64, is below `cliff_thin`. That keeps `cliff_thin` of the points
+/// on average, as the Bernoulli draw per point did, independently of [`thin`]'s choice.
+fn sampled(cliff_thin: f64, key: u64) -> bool {
+    cliff_thin >= 1.0 || ((mix(key) >> 11) as f64 / (1u64 << 53) as f64) < cliff_thin
+}
+
+/// Thins `points` past `max` to the floor(len / n) with the lowest [`by_key`] order, n =
+/// floor((len - 1) / (max - 1)) + 1: as many as keeping every n-th did, but chosen by
+/// position, not by the order the points come in. The kept points are in no particular
+/// order, but the same order for the same input order.
+fn thin(points: &mut Vec<Point>, max: usize) {
+    if points.len() > max {
+        let n = (points.len() - 1) / (max - 1) + 1;
+        let keep = points.len() / n;
+        points.select_nth_unstable_by(keep, by_key);
+        points.truncate(keep);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CliffParams, CliffSet, IMPASSABLE_DUMP, PASSABLE_DUMP, PASSABLE_RASTER_DUMP, makecliffs,
-        write_cliffs,
+        CliffParams, CliffSet, IMPASSABLE_DUMP, PASSABLE_DUMP, PASSABLE_RASTER_DUMP, Point, by_key,
+        makecliffs, point, sampled, thin, write_cliffs,
     };
     use crate::geometry::{BinaryDxf, Classification, Point2};
     use crate::io::fs::FileSystem;
@@ -494,6 +533,9 @@ mod tests {
     use crate::io::heightmap::HeightMap;
     use crate::io::xyz::XyzRecord;
     use crate::vec2d::Vec2D;
+    use image::RgbImage;
+    use rand::seq::SliceRandom;
+    use rand::{RngExt, SeedableRng, rngs::Xoshiro256PlusPlus};
     use std::path::Path;
 
     /// The template's cliff parameters (`pullauta.default.ini`).
@@ -538,7 +580,7 @@ mod tests {
             ..Default::default()
         };
         let returns = [ret(309.5, 103.0), ret(310.5, 100.0)];
-        makecliffs(&ground, &returns, "", &template()).0
+        makecliffs(&ground, &returns, &template()).0
     }
 
     /// [`cliff_set_across_a_step`]'s (passable, impassable) dashes.
@@ -639,12 +681,7 @@ mod tests {
             // flat ground for the returns, so the first pass draws its dashes too
             params.flat_place = 9.0;
             params.no_small_cliffs = None;
-            makecliffs(
-                &ground,
-                &[ret(309.5, 103.0), ret(310.5, 100.0)],
-                "",
-                &params,
-            )
+            makecliffs(&ground, &[ret(309.5, 103.0), ret(310.5, 100.0)], &params)
         };
         let classes = |lines: &crate::geometry::Polylines<Point2, Classification>| {
             lines.iter().map(|(_, &c)| c).collect::<Vec<_>>()
@@ -698,5 +735,173 @@ mod tests {
             ),
             (300.0, 320.0, 600.0, 620.0)
         );
+    }
+
+    /// Ground returns spread at random over x 300..354 m and y 600..630 m, 40 per square
+    /// metre, on terraces that step up 2.5 m every 6 m in x and 1.5 m every 7 m in y:
+    /// every 3 m bin is crowded past `bin_max_points` and its neighbourhood past
+    /// `neighbourhood_max_points`, and the steps are cliffs.
+    fn dense_terraces() -> Vec<XyzRecord> {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(339);
+        (0..54 * 30 * 40)
+            .map(|_| {
+                let x = 300.0 + 54.0 * rng.random::<f64>();
+                let y = 600.0 + 30.0 * rng.random::<f64>();
+                let z = 100.0
+                    + 2.5 * ((x - 300.0) / 6.0).floor()
+                    + 1.5 * ((y - 600.0) / 7.0).floor()
+                    + 0.1 * rng.random::<f64>();
+                XyzRecord {
+                    x,
+                    y,
+                    z: z as f32,
+                    classification: 2,
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+
+    /// A flat ground model of 1 m cells from x = `x0` to `x1` and y = 597 to 633 m: no
+    /// local relief, so only the returns' drops are cliffs.
+    fn flat_ground(x0: f64, x1: f64) -> HeightMap {
+        HeightMap {
+            xoffset: x0,
+            yoffset: 597.0,
+            scale: 1.0,
+            grid: Vec2D::new((x1 - x0) as usize, 36, 100.0),
+        }
+    }
+
+    fn cliffs_of(
+        ground: &HeightMap,
+        returns: &[XyzRecord],
+        params: &CliffParams,
+    ) -> (CliffSet, RgbImage) {
+        makecliffs(ground, returns, params)
+    }
+
+    fn dashes(cliffs: &CliffSet) -> Vec<(Vec<Point2>, Classification)> {
+        (cliffs.passable.iter())
+            .chain(cliffs.impassable.iter())
+            .map(|(line, &class)| (line.to_vec(), class))
+            .collect()
+    }
+
+    fn with_cliff_thin(cliff_thin: f64) -> CliffParams {
+        CliffParams {
+            cliff_thin,
+            ..template()
+        }
+    }
+
+    /// The cliffs depend on which returns there are, not on the order they are read in:
+    /// the crowded bins thin to the same returns, with and without `cliffthin`.
+    #[test]
+    fn read_order_does_not_change_the_cliffs() {
+        let ground = flat_ground(294.0, 360.0);
+        let returns = dense_terraces();
+        let mut shuffled = returns.clone();
+        shuffled.shuffle(&mut Xoshiro256PlusPlus::seed_from_u64(1));
+        for params in [template(), with_cliff_thin(0.5)] {
+            let (cliffs, raster) = cliffs_of(&ground, &returns, &params);
+            assert!(
+                cliffs.passable.iter().next().is_some()
+                    && cliffs.impassable.iter().next().is_some()
+            );
+            let (again, again_raster) = cliffs_of(&ground, &returns, &params);
+            assert_eq!(dashes(&again), dashes(&cliffs));
+            let (other, other_raster) = cliffs_of(&ground, &shuffled, &params);
+            assert_eq!(dashes(&other), dashes(&cliffs));
+            assert!(raster == again_raster && raster == other_raster);
+        }
+    }
+
+    /// Two tiles that overlap by 18 m, each read in its own order, find the same cliffs
+    /// in the middle of the overlap, where every bin and its neighbours hold the same
+    /// returns in both: the dashes centred within x = 323..331 m.
+    #[test]
+    fn overlapping_tiles_find_the_same_cliffs_in_the_overlap() {
+        let returns = dense_terraces();
+        let west: Vec<_> = returns.iter().filter(|r| r.x < 336.0).cloned().collect();
+        let mut east: Vec<_> = returns.iter().filter(|r| r.x >= 318.0).cloned().collect();
+        east.reverse();
+        let inside = |cliffs: &CliffSet| {
+            dashes(cliffs)
+                .into_iter()
+                .filter(|(line, _)| (323.0..=331.0).contains(&((line[0].x + line[1].x) / 2.0)))
+                .collect::<Vec<_>>()
+        };
+        for params in [template(), with_cliff_thin(0.5)] {
+            let (west, _) = cliffs_of(&flat_ground(294.0, 340.0), &west, &params);
+            let (east, _) = cliffs_of(&flat_ground(312.0, 360.0), &east, &params);
+            let shared = inside(&west);
+            assert!(!shared.is_empty());
+            assert_eq!(inside(&east), shared);
+        }
+    }
+
+    /// `cliffthin` keeps its share of the returns: of 100 000 returns in one 3 m bin,
+    /// 30 % +- 1 % at `cliffthin=0.3`, each by its own position.
+    #[test]
+    fn cliffthin_keeps_its_share_of_a_dense_bin() {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(7);
+        let n = 100_000;
+        let kept = (0..n)
+            .filter(|_| {
+                let (x, y, z) = (
+                    300.0 + 3.0 * rng.random::<f64>(),
+                    600.0 + 3.0 * rng.random::<f64>(),
+                    100.0 + rng.random::<f64>(),
+                );
+                sampled(0.3, point(x, y, z).3)
+            })
+            .count();
+        let share = kept as f64 / n as f64;
+        assert!((share - 0.3).abs() < 0.01, "{share}");
+        assert!(sampled(1.0, point(300.0, 600.0, 100.0).3));
+        assert!(!sampled(0.0, point(300.0, 600.0, 100.0).3));
+    }
+
+    /// A crowded bin keeps as many points as keeping every n-th did, n = floor((len - 1)
+    /// / (max - 1)) + 1, whatever order they come in.
+    #[test]
+    fn thinning_keeps_the_count_of_every_nth_whatever_the_order() {
+        let mut rng = Xoshiro256PlusPlus::seed_from_u64(8);
+        for (len, max) in [(32, 31), (400, 31), (3240, 301), (1000, 2)] {
+            let points: Vec<_> = (0..len)
+                .map(|_| {
+                    let (x, y, z) = (
+                        300.0 + 3.0 * rng.random::<f64>(),
+                        600.0 + 3.0 * rng.random::<f64>(),
+                        100.0 + rng.random::<f64>(),
+                    );
+                    point(x, y, z)
+                })
+                .collect();
+            let every_nth = len / ((len - 1) / (max - 1) + 1);
+            let mut thinned = points.clone();
+            thin(&mut thinned, max);
+            assert_eq!(thinned.len(), every_nth);
+            assert!(thinned.len() <= max);
+            let mut shuffled = points.clone();
+            shuffled.shuffle(&mut rng);
+            thin(&mut shuffled, max);
+            let sort = |mut v: Vec<Point>| {
+                v.sort_by(by_key);
+                v
+            };
+            assert_eq!(sort(shuffled), sort(thinned.clone()));
+        }
+    }
+
+    /// The key is a fixed function of the centimetre-rounded position, the same on every
+    /// build and platform; a change here changes every map's cliffs.
+    #[test]
+    fn the_thinning_key_is_pinned() {
+        assert_eq!(point(1.0, 2.0, 3.0).3, point(1.004, 1.996, 3.0).3);
+        assert_ne!(point(1.0, 2.0, 3.0).3, point(1.01, 2.0, 3.0).3);
+        assert_ne!(point(1.0, 2.0, 3.0).3, point(2.0, 1.0, 3.0).3);
+        assert_eq!(point(1.0, 2.0, 3.0).3, 3_489_321_152_109_073_770);
     }
 }

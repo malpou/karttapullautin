@@ -857,7 +857,8 @@ fn run_batch_job(name: &str, settings: &[(&str, &str)]) -> PathBuf {
 }
 
 /// Two runs of the same job write byte-identical files, also with thinning on
-/// (`thinfactor`, `cliffthin` < 1: the samplings seeded from the tile name).
+/// (`thinfactor` < 1: the sampling seeded from the tile name; `cliffthin` < 1: the
+/// sampling by each return's position).
 #[test]
 #[ignore]
 fn runs_are_deterministic() {

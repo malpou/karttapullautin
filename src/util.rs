@@ -168,11 +168,6 @@ pub fn thinning_rng(tile: &str, source: &str) -> Xoshiro256PlusPlus {
     }
 }
 
-/// The generator for `cliffthin` sampling in `tile`, apart from its point thinning.
-pub fn cliff_thinning_rng(tile: &str) -> Xoshiro256PlusPlus {
-    seeded_rng(&format!("{tile} cliffs"))
-}
-
 /// A random number generator seeded from `key`, so that thinning picks the same points on
 /// every run of one build (rand keeps sampled values stable only within a minor
 /// version). The seed is the 64-bit FNV-1a hash of `key`: std's hashers are not stable
@@ -297,7 +292,6 @@ mod tests {
         assert_eq!(draw(thinning_rng("a", "b")), draw(thinning_rng("a", "b")));
         assert_ne!(draw(thinning_rng("a", "b")), draw(thinning_rng("a", "a")));
         assert_ne!(draw(thinning_rng("a", "b")), draw(thinning_rng("b", "a")));
-        assert_ne!(draw(cliff_thinning_rng("a")), draw(thinning_rng("a", "a")));
     }
 
     #[test]

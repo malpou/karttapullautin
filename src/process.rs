@@ -496,8 +496,7 @@ impl TileValues {
 /// Runs the stages `config` asks for on a tile's `returns`, without the file system: the
 /// ground model, then the contour chain (knolls, smoothjoin, dot knolls, form lines), the
 /// vegetation, the cliffs and the blocks, each from the ground model and the returns.
-/// `tile` (the tile name) seeds the cliffthin sampling.
-pub fn run_stages(config: &Config, returns: &[XyzRecord], tile: &str) -> TileValues {
+pub fn run_stages(config: &Config, returns: &[XyzRecord]) -> TileValues {
     let mut timing = Timing::start_now("run_stages");
     let &Config {
         vegeonly,
@@ -543,7 +542,7 @@ pub fn run_stages(config: &Config, returns: &[XyzRecord], tile: &str) -> TileVal
     let cliffs = (!vegeonly && !contoursonly).then(|| {
         info!("Cliff generation");
         timing.start_section("cliff generation");
-        let (cliffs, passable_raster) = cliffs::makecliffs(&ground, returns, tile, &config.cliff);
+        let (cliffs, passable_raster) = cliffs::makecliffs(&ground, returns, &config.cliff);
         if let Some(dumps) = &mut dumps {
             dumps.passable_raster = Some(passable_raster);
         }
@@ -754,7 +753,7 @@ pub fn process_tile(
     info!("Done");
 
     timing.start_section("stages");
-    let values = run_stages(config, &returns, tile);
+    let values = run_stages(config, &returns);
     // the products and the map are the stages' values, not the returns
     drop(returns);
 
@@ -1578,7 +1577,7 @@ mod test {
         // the stages need no file system: their values, written, are the same products
         let again = MemoryFileSystem::new();
         again.create_dir_all(temp).unwrap();
-        let values = run_stages(&config, &returns, "cone");
+        let values = run_stages(&config, &returns);
         write_tile_products(&again, &config, temp, &values).unwrap();
         prune_tile_folder(&again, temp, false, config.outputs, false, None).unwrap();
         assert_eq!(contents(&again, "temp"), contents(&fs, "temp"));
@@ -1617,7 +1616,7 @@ mod test {
         let mut config = Config::from_file(Path::new("pullauta.default.ini")).unwrap();
         config.vegeonly = true;
         config.debug_intermediates = true;
-        let values = run_stages(&config, &cone_tile(), "cone");
+        let values = run_stages(&config, &cone_tile());
         assert!(values.terrain.is_none() && values.cliffs.is_none());
         assert!(values.basemap.is_none() && values.blocks.is_none());
         assert!(values.vegetation.is_some_and(|v| v.rasters.is_some()));
