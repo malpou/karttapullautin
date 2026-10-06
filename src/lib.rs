@@ -20,6 +20,7 @@ pub mod merge;
 pub mod palette;
 mod plan;
 pub mod process;
+pub mod raster_cliffs;
 pub mod render;
 pub mod util;
 pub mod vec2d;
